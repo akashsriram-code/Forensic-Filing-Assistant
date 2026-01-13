@@ -36,13 +36,19 @@ export async function POST(req: NextRequest) {
 
             // Filter by Type (if specified)
             // Allow partial matching e.g. "10-K" matches "10-K" and "10-K/A"
+            // Filter by Type (if specified)
             if (filingType && filingType !== 'ALL') {
-                if (filingType === '10-K' && !formType.includes('10-K')) continue;
-                if (filingType === '10-Q' && !formType.includes('10-Q')) continue;
-                if (filingType === '8-K' && !formType.includes('8-K')) continue;
-                if (filingType === '13-F' && !formType.includes('13F')) continue;
-                // Exact match fallback for others
-                if (!['10-K', '10-Q', '8-K', '13-F'].includes(filingType) && formType !== filingType) continue;
+                // Handling specific exclusions to avoid noise (e.g. searching 10-K shouldn't show NT 10-K)
+                if (filingType === '10-K') {
+                    if (!formType.includes('10-K') || formType.startsWith('NT')) continue;
+                }
+                else if (filingType === '10-Q') {
+                    if (!formType.includes('10-Q') || formType.startsWith('NT')) continue;
+                }
+                else {
+                    // Generic Check (Handles S-1, 20-F, DEF 14A, etc.)
+                    if (!formType.includes(filingType)) continue;
+                }
             }
 
             results.push({

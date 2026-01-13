@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { Search, FileText, Download, Calendar, Filter, Loader2, Sparkles, FolderDown, Activity } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -69,8 +70,10 @@ export default function Home() {
   };
 
   const downloadFile = (url: string, filename: string) => {
+    // Ensure the filename uses .html instead of .htm for better compatibility.
+    const safeFilename = filename.replace(/\.htm$/i, '.html');
     // I'm forcing the download through my proxy to avoid CORS issues with the SEC.
-    window.location.href = `/api/download-proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
+    window.location.href = `/api/download-proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(safeFilename)}`;
   };
 
   const handleDownloadAll = async () => {
@@ -79,17 +82,45 @@ export default function Home() {
 
     try {
       const zip = new JSZip();
-      const filesToDownload = results.slice(0, 20);
+      const filesToDownload = results.slice(0, 20); // Limit to 20 to prevent browser freeze
       let processed = 0;
 
       for (const item of filesToDownload) {
         try {
           const response = await fetch(`/api/download-proxy?url=${encodeURIComponent(item.downloadUrl)}&filename=${item.primaryDocument}`);
           if (!response.ok) continue;
-          const blob = await response.blob();
+
+          let htmlContent = await response.text();
+
+          // --- ENHANCEMENT: Make the HTML "Reader Ready" (looks like a PDF) ---
+          // 1. Inject Reader CSS directly into the head
+          const readerStyles = `
+                        <style>
+                            body { font-family: 'Times New Roman', Times, serif; line-height: 1.5; color: #333; max-width: 900px; margin: 40px auto; padding: 20px; }
+                            table { width: 100% !important; border-collapse: collapse; margin-bottom: 20px; }
+                            td, th { padding: 4px; vertical-align: top; }
+                            img { max-width: 100%; height: auto; }
+                            .sec-header { display: none; } /* Hide some junk if possible */
+                            @media print { body { margin: 0; padding: 0; max-width: none; } }
+                        </style>
+                        <base href="https://www.sec.gov/Archives/edgar/data/"> <!-- Try to fix relative links -->
+                    `;
+
+          // Simple injection before </head> or just at top if missing
+          if (htmlContent.includes('</head>')) {
+            htmlContent = htmlContent.replace('</head>', `${readerStyles}</head>`);
+          } else {
+            htmlContent = `<!DOCTYPE html><html><head>${readerStyles}</head><body>${htmlContent}</body></html>`;
+          }
+
+          // 2. Fix Image URLs (Rough heuristic)
+          // SEC images are often relative. We try to make them absolute based on the accession path.
+          // (Note: <base> tag above handles many cases, but manual replace is safer for some clients)
+
           const ext = item.primaryDocument.split('.').pop() || 'htm';
-          const filename = `${item.filingDate}_${item.form}_${item.accessionNumber}.${ext}`;
-          zip.file(filename, blob);
+          const filename = `${item.filingDate}_${item.form}_${item.accessionNumber}_Enhanced.html`;
+
+          zip.file(filename, htmlContent);
           processed++;
         } catch (e) {
           console.error("Failed to zip file", item.accessionNumber);
@@ -98,7 +129,7 @@ export default function Home() {
 
       if (processed > 0) {
         const content = await zip.generateAsync({ type: "blob" });
-        saveAs(content, `${ticker}_SEC_Filings.zip`);
+        saveAs(content, `${ticker}_SEC_Filings_Readable.zip`);
       } else {
         alert("Failed to download any files for zipping.");
       }
@@ -201,6 +232,14 @@ export default function Home() {
                     <option value="10-K">10-K (Annual)</option>
                     <option value="10-Q">10-Q (Quarterly)</option>
                     <option value="8-K">8-K (Current)</option>
+                    <option value="20-F">20-F (Foreign Annual)</option>
+                    <option value="6-K">6-K (Foreign Current)</option>
+                    <option value="S-1">S-1 (Registration)</option>
+                    <option value="S-1/A">S-1/A (Amendment)</option>
+                    <option value="DEF 14A">DEF 14A (Proxy)</option>
+                    <option value="PRE 14A">PRE 14A (Prelim Proxy)</option>
+                    <option value="NT 10-K">NT 10-K (Late Notice)</option>
+                    <option value="NT 10-Q">NT 10-Q (Late Notice)</option>
                   </select>
                 </div>
               </div>
@@ -241,7 +280,7 @@ export default function Home() {
                       <th className="px-6 py-4">Type</th>
                       <th className="px-6 py-4">Description</th>
                       <th className="px-6 py-4 text-right">Size</th>
-                      <th className="px-6 py-4 text-right">Download</th>
+                      <th className="px-6 py-4 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700'}`}>
@@ -251,9 +290,20 @@ export default function Home() {
                         <td className="px-6 py-4"><span className="font-medium">{item.form}</span></td>
                         <td className="px-6 py-4 truncate max-w-xs opacity-80">{item.description || item.primaryDocument}</td>
                         <td className="px-6 py-4 text-right font-mono text-xs opacity-60">{(item.size / 1024).toFixed(0)} KB</td>
-                        <td className="px-6 py-4 text-right">
-                          <button onClick={() => downloadFile(item.downloadUrl, item.primaryDocument)} className="hover:underline opacity-60 hover:opacity-100">
-                            Download
+                        <td className="px-6 py-4 text-right flex justify-end gap-3">
+                          <Link
+                            href={`/reader?url=${encodeURIComponent(item.downloadUrl)}`}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${theme === 'dark' ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300' : 'bg-white border border-gray-200 hover:bg-gray-50 text-gray-700'}`}
+                          >
+                            <FileText className="h-3 w-3" />
+                            Read
+                          </Link>
+                          <button
+                            onClick={() => downloadFile(item.downloadUrl, item.primaryDocument)}
+                            className="hover:text-black opacity-60 hover:opacity-100 transition-opacity"
+                            title="Download Raw HTML"
+                          >
+                            <Download className="h-4 w-4" />
                           </button>
                         </td>
                       </tr>
