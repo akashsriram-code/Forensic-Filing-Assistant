@@ -69,49 +69,98 @@ export async function fetchCIK(query: string): Promise<string | null> {
         return query.padStart(10, '0');
     }
 
+    // 1. Try the standard company_tickers.json (Best for Public Companies / Tickers)
     try {
         const response = await fetch("https://www.sec.gov/files/company_tickers.json", {
             headers: { "User-Agent": SEC_USER_AGENT },
             next: { revalidate: 86400 } // I'm caching this for a day because company tickers don't change that often.
         });
 
-        if (!response.ok) throw new Error("Failed to fetch company tickers");
+        if (response.ok) {
+            const data = await response.json();
+            const queryUpper = query.toUpperCase();
+            const queryLower = query.toLowerCase();
+            const entries = Object.values(data) as CompanyTicker[];
 
-        const data = await response.json();
-        // The data comes back as an object where keys are indices, so I'll convert it to an array.
+            // A. Exact Ticker Match
+            let entry = entries.find((item) => item.ticker === queryUpper);
 
-        const queryUpper = query.toUpperCase();
-        const queryLower = query.toLowerCase();
+            // B. Exact Title Match (Case-insensitive)
+            if (!entry) {
+                entry = entries.find((item) => item.title.toLowerCase() === queryLower);
+            }
 
-        const entries = Object.values(data) as CompanyTicker[];
+            // C. Fuzzy Title Match (Contains)
+            if (!entry) {
+                const matches = entries.filter((item) => item.title.toLowerCase().includes(queryLower));
+                if (matches.length > 0) {
+                    matches.sort((a, b) => a.title.length - b.title.length);
+                    entry = matches[0];
+                }
+            }
 
-        // 1. First, I check for an exact ticker match.
-        let entry = entries.find((item) => item.ticker === queryUpper);
-
-        // 2. If that fails, I try an exact title match (case-insensitive).
-        if (!entry) {
-            entry = entries.find((item) => item.title.toLowerCase() === queryLower);
+            if (entry && (entry as any).cik_str) {
+                return (entry as any).cik_str.toString().padStart(10, '0');
+            }
         }
+    } catch (error) {
+        console.warn("Standard CIK lookup failed, attempting text fallback...", error);
+    }
 
-        // 3. Finally, I'll try a fuzzy match if the earlier checks failed.
-        if (!entry) {
-            const matches = entries.filter((item) => item.title.toLowerCase().includes(queryLower));
-            if (matches.length > 0) {
-                // Heuristic: I pick the shortest title assuming it's the most relevant "root" company name.
-                matches.sort((a, b) => a.title.length - b.title.length);
-                entry = matches[0];
+    // 2. FALLBACK: cik-lookup-data.txt (Best for Private Funds / Non-Public Entities)
+    // This file is huge (~37MB), so I stream it line-by-line to avoid memory explosions.
+    console.log(`[CIK Lookup] Attempting fallback text search for: ${query}`);
+    try {
+        const response = await fetch("https://www.sec.gov/Archives/edgar/cik-lookup-data.txt", {
+            headers: { "User-Agent": SEC_USER_AGENT },
+            // No 'next: revalidate' here because 37MB is too big for Next.js Data Cache to handle reliably everywhere.
+            // We rely on standard fetch.
+        });
+
+        if (!response.ok) return null;
+        if (!response.body) return null;
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        const target = query.toUpperCase();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete lines
+            let newlineIdx;
+            while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+                const line = buffer.substring(0, newlineIdx);
+                buffer = buffer.substring(newlineIdx + 1);
+
+                // Format: COMPANY NAME:CIK:JUNK...
+                // Example: BRIDGEWATER ASSOCIATES, LP:0001350694:
+                // We use includes() because the name might be "PUBLIC INVESTMENT FUND - ... "
+                if (line.includes(target)) {
+                    const parts = line.split(':');
+                    if (parts.length >= 2) {
+                        const name = parts[0];
+                        const cik = parts[1];
+
+                        // Verify the name actually contains our query to avoid false positives in the junk data
+                        if (name.includes(target)) {
+                            console.log(`[CIK Lookup] Found match in text file: ${name} -> ${cik}`);
+                            return cik.padEnd(10, '0').substring(0, 10); // Standardize CIK
+                        }
+                    }
+                }
             }
         }
 
-        if (entry && (entry as any).cik_str) {
-            return (entry as any).cik_str.toString().padStart(10, '0');
-        }
-
-        return null;
     } catch (error) {
-        console.error("Error fetching CIK:", error);
-        return null;
+        console.error("Error in fallback CIK search:", error);
     }
+
+    return null;
 }
 
 export async function fetchSubmission(cik: string): Promise<SecSubmission | null> {
