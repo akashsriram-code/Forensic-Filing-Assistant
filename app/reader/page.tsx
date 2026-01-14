@@ -11,6 +11,7 @@ function ReaderContent() {
     const [content, setContent] = useState("");
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
+    const [generatingPdf, setGeneratingPdf] = useState(false);
 
     useEffect(() => {
         if (!url) return;
@@ -38,6 +39,32 @@ function ReaderContent() {
 
     const handlePrint = () => {
         window.print();
+    };
+
+    const handleDownloadPDF = async () => {
+        const element = document.querySelector('.sec-content-wrapper');
+        if (!element) return;
+
+        setGeneratingPdf(true);
+        try {
+            // Dynamically import html2pdf to avoid SSR issues
+            const html2pdf = (await import('html2pdf.js')).default;
+
+            const opt = {
+                margin: [10, 10, 10, 10], // top, left, bottom, right
+                filename: 'sec-filing.pdf',
+                image: { type: 'jpeg', quality: 0.95 },
+                html2canvas: { scale: 1, useCORS: true, logging: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            };
+
+            await html2pdf().set(opt).from(element).save();
+        } catch (err: any) {
+            console.error("PDF generation failed", err);
+            alert(`Failed to generate PDF: ${err.message || err}. Check console.`);
+        } finally {
+            setGeneratingPdf(false);
+        }
     };
 
     if (loading) {
@@ -70,19 +97,24 @@ function ReaderContent() {
 
                 <div className="flex items-center gap-3">
                     <button
+                        onClick={handleDownloadPDF}
+                        disabled={generatingPdf}
+                        className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-sans font-medium rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+                    >
+                        {generatingPdf ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                            <Download className="h-4 w-4" />
+                        )}
+                        {generatingPdf ? "Generating..." : "Download PDF"}
+                    </button>
+                    <button
                         onClick={handlePrint}
                         className="flex items-center gap-2 px-4 py-2 bg-black text-white text-sm font-sans font-medium rounded-lg hover:bg-gray-800 transition-colors"
                     >
                         <Printer className="h-4 w-4" />
                         Print / Save as PDF
                     </button>
-                    <a
-                        href={`/api/download-proxy?url=${encodeURIComponent(url || "")}&filename=filing.htm`}
-                        className="p-2 border border-gray-200 rounded-lg text-gray-500 hover:text-black hover:bg-gray-50 transition-colors"
-                        title="Download Original HTML"
-                    >
-                        <Download className="h-4 w-4" />
-                    </a>
                 </div>
             </div>
 
@@ -94,7 +126,7 @@ function ReaderContent() {
                    We'll inject it but override font-family globally. 
                 */}
                 <div
-                    className="prose prose-lg max-w-none prose-headings:font-sans prose-p:leading-relaxedsec-content-wrapper"
+                    className="prose prose-lg max-w-none prose-headings:font-sans prose-p:leading-relaxed sec-content-wrapper"
                     dangerouslySetInnerHTML={{ __html: content }}
                     style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}
                 />
