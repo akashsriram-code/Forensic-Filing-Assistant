@@ -108,57 +108,33 @@ export async function fetchCIK(query: string): Promise<string | null> {
         console.warn("Standard CIK lookup failed, attempting text fallback...", error);
     }
 
-    // 2. FALLBACK: cik-lookup-data.txt (Best for Private Funds / Non-Public Entities)
-    // This file is huge (~37MB), so I stream it line-by-line to avoid memory explosions.
-    console.log(`[CIK Lookup] Attempting fallback text search for: ${query}`);
+    // 2. FALLBACK: SEC EFTS API (Fast Search)
+    // Replaces the heavy 37MB cik-lookup-data.txt stream.
+    console.log(`[CIK Lookup] Attempting EFTS API search for: ${query}`);
     try {
-        const response = await fetch("https://www.sec.gov/Archives/edgar/cik-lookup-data.txt", {
-            headers: { "User-Agent": SEC_USER_AGENT },
-            // No 'next: revalidate' here because 37MB is too big for Next.js Data Cache to handle reliably everywhere.
-            // We rely on standard fetch.
+        const response = await fetch("https://efts.sec.gov/LATEST/search-index", {
+            method: "POST",
+            headers: {
+                "User-Agent": SEC_USER_AGENT,
+                "Content-Type": "application/x-www-form-urlencoded" // API often expects simple form or json
+            },
+            body: JSON.stringify({ keys_typed: query })
         });
 
-        if (!response.ok) return null;
-        if (!response.body) return null;
+        if (response.ok) {
+            const data = await response.json();
+            // Structure: data.hits.hits[].{_id (CIK), _source.entity (Name)}
+            if (data.hits && data.hits.hits && data.hits.hits.length > 0) {
+                const bestMatch = data.hits.hits[0];
+                const cik = bestMatch._id;
+                const name = bestMatch._source.entity;
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        const target = query.toUpperCase();
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-
-            // Process complete lines
-            let newlineIdx;
-            while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-                const line = buffer.substring(0, newlineIdx);
-                buffer = buffer.substring(newlineIdx + 1);
-
-                // Format: COMPANY NAME:CIK:JUNK...
-                // Example: BRIDGEWATER ASSOCIATES, LP:0001350694:
-                // We use includes() because the name might be "PUBLIC INVESTMENT FUND - ... "
-                if (line.includes(target)) {
-                    const parts = line.split(':');
-                    if (parts.length >= 2) {
-                        const name = parts[0];
-                        const cik = parts[1];
-
-                        // Verify the name actually contains our query to avoid false positives in the junk data
-                        if (name.includes(target)) {
-                            console.log(`[CIK Lookup] Found match in text file: ${name} -> ${cik}`);
-                            return cik.padEnd(10, '0').substring(0, 10); // Standardize CIK
-                        }
-                    }
-                }
+                console.log(`[CIK Lookup] Found match via EFTS: ${name} -> ${cik}`);
+                return cik.padStart(10, '0');
             }
         }
-
     } catch (error) {
-        console.error("Error in fallback CIK search:", error);
+        console.error("Error in EFTS CIK search:", error);
     }
 
     return null;
@@ -201,6 +177,19 @@ export async function parse13F(xmlContent: string) {
         return result;
     } catch (e) {
         console.error("Error parsing 13F XML", e);
+        return null;
+    }
+}
+
+export async function parseForm4(xmlContent: string) {
+    try {
+        const result = await parseStringPromise(xmlContent, {
+            tagNameProcessors: [(name) => name.split(':').pop() || name],
+            explicitArray: true
+        });
+        return result;
+    } catch (e) {
+        console.error("Error parsing Form 4 XML", e);
         return null;
     }
 }

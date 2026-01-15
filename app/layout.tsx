@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "SEC filings assistant",
-  description: "AI-powered SEC filing analysis",
+  description: "SEC filing downloader and 13-F analysis",
 };
 
 export default function RootLayout({

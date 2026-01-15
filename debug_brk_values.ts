@@ -32,7 +32,7 @@ async function debugBRK() {
 
     // Use fallback logic
     const indexUrl = `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${accessionNoDash}/index.json`;
-    const indexRes = await fetch(indexUrl, { headers: { "User-Agent": "ForensicAnalyzer contact@example.com" } });
+    const indexRes = await fetch(indexUrl, { headers: { "User-Agent": "ForensicAnalyzer channelcarrera@gmail.com" } });
     const indexData = await indexRes.json();
     const items = indexData.directory?.item || [];
 

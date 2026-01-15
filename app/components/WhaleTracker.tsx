@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from 'react';
-import { Download, X, Search, Loader2, TrendingUp, TrendingDown } from 'lucide-react';
+import { Download, X, Search, Loader2, TrendingUp, TrendingDown, CirclePlus, Plus } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter, ReferenceLine } from 'recharts';
 import { getSector } from '@/lib/sectors';
+import { TickerSearch } from './TickerSearch';
+import { FollowButton } from './FollowButton';
 
 interface Holding {
     issuer: string;
@@ -13,6 +15,8 @@ interface Holding {
     change: number;
     percentChange: number;
     value: number;
+    isNew?: boolean;
+    isAddOn?: boolean;
 }
 
 interface WhaleData {
@@ -247,14 +251,12 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
 
                 <div className="max-w-xl mx-auto flex gap-3">
                     <div className="relative flex-1">
-                        <Search className={`absolute left-4 top-3.5 h-5 w-5 ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-400'}`} />
-                        <input
-                            type="text"
-                            placeholder="Enter Ticker, Fund Name, or CIK"
-                            className={`w-full pl-12 pr-4 py-3 rounded-lg border outline-none transition-all font-mono text-sm ${theme === 'dark' ? 'bg-black/20 border-zinc-800 focus:border-white text-white placeholder-zinc-600' : 'bg-gray-50 border-gray-200 focus:border-black text-gray-900 placeholder-gray-400'}`}
+                        <TickerSearch
                             value={ticker}
-                            onChange={(e) => setTicker(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleAnalyze()}
+                            onChange={(val) => setTicker(val)}
+                            onSelect={(val) => handleAnalyze()}
+                            theme={theme}
+                            placeholder="Enter Ticker, Fund Name, or CIK"
                         />
                     </div>
                     <button
@@ -279,6 +281,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                         <div className="flex items-center gap-2">
                             <TrendingUp className={`h-5 w-5 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-400'}`} />
                             <span className={`font-semibold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>{data.ticker}</span>
+                            <FollowButton ticker={data.ticker} theme={theme} />
                         </div>
                         <div className="flex items-center gap-4">
                             <div className={`text-xs font-mono ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>
@@ -347,10 +350,26 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                             </div>
                             <div className="h-40 w-full">
                                 <ResponsiveContainer width="100%" height="100%">
-                                    <ScatterChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+                                    <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 0 }}>
                                         <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                                        <XAxis dataKey="x" type="number" hide />
-                                        <YAxis dataKey="y" type="number" hide />
+                                        <XAxis
+                                            dataKey="x"
+                                            type="number"
+                                            name="Value"
+                                            tickFormatter={(val) => `$${new Intl.NumberFormat('en-US', { notation: "compact" }).format(val)}`}
+                                            fontSize={10}
+                                            tickLine={false}
+                                            axisLine={false}
+                                        />
+                                        <YAxis
+                                            dataKey="y"
+                                            type="number"
+                                            name="Change"
+                                            unit="%"
+                                            fontSize={10}
+                                            tickLine={false}
+                                            axisLine={false}
+                                        />
                                         <ReferenceLine y={0} stroke={theme === 'dark' ? '#52525b' : '#e5e7eb'} strokeDasharray="3 3" />
                                         <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<CustomScatterTooltip theme={theme} />} />
                                         <Scatter name="Holdings" data={scatterData} fill="#8884d8">
@@ -429,7 +448,21 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                         className={`cursor-pointer transition-colors ${theme === 'dark' ? 'hover:bg-zinc-800/50' : 'hover:bg-purple-50'}`}
                                         title="Click for historical analysis"
                                     >
-                                        <td className={`px-6 py-3 font-medium ${theme === 'dark' ? 'text-zinc-200' : 'text-gray-900'}`}>{h.issuer}</td>
+                                        <td className={`px-6 py-3 font-medium ${theme === 'dark' ? 'text-zinc-200' : 'text-gray-900'}`}>
+                                            <div className="flex items-center gap-2">
+                                                {h.issuer}
+                                                {h.isNew && (
+                                                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                                                        <CirclePlus className="w-3 h-3" /> NEW
+                                                    </span>
+                                                )}
+                                                {h.isAddOn && (
+                                                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-500 border border-blue-500/20">
+                                                        <Plus className="w-3 h-3" /> ADD
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </td>
                                         <td className="px-6 py-3 font-mono text-xs opacity-50 hidden md:table-cell">{getSector(h.issuer)}</td>
                                         <td className="px-6 py-3 text-right font-mono text-xs opacity-60">{formatNumber(h.sharesPrev)}</td>
                                         <td className="px-6 py-3 text-right font-mono text-xs opacity-60">{formatNumber(h.sharesCurr)}</td>

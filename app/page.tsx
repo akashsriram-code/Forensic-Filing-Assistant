@@ -2,10 +2,13 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Search, FileText, Download, Calendar, Filter, Loader2, Sparkles, FolderDown, Activity } from 'lucide-react';
+import { Search, FileText, Download, Calendar, Filter, Loader2, Sparkles, FolderDown, Activity, Split } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import { InsiderTracker } from './components/InsiderTracker';
 import { WhaleTracker } from './components/WhaleTracker';
+import { FollowButton } from './components/FollowButton';
+import { InfoModal } from './components/InfoModal';
 
 interface FilingResult {
   accessionNumber: string;
@@ -19,7 +22,7 @@ interface FilingResult {
 
 export default function Home() {
   // I'm keeping track of which tab is active here.
-  const [activeTab, setActiveTab] = useState<'downloader' | 'whale'>('downloader');
+  const [activeTab, setActiveTab] = useState<'downloader' | 'whale' | 'insider'>('downloader');
 
   // These are the state variables I need for the global filing downloader.
   const [ticker, setTicker] = useState("");
@@ -156,6 +159,9 @@ export default function Home() {
               <h1 className="text-sm font-bold tracking-tight uppercase">SEC Filings Assistant</h1>
               <span className="text-[10px] text-gray-500 font-medium tracking-wide">by Akash Sriram</span>
             </div>
+            <div className="ml-2 border-l pl-3 border-gray-200 dark:border-zinc-800 h-6 flex items-center">
+              <InfoModal theme={theme} />
+            </div>
           </div>
 
           <div className="flex items-center gap-4">
@@ -171,6 +177,12 @@ export default function Home() {
                 className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === 'whale' ? (theme === 'dark' ? 'bg-zinc-800 text-white shadow-sm' : 'bg-white text-gray-900 shadow-sm') : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'}`}
               >
                 Whale Tracker
+              </button>
+              <button
+                onClick={() => setActiveTab('insider')}
+                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === 'insider' ? (theme === 'dark' ? 'bg-zinc-800 text-white shadow-sm' : 'bg-white text-gray-900 shadow-sm') : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'}`}
+              >
+                Insider Analysis
               </button>
             </div>
 
@@ -188,6 +200,8 @@ export default function Home() {
       <main className="max-w-6xl mx-auto px-6 py-12">
         {activeTab === 'whale' ? (
           <WhaleTracker theme={theme} />
+        ) : activeTab === 'insider' ? (
+          <InsiderTracker theme={theme} />
         ) : (
           <div className="max-w-4xl mx-auto space-y-12">
             {/* Search Section */}
@@ -195,13 +209,16 @@ export default function Home() {
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6 items-end">
                 <div className="col-span-1">
                   <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-2">Ticker</label>
-                  <input
-                    type="text"
-                    placeholder="NVDA"
-                    className={`w-full px-4 py-3 rounded-lg border transition-all outline-none font-mono text-sm ${theme === 'dark' ? 'bg-black/20 border-zinc-800 focus:border-white text-white' : 'bg-gray-50 border-gray-200 focus:border-black text-gray-900'}`}
-                    value={ticker}
-                    onChange={(e) => setTicker(e.target.value)}
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="NVDA"
+                      className={`w-full px-4 py-3 rounded-lg border transition-all outline-none font-mono text-sm ${theme === 'dark' ? 'bg-black/20 border-zinc-800 focus:border-white text-white' : 'bg-gray-50 border-gray-200 focus:border-black text-gray-900'}`}
+                      value={ticker}
+                      onChange={(e) => setTicker(e.target.value)}
+                    />
+                    <FollowButton ticker={ticker} theme={theme} className={`p-3 rounded-lg border ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900' : 'border-gray-200 bg-white'}`} />
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-2">Start Date</label>
@@ -292,6 +309,25 @@ export default function Home() {
                         <td className="px-6 py-4 truncate max-w-xs opacity-80">{item.description || item.primaryDocument}</td>
                         <td className="px-6 py-4 text-right font-mono text-xs opacity-60">{(item.size / 1024).toFixed(0)} KB</td>
                         <td className="px-6 py-4 text-right flex justify-end gap-3">
+                          {/* DIFF ENGINE: Compare with previous if available */}
+                          {['10-K', '10-Q'].some(t => item.form.includes(t)) && idx < results.length - 1 && (() => {
+                            // Find previous filing of same type
+                            const prev = results.slice(idx + 1).find(r => r.form === item.form);
+                            if (prev) {
+                              return (
+                                <Link
+                                  href={`/diff?url1=${encodeURIComponent(prev.downloadUrl)}&url2=${encodeURIComponent(item.downloadUrl)}&title=${encodeURIComponent(`Diff: ${item.form} (${prev.filingDate} vs ${item.filingDate})`)}`}
+                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${theme === 'dark' ? 'bg-purple-900/30 hover:bg-purple-900/50 text-purple-300' : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200'}`}
+                                  title={`Compare with ${prev.filingDate}`}
+                                >
+                                  <Split className="h-3 w-3" />
+                                  Diff
+                                </Link>
+                              );
+                            }
+                            return null;
+                          })()}
+
                           <Link
                             href={`/reader?url=${encodeURIComponent(item.downloadUrl)}`}
                             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${theme === 'dark' ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300' : 'bg-white border border-gray-200 hover:bg-gray-50 text-gray-700'}`}

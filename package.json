@@ -10,10 +10,13 @@
   },
   "dependencies": {
     "@huggingface/inference": "^4.13.5",
+    "@types/diff": "^7.0.2",
     "@types/file-saver": "^2.0.7",
     "cheerio": "^1.1.2",
     "clsx": "^2.1.1",
+    "diff": "^8.0.3",
     "file-saver": "^2.0.5",
+    "flexsearch": "^0.8.212",
     "html2pdf.js": "^0.14.0",
     "jszip": "^3.10.1",
     "lucide-react": "^0.562.0",

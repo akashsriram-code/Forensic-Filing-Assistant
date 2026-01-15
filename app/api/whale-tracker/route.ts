@@ -193,7 +193,9 @@ export async function POST(req: NextRequest) {
                 sharesPrev: prevShares,
                 change: change,
                 percentChange: percentChange,
-                value: curr.value
+                value: curr.value,
+                isNew: prevShares === 0 && curr.shares > 0,
+                isAddOn: prevShares > 0 && change > 0
             });
             // I remove it from the map so I know which ones in 'prev' were completely sold off.
             if (prev) prevMap.delete(curr.cusip);
