@@ -17,6 +17,7 @@ export interface IpoFiling {
         priceRange?: string;
         proposedSymbol?: string;
         exchange?: string;
+        underwriters?: string;
         estimatedValuation?: string; // Market Cap (Price * Outstanding)
         dealSize?: string; // Amount Raised (Price * Offered)
         sharesOutstanding?: string; // For calculation
@@ -233,32 +234,128 @@ export async function parseIpoData(html: string): Promise<Partial<IpoFiling>> {
     }
 
     // 1. Proposed Symbol
-    // Fix: Ensure we don't match the 's' in "symbols". Require a colon or space-quote separator.
-    // "Proposed Nasdaq symbols: Units: 'PAACU'"
-    // Blacklist common incorrect captures like "OUR", "THE", "AND", "COM", "STK"
-    const symbolBlacklist = new Set(["OUR", "THE", "AND", "COM", "STK", "INC", "CORP", "LTD", "PLC", "CLASS", "SHARES", "STOCK", "OVER", "WILL", "HAVE", "BEEN"]);
+    // Priority: Ordinary Shares / Class A / Common Stock > Units (fallback)
+    // Users want the actual stock symbol, not the unit symbol
+    const symbolBlacklist = new Set(["OUR", "THE", "AND", "COM", "STK", "INC", "CORP", "LTD", "PLC", "CLASS", "SHARES", "STOCK", "OVER", "WILL", "HAVE", "BEEN", "UNITS", "WARRA"]);
 
-    // Attempt 1: Specific "Proposed Symbol" label with strict proximity (within 50 chars)
     let symbolFound = "";
-    // Regex explanation:
-    // Look for "Proposed ... symbol"
-    // Capture the Group 1 (Symbol)
-    const symbolMatch = text.match(/Proposed.{0,50}symbol.{0,50}[:\s]["']?([A-Z]{3,5})["']?/i);
 
-    if (symbolMatch && !symbolBlacklist.has(symbolMatch[1].toUpperCase())) {
-        symbolFound = symbolMatch[1].toUpperCase();
+    // Attempt 1: "Ordinary Shares: 'PAAC'" or "Class A ... : 'HIFI'"
+    const ordinaryMatch = text.match(/(?:Ordinary\s+Shares?|Class\s+[A-C]\s+(?:common\s+)?(?:stock|shares?))[:\s]*["'\u201c]?([A-Z]{3,5})["'\u201d]?/i);
+    if (ordinaryMatch && !symbolBlacklist.has(ordinaryMatch[1].toUpperCase())) {
+        symbolFound = ordinaryMatch[1].toUpperCase();
     }
 
+    // Attempt 2: "Proposed ticker symbol" or "Proposed trading symbol: 'HIFI'"
     if (!symbolFound) {
-        // Attempt 2: "Trading Symbol"
-        const fallbackSymbol = text.match(/trading\s+symbol.{0,50}[:\s]["']?([A-Z]{3,5})["']?/i);
+        const tickerMatch = text.match(/Proposed\s+(?:ticker|trading)?\s*symbol[s]?[:\s]+["'“]?([A-Z]{3,5})["'”]?/i);
+        if (tickerMatch && !symbolBlacklist.has(tickerMatch[1].toUpperCase())) {
+            symbolFound = tickerMatch[1].toUpperCase();
+        }
+    }
+
+    // Attempt 3: "Trading Symbol" fallback
+    if (!symbolFound) {
+        const fallbackSymbol = text.match(/trading\s+symbol[:\s]+["'\u201c]?([A-Z]{3,5})["'\u201d]?/i);
         if (fallbackSymbol && !symbolBlacklist.has(fallbackSymbol[1].toUpperCase())) {
             symbolFound = fallbackSymbol[1].toUpperCase();
         }
     }
 
+    // Attempt 4: Units symbol as last resort (for SPACs that only list units)
+    if (!symbolFound) {
+        const unitsMatch = text.match(/Units[:\s]+["'\u201c]?([A-Z]{3,5}U?)["'\u201d]?/i);
+        if (unitsMatch && !symbolBlacklist.has(unitsMatch[1].toUpperCase())) {
+            symbolFound = unitsMatch[1].toUpperCase();
+        }
+    }
+
     if (symbolFound) {
         data.pricing!.proposedSymbol = symbolFound;
+    }
+
+    // 1b. Exchange Listing
+    // Pattern: "list our ... on the Nasdaq Capital Market" or "NYSE American"
+    const exchangePatterns = [
+        /list(?:ed|ing)?[\s\S]{0,50}?(?:on\s+)?(?:the\s+)?(Nasdaq\s+(?:Capital\s+Market|Global\s+(?:Select\s+)?Market)|NYSE\s+(?:American)?|New\s+York\s+Stock\s+Exchange)/i,
+        /(?:Nasdaq\s+(?:Capital\s+Market|Global\s+(?:Select\s+)?Market)|NYSE\s+(?:American)?)[\s\S]{0,30}?(?:under\s+the\s+symbol)/i
+    ];
+
+    for (const pattern of exchangePatterns) {
+        const exchangeMatch = text.match(pattern);
+        if (exchangeMatch) {
+            let exchange = exchangeMatch[1] || exchangeMatch[0];
+            // Clean up
+            exchange = exchange.replace(/under\s+the\s+symbol.*/i, '').trim();
+            if (exchange.length > 5 && exchange.length < 40) {
+                data.pricing!.exchange = exchange;
+                break;
+            }
+        }
+    }
+
+    // 1c. Underwriters
+    // Priority 1: Look for known underwriter names NEAR underwriting keywords
+    // This avoids false positives from executive bios ("worked at Goldman Sachs")
+    const knownUnderwriters = [
+        'Clear Street', 'Goldman Sachs', 'Morgan Stanley', 'J.P. Morgan', 'JPMorgan',
+        'Credit Suisse', 'Citigroup', 'Bank of America', 'Barclays', 'UBS',
+        'Deutsche Bank', 'Jefferies', 'Cantor Fitzgerald', 'Maxim Group',
+        'Roth Capital', 'EF Hutton', 'ThinkEquity', 'Aegis Capital',
+        'Chardan Capital', 'Boustead Securities', 'B. Riley', 'Ladenburg Thalmann',
+        'Kingswood Capital', 'Alexander Capital', 'Network 1', 'WestPark Capital',
+        'Revere Securities', 'Univest Securities', 'Brookline Capital',
+        'Dawson James', 'Katalyst Securities', 'Joseph Gunnar'
+    ];
+    const foundUnderwriters: string[] = [];
+
+    // Find all positions of underwriting-related keywords
+    const underwriterKeywords = /(?:underwriter|book-running\s+manager|lead\s+manager)/gi;
+    const keywordMatches = [...text.matchAll(underwriterKeywords)];
+
+    for (const uw of knownUnderwriters) {
+        // Check if this underwriter name appears within 300 chars of any underwriting keyword
+        const uwIndex = text.indexOf(uw);
+        if (uwIndex !== -1) {
+            for (const kwMatch of keywordMatches) {
+                const kwIndex = kwMatch.index!;
+                // Check proximity: name should be within 300 chars before or after keyword
+                if (Math.abs(uwIndex - kwIndex) < 300) {
+                    if (!foundUnderwriters.includes(uw)) {
+                        foundUnderwriters.push(uw);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    if (foundUnderwriters.length > 0) {
+        data.pricing!.underwriters = foundUnderwriters.slice(0, 2).join(', ');
+    }
+
+    // Priority 2: Regex fallback (only if no known underwriters found)
+    if (!data.pricing!.underwriters) {
+        // Look for "Underwriter: [Name]" or "[Name] is acting as ... underwriter"
+        const underwriterPatterns = [
+            /(?:sole\s+)?(?:book-running\s+)?(?:underwriter|manager)[s]?\s+(?:is|are)\s+([A-Z][A-Za-z\s&,.]+?(?:LLC|Inc|LP|LLP|Capital|Securities|Group|Partners))/i,
+            /([A-Z][A-Za-z\s&]+?(?:LLC|Inc|LP|LLP|Capital|Securities|Group|Partners))\s+(?:is|are)\s+(?:acting\s+as\s+)?(?:the\s+)?(?:sole\s+)?underwriter/i
+        ];
+
+        for (const pattern of underwriterPatterns) {
+            const underwriterMatch = text.match(pattern);
+            if (underwriterMatch) {
+                let underwriters = underwriterMatch[1].trim();
+                // Clean up and validate - must look like a company name
+                underwriters = underwriters.replace(/[,.]$/, '').trim();
+                // Reject if it contains common non-name words
+                if (!/^(offering|the|a|an|to|for|on|in|with|as)\s/i.test(underwriters) &&
+                    underwriters.length > 5 && underwriters.length < 80) {
+                    data.pricing!.underwriters = underwriters;
+                    break;
+                }
+            }
+        }
     }
 
     // Capture Use of Proceeds (Snippet)

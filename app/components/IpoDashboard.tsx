@@ -3,7 +3,7 @@
 
 import { useState, useEffect } from 'react';
 import { IpoFiling } from '@/lib/ipo-scraper';
-import { RefreshCw, FileText, TrendingUp, DollarSign, PieChart, Activity, AlertCircle, X, Target } from 'lucide-react';
+import { RefreshCw, FileText, TrendingUp, DollarSign, PieChart, Activity, AlertCircle, X, Target, Building, Users } from 'lucide-react';
 
 interface IpoDashboardProps {
     theme: 'light' | 'dark';
@@ -216,6 +216,33 @@ export function IpoDashboard({ theme }: IpoDashboardProps) {
                                     </div>
                                     <div className={`text-xs mt-1 ${textMuted}`}>
                                         {selectedFiling.pricing?.sharesOutstanding ? "Post-Offering" : "Not Found"}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Exchange & Underwriters Row */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className={`p-4 rounded-xl border ${cardBg}`}>
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <div className="p-1.5 bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 rounded-md">
+                                            <Building className="h-4 w-4" />
+                                        </div>
+                                        <span className={`text-xs font-medium uppercase tracking-wide ${textMuted}`}>Exchange</span>
+                                    </div>
+                                    <div className={`text-base font-semibold ${textMain}`}>
+                                        {selectedFiling.pricing?.exchange || "Not Specified"}
+                                    </div>
+                                </div>
+
+                                <div className={`p-4 rounded-xl border ${cardBg}`}>
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <div className="p-1.5 bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400 rounded-md">
+                                            <Users className="h-4 w-4" />
+                                        </div>
+                                        <span className={`text-xs font-medium uppercase tracking-wide ${textMuted}`}>Underwriters</span>
+                                    </div>
+                                    <div className={`text-base font-semibold ${textMain}`}>
+                                        {selectedFiling.pricing?.underwriters || "Not Found"}
                                     </div>
                                 </div>
                             </div>

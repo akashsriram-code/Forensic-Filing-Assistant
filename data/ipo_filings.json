@@ -7,7 +7,8 @@
     "accessionNumber": "0001213900-26-004766",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/2087446/000121390026004766/ea0258380-03.htm",
     "pricing": {
-      "proposedSymbol": "WARRA",
+      "exchange": "Nasdaq Global Market",
+      "underwriters": "Clear Street",
       "useOfProceeds": ".” (2) Upon consummation of the Company’s initial business combination, a fee equal to $4,550,000 (or up to $5,232,500 to the extent the underwriters exercise their over-allotment option in full) will be payable to the underwriters, 50% of which is payable to Clear Street based on the",
       "sharesOffered": "13,000,000 Units",
       "priceRange": "$10.00 / Unit",
@@ -27,7 +28,9 @@
     "accessionNumber": "0001104659-26-004158",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/1776612/000110465926004158/tm2516611-15_s1a.htm",
     "pricing": {
-      "proposedSymbol": "THAT",
+      "proposedSymbol": "AXTN",
+      "exchange": "NYSE American",
+      "underwriters": "ThinkEquity",
       "useOfProceeds": "We estimate that the net proceeds from the sale of our common stock in this offering will be approximately $16.1 million (or approximately $18.9 million if the underwriters exercise their option to purchase additional shares of common stock in full), based on the assumed initial publ",
       "sharesOffered": "2,222,222",
       "priceRange": "$8.00 - $10.00",
@@ -47,6 +50,8 @@
     "accessionNumber": "0001477932-26-000239",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/2065707/000147793226000239/hillhouse_s1a.htm",
     "pricing": {
+      "proposedSymbol": "HILLH",
+      "exchange": "Nasdaq Capital Market",
       "useOfProceeds": "We intend to use the proceeds from this offering to fund working capital and for other general corporate purposes in support of our current business to supply vehicles sourced in the U.S. to be sold to our overseas client and to finance the development of our proposed car subscriptio",
       "sharesOffered": "3,750,000",
       "priceRange": "$4.00",
@@ -69,7 +74,9 @@
     "accessionNumber": "0001477932-26-000218",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/2076561/000147793226000218/ptree_s1a.htm",
     "pricing": {
-      "proposedSymbol": "RIGHT",
+      "proposedSymbol": "PINE",
+      "exchange": "Nasdaq Global Market",
+      "underwriters": "Maxim Group",
       "useOfProceeds": ".” 2. Represents the value of 45-day over-allotment option from the date of this offering granted to the underwriter to purchase an aggregate of up to 1,500,000 additional units at the initial public offering price less the underwriting commissions. The over-allotment option is deemed",
       "sharesOffered": "10,000,000 Units",
       "priceRange": "$10.00 / Unit",
@@ -89,7 +96,9 @@
     "accessionNumber": "0001185185-26-000177",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/2075036/000118518526000177/evonexusf1011326.htm",
     "pricing": {
-      "proposedSymbol": "SHARE",
+      "proposedSymbol": "EVONE",
+      "exchange": "Nasdaq Capital Market",
+      "underwriters": "Kingswood Capital",
       "useOfProceeds": ".” Lock-up We have agreed with the underwriter, subject to certain exceptions, not to sell, transfer or otherwise dispose of any Ordinary Shares or similar securities for a period ending six (6) months from the closing of this offering. Each of our directors, executive officers and ho",
       "sharesOffered": "1,000,000",
       "priceRange": "$4.00",
@@ -107,6 +116,8 @@
     "accessionNumber": "0001213900-26-004713",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/1808110/000121390026004713/ea0262408-f1_ddcenter.htm",
     "pricing": {
+      "proposedSymbol": "THIS",
+      "exchange": "NYSE American",
       "useOfProceeds": "All Class A Ordinary Shares offered by this prospectus are being registered for the accounts of the Selling Shareholder and we will not receive any proceeds from the sale of these shares. DIVIDEND POLICY For the years ended December 31, 2024, 2023 and 2022 and as of the date hereof,",
       "sharesOffered": "3,200,000",
       "priceRange": "$3.19",
@@ -128,6 +139,9 @@
     "accessionNumber": "0001213900-26-004386",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/1735041/000121390026004386/ea0272524-s1a1_greenland.htm",
     "pricing": {
+      "proposedSymbol": "OFFER",
+      "exchange": "Nasdaq Capital Market",
+      "underwriters": "not making an offer to sell these securities",
       "useOfProceeds": "We estimate that the net proceeds from this offering, after deducting underwriting discounts, non-accountable expense allowance, advisory fees, and estimated offering expenses payable by us, will be approximately $5.16 million (based on an assumed public offering price of $0.99 per U",
       "sharesOffered": "100",
       "priceRange": "$0.99",
@@ -147,7 +161,8 @@
     "accessionNumber": "0001493152-26-002311",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/2073819/000149315226002311/formf-1a.htm",
     "pricing": {
-      "proposedSymbol": "PROCE",
+      "proposedSymbol": "JSTT",
+      "exchange": "Nasdaq Capital Market",
       "useOfProceeds": "We estimate that we will receive up to approximately $13,240,000. These proceeds will be used to expand our real estate acquisition and enhancement business in net proceeds from the assumed sale of 3,750,000 Common Shares offered by us in this offering, based on an assumed public off",
       "sharesOffered": "884,380",
       "priceRange": "$4.00 - $6.00",
@@ -167,7 +182,8 @@
     "accessionNumber": "0001213900-26-004424",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/2043392/000121390026004424/ea0272732-f1_sibo.htm",
     "pricing": {
-      "proposedSymbol": "SHARE",
+      "proposedSymbol": "THIS",
+      "exchange": "Nasdaq Capital Market",
       "useOfProceeds": "We estimate that we will receive net proceeds from this offering of approximately $12.92 million, or approximately $14.97 million if the Underwriter exercises the over-allotment option in full, after deducting underwriting discounts, the Underwriter’s non-accountable allowance and ot",
       "sharesOffered": "2,500,000,000",
       "priceRange": "$4.00",
@@ -189,6 +205,9 @@
     "accessionNumber": "0001753926-26-000110",
     "reportUrl": "https://www.sec.gov/Archives/edgar/data/2081206/000175392626000110/g085053_f1.htm",
     "pricing": {
+      "proposedSymbol": "AGI",
+      "exchange": "New York Stock Exchange",
+      "underwriters": "Goldman Sachs, Morgan Stanley",
       "useOfProceeds": "We estimate that the net proceeds to us from the sale of Class A common shares in this offering will be approximately US$ , based upon the assumed initial public offering price of US$ per Class A common share, which is the midpoint of the estimated offering price range set forth on t"
     },
     "financials": {
