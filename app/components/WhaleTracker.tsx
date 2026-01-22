@@ -521,6 +521,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                                 <th className="px-6 py-3">Fund Name</th>
                                                 <th className="px-6 py-3 text-right">Shares Held</th>
                                                 <th className="px-6 py-3 text-right">Position Value</th>
+                                                <th className="px-6 py-3 text-right">Trend (History)</th>
                                                 <th className="px-6 py-3 text-right">Filing Date</th>
                                             </tr>
                                         </thead>
@@ -533,12 +534,32 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                                     </td>
                                                     <td className="px-6 py-3 text-right font-mono text-xs">{formatNumber(f.shares)}</td>
                                                     <td className="px-6 py-3 text-right font-mono text-xs font-bold text-emerald-500">${formatNumber(f.value)} k</td>
+                                                    <td className="px-6 py-3 text-right w-32 h-16">
+                                                        {/* Sparkline */}
+                                                        {f.history && f.history.length > 1 ? (
+                                                            <div className="w-24 h-10 ml-auto">
+                                                                <ResponsiveContainer width="100%" height="100%">
+                                                                    <LineChart data={f.history}>
+                                                                        <Line
+                                                                            type="monotone"
+                                                                            dataKey="value"
+                                                                            stroke={f.value > (f.history[0]?.value || 0) ? "#10b981" : "#ef4444"}
+                                                                            strokeWidth={2}
+                                                                            dot={false}
+                                                                        />
+                                                                    </LineChart>
+                                                                </ResponsiveContainer>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-xs opacity-30">No History</span>
+                                                        )}
+                                                    </td>
                                                     <td className="px-6 py-3 text-right text-xs opacity-60">{f.filing_date}</td>
                                                 </tr>
                                             ))}
                                             {reverseData.funds.length === 0 && (
                                                 <tr>
-                                                    <td colSpan={4} className="px-6 py-8 text-center opacity-50">No funds found holding this stock in the current database.</td>
+                                                    <td colSpan={5} className="px-6 py-8 text-center opacity-50">No funds found holding this stock in the current database.</td>
                                                 </tr>
                                             )}
                                         </tbody>

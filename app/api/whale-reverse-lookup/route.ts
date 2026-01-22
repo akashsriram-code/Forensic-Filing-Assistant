@@ -1,14 +1,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@libsql/client';
-import { fetchCIK } from '@/lib/sec-client';
 
-// We need to resolve Ticker -> Name because 13Fs store Names.
-// Reusing fetchCIK to get CIK is okay, but we really need the Company Name associated with the ticker.
-// fetchCIK in lib returns a CIK string. It parses company_tickers.json internally but doesn't expose the name.
-// We should probably modify lib/sec-client to export a function `getCompanyName(ticker)` or just fetch the json here and cache it.
-// For speed, let's just fetch the json here (Next.js caches fetch).
-
+// Cache for Ticker -> Name resolution
 const CACHE_REVALIDATE = 3600;
 
 async function getCompanyName(ticker: string): Promise<string | null> {
@@ -47,16 +41,20 @@ export async function POST(req: NextRequest) {
 
         console.log(`[ReverseLookup] Searching for holders of: ${ticker} (${companyName})`);
 
-        // Connect to Turso
         const turso = createClient({
             url: process.env.TURSO_DATABASE_URL!,
             authToken: process.env.TURSO_AUTH_TOKEN!,
         });
 
         // Search Query
-        // We match Issuer Name using LIKE. 13F names are often uppercase.
-        // Also limit to latest quarter per fund? 
-        // Logic: Get all holdings matching name, then group by Fund, take latest filing date.
+        // 1. Find all holdings for this issuer across ALL quarters.
+        // 2. We use a LIKE query on the Issuer Name.
+        //    Note: This can be noisy if "Apple" matches "Apple Hospitality". 
+        //    Refining search to be stricter: 
+
+        // Clean company name for search: "APPLE INC." -> "APPLE"
+        const searchName = companyName.toUpperCase().split(' ')[0].replace(/[^A-Z0-9]/g, '');
+        const searchPattern = `${searchName}%`;
 
         const query = `
             SELECT 
@@ -71,41 +69,54 @@ export async function POST(req: NextRequest) {
             JOIN funds f ON fil.cik = f.cik 
             WHERE 
                 h.issuer LIKE ? 
-            ORDER BY h.value DESC 
-            LIMIT 100
+            ORDER BY fil.filing_date ASC
         `;
 
-        // Attempt 1: Exact start match or contains
-        // "APPLE INC" -> "APPLE INC" or "APPLE INC."
-        const searchName = companyName.toUpperCase().replace(/\./g, '').split(' ')[0]; // "APPLE"
-        // This is a bit loose. Better to use the full name param.
-        const searchPattern = `%${searchName}%`;
-
-        // LibSQL uses :param or ? but verify support.
-        // It supports ?.
         const rs = await turso.execute({ sql: query, args: [searchPattern] });
-        const results = rs.rows;
 
-        // Group by Fund to deduplicate if multiple filings (rare if we only ingested one quarter per fund, but possible if amendment)
-        // We want the LATEST entry for each fund.
-        const uniqueFunds = new Map<string, any>();
-        for (const row of results as any[]) {
-            if (!uniqueFunds.has(row.cik)) {
-                uniqueFunds.set(row.cik, row);
-            } else {
-                // If this row is newer?
-                // For now, simpler to just take the first one (sorted by value might not imply date, but usually close).
-                // Let's rely on the query or post-filter.
+        // Aggregation Logic
+        // Map<CIK, FundData>
+        const fundsMap = new Map<string, any>();
+
+        for (const row of rs.rows as any[]) {
+            if (!fundsMap.has(row.cik)) {
+                fundsMap.set(row.cik, {
+                    fundName: row.fundName,
+                    cik: row.cik,
+                    shares: 0, // Will be set to latest
+                    value: 0,  // Will be set to latest
+                    history: []
+                });
             }
+
+            const fund = fundsMap.get(row.cik);
+
+            // Add to history
+            const point = {
+                date: row.filing_date,
+                quarter: row.quarter,
+                shares: row.shares,
+                value: row.value
+            };
+            fund.history.push(point);
+
+            // Update "Current" to be the latest entry processed (Rows are sorted by Date ASC)
+            fund.shares = row.shares;
+            fund.value = row.value;
         }
 
-        const finalResults = Array.from(uniqueFunds.values()).sort((a, b) => b.value - a.value);
+        // Convert to array and sort by Current Value DESC
+        const allFunds = Array.from(fundsMap.values());
+        const sortedFunds = allFunds.sort((a, b) => b.value - a.value);
+
+        // Limit top 100 to avoid sending huge payload
+        const topFunds = sortedFunds.slice(0, 100);
 
         return NextResponse.json({
             ticker,
             companyName,
-            matchCount: finalResults.length,
-            funds: finalResults
+            matchCount: allFunds.length,
+            funds: topFunds
         });
 
     } catch (error: any) {
