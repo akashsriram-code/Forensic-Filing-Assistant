@@ -53,6 +53,10 @@ interface ActivistFiling {
     primaryDocument: string;
     description: string;
     reportDate: string;
+    reportingPerson?: string;
+    percentClass?: string;
+    shares?: string;
+    purpose?: string;
 }
 
 const COLORS = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ef4444', '#64748b'];
@@ -763,7 +767,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                     </div>
 
                     {activistData && (
-                        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2">
+                        <div key="activist-container" className="space-y-8 animate-in fade-in slide-in-from-bottom-2">
                             <div className={`rounded-xl border overflow-hidden ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900/30' : 'border-gray-200 bg-white'}`}>
                                 <div className={`px-6 py-4 border-b flex items-center gap-2 ${theme === 'dark' ? 'border-zinc-800' : 'border-gray-100'}`}>
                                     <Megaphone className="w-5 h-5 text-red-500" />
@@ -773,17 +777,27 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                     <thead className={`text-xs uppercase font-medium ${theme === 'dark' ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500'}`}>
                                         <tr>
                                             <th className="px-6 py-3">Filing Date</th>
-                                            <th className="px-6 py-3">Type</th>
-                                            <th className="px-6 py-3">Description</th>
+                                            <th className="px-6 py-3">Reporting Person</th>
+                                            <th className="px-6 py-3">Stake</th>
+                                            <th className="px-6 py-3">Purpose / Notes</th>
                                             <th className="px-6 py-3 text-right">Access</th>
                                         </tr>
                                     </thead>
                                     <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700'}`}>
                                         {activistData.map((f, i) => (
                                             <tr key={i} className="hover:opacity-70 transition-opacity">
-                                                <td className="px-6 py-3 font-mono text-xs">{f.filingDate}</td>
-                                                <td className="px-6 py-3 font-bold text-xs">{f.form}</td>
-                                                <td className="px-6 py-3 text-xs opacity-80">{f.description}</td>
+                                                <td className="px-6 py-3 font-mono text-xs whitespace-nowrap">{f.filingDate}</td>
+                                                <td className="px-6 py-3">
+                                                    <div className="text-xs font-bold">{f.reportingPerson || "Unknown"}</div>
+                                                    <div className="text-[10px] opacity-60">{f.form}</div>
+                                                </td>
+                                                <td className="px-6 py-3">
+                                                    <div className="text-xs font-mono font-bold text-emerald-500">{f.percentClass || "N/A"}</div>
+                                                    <div className="text-[10px] opacity-60 font-mono">{f.shares ? `${new Intl.NumberFormat('en-US', { notation: "compact" }).format(parseInt(f.shares))} shares` : ''}</div>
+                                                </td>
+                                                <td className="px-6 py-3 text-xs opacity-80 max-w-xs truncate" title={f.purpose}>
+                                                    {f.purpose || f.description}
+                                                </td>
                                                 <td className="px-6 py-3 text-right">
                                                     <a href={f.url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-blue-500 hover:underline">
                                                         Read Filing

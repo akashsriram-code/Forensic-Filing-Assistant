@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchCIK, fetchSubmission } from '@/lib/sec-client';
+import { fetchCIK, fetchSubmission, fetchFilingContent, generateSecUrl } from '@/lib/sec-client';
+import { parseSC13DText } from '@/lib/sc13d-parser';
+
+export const dynamic = 'force-dynamic'; // Prevent caching of filings
 
 export async function POST(req: NextRequest) {
     try {
@@ -29,14 +32,45 @@ export async function POST(req: NextRequest) {
         for (let i = 0; i < recent.form.length; i++) {
             const formType = recent.form[i];
             if (formType === 'SC 13D' || formType === 'SC 13D/A') {
+                const accessionNumber = recent.accessionNumber[i];
+                const primaryDocument = recent.primaryDocument[i];
+                const filingUrl = generateSecUrl(cik, accessionNumber, primaryDocument);
+
+                // Fetch content only for top 10 (to avoid timeouts)
+                // We'll process them in parallel later if needed, but for now serial is safer for rate limits
+
+                let details = {
+                    reportingPerson: "Loading...",
+                    percentClass: "N/A",
+                    purpose: "See filing..."
+                };
+
+                // Only parse deep content for the top 5 most recent to save time
+                if (activistFilings.length < 5) {
+                    try {
+                        const content = await fetchFilingContent(filingUrl);
+                        if (content) {
+                            const parsed = parseSC13DText(content);
+                            details = {
+                                reportingPerson: parsed.reportingPerson,
+                                percentClass: parsed.percentClass,
+                                purpose: parsed.purpose
+                            };
+                        }
+                    } catch (e) {
+                        console.error(`Failed to parse ${filingUrl}:`, e);
+                    }
+                }
+
                 activistFilings.push({
                     form: formType,
-                    accessionNumber: recent.accessionNumber[i],
+                    accessionNumber: accessionNumber,
                     filingDate: recent.filingDate[i],
                     reportDate: recent.reportDate[i],
-                    primaryDocument: recent.primaryDocument[i],
+                    primaryDocument: primaryDocument,
                     description: recent.primaryDocDescription[i],
-                    url: `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${recent.accessionNumber[i].replace(/-/g, '')}/${recent.primaryDocument[i]}`
+                    url: filingUrl,
+                    ...details
                 });
             }
         }
