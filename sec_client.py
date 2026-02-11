@@ -110,6 +110,30 @@ class SECClient:
                 pass
         return None
     
+    def get_ticker(self, cik: str) -> str:
+        """Resolve Ticker from CIK using SEC bulk data."""
+        cik_str = str(int(cik)) # Remove padding
+        
+        # 1. Check internal map reverse
+        for t, c in self.CIK_MAP.items():
+            if str(int(c)) == cik_str:
+                return t
+                
+        # 2. Lazy load full map if needed (basic caching)
+        if not hasattr(self, '_ticker_map'):
+            print("[SEC] Building CIK->Ticker map...")
+            self._ticker_map = {}
+            try:
+                resp = self._fetch("https://www.sec.gov/files/company_tickers.json")
+                if resp:
+                    data = resp.json()
+                    for entry in data.values():
+                        self._ticker_map[str(entry['cik_str'])] = entry['ticker']
+            except Exception as e:
+                print(f"[SEC] Map build error: {e}")
+        
+        return self._ticker_map.get(cik_str, "UNKNOWN")
+    
     def get_submissions(self, cik: str) -> dict | None:
         """Get company submissions JSON."""
         url = f"https://data.sec.gov/submissions/CIK{cik}.json"
@@ -250,6 +274,85 @@ class SECClient:
         except Exception as e:
             print(f"[SEC] RSS parse error: {e}")
         
+        return filings
+
+    def get_latest_filings(self, form_type: str, count: int = 40) -> list[dict]:
+        """Get latest filings from ALL companies via SEC RSS feed."""
+        import datetime
+        # Clean form type for URL (e.g. 10-K, 10-Q)
+        type_param = form_type.replace(" ", "+")
+        url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type={type_param}&company=&dateb=&owner=include&start=0&count={count}&output=atom"
+        
+        print(f"[SEC] Fetching latest {form_type} filings from market...")
+        resp = self._fetch(url)
+        
+        if not resp:
+            return []
+        
+        filings = []
+        try:
+            import xml.etree.ElementTree as ET
+            # Remove namespace for easier parsing
+            xml_text = re.sub(r'\sxmlns[^"]*"[^"]*"', '', resp.text)
+            root = ET.fromstring(xml_text)
+            entries = root.findall('.//entry')
+            print(f"[SEC] RSS feed contains {len(entries)} entries")
+            
+            for entry in entries:
+
+                title = entry.find('title').text
+                # Title format usually: "10-K - Microsoft Corp (0000789019) (Filer)"
+                
+                # Extract CIK and Company Name
+                cik_match = re.search(r'\((\d{10})\)', title)
+                cik = cik_match.group(1) if cik_match else "Unknown"
+                
+                updated = entry.find('updated')
+                date_str = updated.text[:10] if updated is not None else datetime.datetime.now().strftime("%Y-%m-%d")
+                print(f"[SEC] Entry: {title[:50]}... Date: {date_str}")
+                
+                # Link format: https://www.sec.gov/Archives/edgar/data/789019/000095017025123456/0000950170-25-123456-index.htm
+                link = entry.find('link')
+                if link is not None:
+                    href = link.get('href', '')
+                    
+                    acc_match = re.search(r'/(\d{10}-\d{2}-\d{6})', href)
+                    if acc_match:
+                        acc = acc_match.group(1)
+                        acc_clean = acc.replace("-", "")
+                        cik_clean = str(int(cik)) # Remove leading zeros for URL
+                        
+                        updated = entry.find('updated')
+                        date_str = updated.text[:10] if updated is not None else datetime.datetime.now().strftime("%Y-%m-%d")
+                        print(f"[SEC] Entry: {title[:50]}... Date: {date_str}")
+
+                        # Resolve primary document URL
+                        primary_doc = "unknown.htm"
+                        real_url = href
+                        
+                        # Only resolve if we are going to use it (count check is later, but we need it for the dict)
+                        # To save time, we could lazily resolve, but let's just do it.
+                        if len(filings) < count:
+                            primary_doc = self._get_primary_doc_from_index(href, cik_clean, acc) or f"{acc_clean}.htm"
+                            real_url = f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc_clean}/{primary_doc}"
+
+                        filings.append({
+                            "form": form_type,
+                            "accession": acc,
+                            "accession_clean": acc_clean,
+                            "cik": cik,
+                            "ticker": self.get_ticker(cik), 
+                            "primary_doc": primary_doc, 
+                            "date": date_str,
+                            "url": real_url,
+                            "folder_url": f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc_clean}/"
+                        })
+                        
+                        if len(filings) >= count:
+                            break
+        except Exception as e:
+            print(f"[SEC] Latest RSS parse error: {e}")
+            
         return filings
 
     def _get_primary_doc_from_index(self, index_url: str, cik: str, acc: str) -> str | None:
@@ -401,9 +504,44 @@ class SECClient:
         return []
     
     def download_filing(self, url: str) -> str | None:
-        """Download filing HTML content."""
+        """Download filing HTML content and extract clean text."""
         resp = self._fetch(url)
-        return resp.text if resp else None
+        if not resp:
+            return None
+        
+        try:
+            import re
+            from bs4 import BeautifulSoup
+            
+            html = resp.text
+            
+            # Step 1: Strip ALL XML/XBRL namespace tags using universal regex
+            # This removes ANY tag with a colon (namespace prefix) like ix:, xbrli:, etc.
+            html = re.sub(r'<[a-zA-Z0-9_-]+:[^>]*>.*?</[a-zA-Z0-9_-]+:[^>]*>', '', html, flags=re.DOTALL)
+            html = re.sub(r'<[a-zA-Z0-9_-]+:[^/>]*/>', '', html)  # Self-closing
+            
+            # Step 2: Remove XML declaration and comments
+            html = re.sub(r'<\?xml[^>]*\?>', '', html)
+            html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
+            
+            # Step 3: Parse with BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Remove script, style, and metadata elements
+            for element in soup(['script', 'style', 'head', 'meta', 'link', 'title']):
+                element.decompose()
+            
+            # Get text with reasonable separator
+            text = soup.get_text(separator='\n', strip=True)
+            
+            # Step 4: Clean up excessive whitespace
+            text = re.sub(r'\n{3,}', '\n\n', text)  # Max 2 newlines
+            text = re.sub(r'[ \t]+', ' ', text)      # Collapse spaces
+            
+            return text
+        except Exception as e:
+            print(f"[SEC] Error parsing HTML: {e}")
+            return resp.text  # Fallback to raw
     
     def get_risk_factors(self, cik: str, ticker: str = None) -> dict:
         """Get risk factors (Item 1A) - tries LOCAL first, then download/extract."""

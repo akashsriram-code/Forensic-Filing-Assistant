@@ -1,7 +1,7 @@
-"use client";
+﻿"use client";
 
 import { useState } from 'react';
-import { Download, X, Search, Loader2, TrendingUp, TrendingDown, CirclePlus, Plus, Users, GitMerge, Database } from 'lucide-react';
+import { Download, X, Search, Loader2, TrendingUp, TrendingDown, CirclePlus, Plus, Users, GitMerge, Database, Megaphone } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter, ReferenceLine } from 'recharts';
 import { getSector } from '@/lib/sectors';
 import { TickerSearch } from './TickerSearch';
@@ -46,6 +46,15 @@ interface ClusterData {
     overlap: { count: number, holdings: ClusterHolding[] };
 }
 
+interface ActivistFiling {
+    form: string;
+    filingDate: string;
+    url: string;
+    primaryDocument: string;
+    description: string;
+    reportDate: string;
+}
+
 const COLORS = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ef4444', '#64748b'];
 
 // --- Tooltips ---
@@ -78,7 +87,7 @@ const CustomScatterTooltip = ({ active, payload, theme }: any) => {
 };
 
 export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
-    const [viewMode, setViewMode] = useState<'single' | 'compare' | 'reverse'>('single');
+    const [viewMode, setViewMode] = useState<'single' | 'compare' | 'reverse' | 'activist'>('single');
 
     // Single Mode State
     const [ticker, setTicker] = useState("");
@@ -97,27 +106,60 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
     const [historyData, setHistoryData] = useState<any[] | null>(null);
     const [selectedHolding, setSelectedHolding] = useState<string | null>(null);
 
-    // Reverse Lookup State
+    // Reverse Lookup State (Existing)
     const [reverseTicker, setReverseTicker] = useState("");
     const [reverseData, setReverseData] = useState<any | null>(null);
 
-    // --- Handlers ---
+    // Activist Watch State
+    const [activistTicker, setActivistTicker] = useState("");
+    const [activistData, setActivistData] = useState<ActivistFiling[] | null>(null);
+    // NEW: Popout State
+    const [selectedFundHistory, setSelectedFundHistory] = useState<any[] | null>(null);
+    const [selectedFundName, setSelectedFundName] = useState<string | null>(null);
+
+    // --- Handlers (Existing) ---
+    // ...
+
+
+
 
     const handleAnalyze = async () => {
         if (!ticker) return;
         setLoading(true);
         setError("");
         setData(null);
+        setActivistData(null);
 
         try {
-            const res = await fetch('/api/whale-tracker', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ticker })
-            });
-            const result = await res.json();
-            if (!res.ok) throw new Error(result.error || "Analysis failed");
-            setData(result);
+            // Parallel Fetch: 13F (Holdings) + 13D (Activist)
+            const [resWhale, resActivist] = await Promise.all([
+                fetch('/api/whale-tracker', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker })
+                }),
+                fetch('/api/whale-activist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker })
+                })
+            ]);
+
+            const resultWhale = await resWhale.json();
+
+            // Allow activist to fail (it's secondary)
+            let resultActivist = null;
+            if (resActivist.ok) {
+                resultActivist = await resActivist.json();
+            }
+
+            if (!resWhale.ok) throw new Error(resultWhale.error || "Analysis failed");
+
+            setData(resultWhale);
+            if (resultActivist && resultActivist.filings) {
+                setActivistData(resultActivist.filings);
+            }
+
         } catch (e: any) {
             setError(e.message || "An error occurred");
         } finally {
@@ -152,15 +194,57 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         setLoading(true);
         setError("");
         setReverseData(null);
+        setActivistData(null);
         try {
-            const res = await fetch('/api/whale-reverse-lookup', {
+            // Parallel Fetch: Reverse Lookup + 13D (Activist)
+            const [resReverse, resActivist] = await Promise.all([
+                fetch('/api/whale-reverse-lookup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker: reverseTicker })
+                }),
+                fetch('/api/whale-activist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker: reverseTicker })
+                })
+            ]);
+
+            const result = await resReverse.json();
+
+            // Allow activist to fail
+            let resultActivist = null;
+            if (resActivist.ok) {
+                resultActivist = await resActivist.json();
+            }
+
+            if (!resReverse.ok) throw new Error(result.error || "Lookup failed");
+            setReverseData(result);
+            if (resultActivist && resultActivist.filings) {
+                setActivistData(resultActivist.filings);
+            }
+
+        } catch (e: any) {
+            setError(e.message || "An error occurred");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleActivistSearch = async () => {
+        if (!activistTicker) return;
+        setLoading(true);
+        setError("");
+        setActivistData(null);
+        try {
+            const res = await fetch('/api/whale-activist', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ticker: reverseTicker })
+                body: JSON.stringify({ ticker: activistTicker })
             });
             const result = await res.json();
-            if (!res.ok) throw new Error(result.error || "Lookup failed");
-            setReverseData(result);
+            if (!res.ok) throw new Error(result.error || "Analysis failed");
+            setActivistData(result.filings || []);
         } catch (e: any) {
             setError(e.message || "An error occurred");
         } finally {
@@ -271,9 +355,81 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
     const scatterData = data?.allChanges.filter(h => h.value > 1000).map(h => ({ name: h.issuer, x: h.value * 1000, y: h.percentChange > 200 ? 200 : (h.percentChange < -100 ? -100 : h.percentChange), originalPercent: h.percentChange, fill: h.change > 0 ? '#10b981' : (h.change < 0 ? '#ef4444' : '#94a3b8') })) || [];
 
 
+
+    // Reverse History Modal
+    const renderReverseHistoryModal = () => (
+        selectedFundHistory && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+                <div className={`w-full max-w-4xl p-6 rounded-2xl shadow-2xl relative ${theme === 'dark' ? 'bg-zinc-900 border border-zinc-700' : 'bg-white'}`}>
+                    <button
+                        onClick={() => { setSelectedFundHistory(null); setSelectedFundName(null); }}
+                        className="absolute top-4 right-4 p-2 rounded-full hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                    >
+                        <X className="w-5 h-5" />
+                    </button>
+                    <h2 className="text-xl font-bold mb-1">Conviction History: {selectedFundName}</h2>
+                    <p className="text-sm opacity-60 mb-6">Tracking position across recent filings</p>
+
+                    <div className="space-y-6">
+                        {/* Chart */}
+                        <div className="h-80 w-full animate-in fade-in zoom-in-95 duration-300">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={selectedFundHistory}>
+                                    <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                                    <XAxis dataKey="date" fontSize={12} tickFormatter={(val) => val} />
+                                    <YAxis yAxisId="left" fontSize={12} tickFormatter={(val) => `$${formatNumber(val * 1000)}`} />
+                                    <YAxis yAxisId="right" orientation="right" fontSize={12} tickFormatter={(val) => formatNumber(val)} />
+                                    <Tooltip contentStyle={{ backgroundColor: theme === 'dark' ? '#18181b' : 'white', borderColor: '#333' }} labelStyle={{ color: theme === 'dark' ? 'white' : 'black' }} />
+                                    <Legend />
+                                    <Line yAxisId="left" type="monotone" dataKey="value" name="Value ($)" stroke="#10b981" strokeWidth={2} dot={{ r: 4 }} />
+                                    <Line yAxisId="right" type="monotone" dataKey="shares" name="Shares" stroke="#3b82f6" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        </div>
+
+                        {/* Detailed Table */}
+                        <div className={`rounded-xl border overflow-hidden ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900/30' : 'border-gray-200 bg-zinc-50'}`}>
+                            <table className="w-full text-sm text-left">
+                                <thead className={`text-xs uppercase font-medium ${theme === 'dark' ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-100 text-gray-500'}`}>
+                                    <tr>
+                                        <th className="px-6 py-3">Filing Date</th>
+                                        <th className="px-6 py-3 text-right">Shares</th>
+                                        <th className="px-6 py-3 text-right">Value</th>
+                                        <th className="px-6 py-3 text-right">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-200 text-gray-700'}`}>
+                                    {[...selectedFundHistory].reverse().map((point, i, arr) => {
+                                        // Calculate change from PREVIOUS (which is next in reversed array, i+1)
+                                        const prev = arr[i + 1];
+                                        const change = prev ? point.shares - prev.shares : 0;
+                                        const changePercent = prev && prev.shares > 0 ? (change / prev.shares) * 100 : 0;
+
+                                        return (
+                                            <tr key={i}>
+                                                <td className="px-6 py-3 font-mono text-xs">{point.date} ({point.quarter})</td>
+                                                <td className="px-6 py-3 text-right font-mono text-xs">{formatNumber(point.shares)}</td>
+                                                <td className="px-6 py-3 text-right font-mono text-xs">${formatNumber(point.value)} k</td>
+                                                <td className={`px-6 py-3 text-right font-mono text-xs font-bold ${change > 0 ? 'text-emerald-500' : (change < 0 ? 'text-red-500' : 'opacity-50')}`}>
+                                                    {change > 0 ? '+' : ''}{change !== 0 ? `${formatNumber(change)} (${changePercent.toFixed(1)}%)` : '-'}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )
+    );
+
     return (
+
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500 relative">
             {renderHistoryModal()}
+            {renderReverseHistoryModal()}
 
             {/* View Mode Tabs */}
             <div className="flex justify-center mb-6">
@@ -295,6 +451,12 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                         className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all flex items-center gap-2 ${viewMode === 'reverse' ? (theme === 'dark' ? 'bg-zinc-800 text-white' : 'bg-gray-100 text-gray-900') : 'text-gray-500 hover:text-gray-700'}`}
                     >
                         <Database className="w-3 h-3" /> Stock Search
+                    </button>
+                    <button
+                        onClick={() => setViewMode('activist')}
+                        className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all flex items-center gap-2 ${viewMode === 'activist' ? (theme === 'dark' ? 'bg-zinc-800 text-white' : 'bg-gray-100 text-gray-900') : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                        <Megaphone className="w-3 h-3" /> Activist Watch
                     </button>
                 </div>
             </div>
@@ -329,8 +491,9 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                 </div>
                                 <div className="flex items-center gap-4">
                                     <div className={`text-xs font-mono ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>
-                                        {data.filingDatePrev} <span className="mx-1">→</span> {data.filingDateCurr}
+                                        {data.filingDatePrev} <span className="mx-1">â†’</span> {data.filingDateCurr}
                                     </div>
+
                                     <button onClick={() => handleDownloadCSV(data.allChanges, `${data.ticker}_QoQ_changes`)} className={`text-xs flex items-center gap-1 font-medium hover:underline text-emerald-500`}>
                                         <Download className="w-3 h-3" /> Export CSV
                                     </button>
@@ -506,6 +669,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
 
                         {reverseData && (
                             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2">
+
                                 <div className="flex items-center justify-between px-2">
                                     <div className="flex items-center gap-2">
                                         <Database className={`h-5 w-5 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-400'}`} />
@@ -533,11 +697,20 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                                         <div className="text-[10px] opacity-50">CIK: {f.cik}</div>
                                                     </td>
                                                     <td className="px-6 py-3 text-right font-mono text-xs">{formatNumber(f.shares)}</td>
-                                                    <td className="px-6 py-3 text-right font-mono text-xs font-bold text-emerald-500">${formatNumber(f.value)} k</td>
-                                                    <td className="px-6 py-3 text-right w-32 h-16">
+                                                    <td className="px-6 py-3 text-right font-mono text-xs font-bold text-emerald-500">${formatNumber(f.value)}</td>
+                                                    <td
+                                                        className="px-6 py-3 text-right w-32 h-16 cursor-pointer hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            if (f.history && f.history.length > 0) {
+                                                                setSelectedFundHistory(f.history);
+                                                                setSelectedFundName(f.fundName);
+                                                            }
+                                                        }}
+                                                    >
                                                         {/* Sparkline */}
                                                         {f.history && f.history.length > 1 ? (
-                                                            <div className="w-24 h-10 ml-auto">
+                                                            <div className="w-24 h-10 ml-auto pointer-events-none">
                                                                 <ResponsiveContainer width="100%" height="100%">
                                                                     <LineChart data={f.history}>
                                                                         <Line
@@ -569,6 +742,67 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                         )}
                     </>
                 )}
+
+            {/* ACTIVIST WATCH TAB */}
+            {viewMode === 'activist' && (
+                <>
+                    <div className={`p-8 rounded-2xl border transition-all ${theme === 'dark' ? 'bg-zinc-900/50 border-zinc-800 shadow-xl' : 'bg-white border-gray-200 shadow-sm'}`}>
+                        <div className="max-w-2xl mx-auto text-center mb-8">
+                            <h2 className={`text-2xl font-bold tracking-tight mb-2 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>Activist Watch</h2>
+                            <p className={`text-sm ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Monitor hostile takeovers and activist campaigns (SC 13D).</p>
+                        </div>
+                        <div className="max-w-xl mx-auto flex gap-3">
+                            <div className="relative flex-1">
+                                <TickerSearch value={activistTicker} onChange={setActivistTicker} onSelect={handleActivistSearch} theme={theme} placeholder="Fund Name or Target Company" />
+                            </div>
+                            <button onClick={handleActivistSearch} disabled={loading} className={`px-6 font-medium rounded-lg text-sm ${theme === 'dark' ? 'bg-white text-black' : 'bg-gray-900 text-white'}`}>
+                                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Scan Filings"}
+                            </button>
+                        </div>
+                        {error && <div className="mt-4 text-center text-sm font-medium text-red-500 bg-red-500/5 p-2 rounded">{error}</div>}
+                    </div>
+
+                    {activistData && (
+                        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2">
+                            <div className={`rounded-xl border overflow-hidden ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900/30' : 'border-gray-200 bg-white'}`}>
+                                <div className={`px-6 py-4 border-b flex items-center gap-2 ${theme === 'dark' ? 'border-zinc-800' : 'border-gray-100'}`}>
+                                    <Megaphone className="w-5 h-5 text-red-500" />
+                                    <h3 className="font-semibold text-sm">Campaign Details</h3>
+                                </div>
+                                <table className="w-full text-sm text-left">
+                                    <thead className={`text-xs uppercase font-medium ${theme === 'dark' ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500'}`}>
+                                        <tr>
+                                            <th className="px-6 py-3">Filing Date</th>
+                                            <th className="px-6 py-3">Type</th>
+                                            <th className="px-6 py-3">Description</th>
+                                            <th className="px-6 py-3 text-right">Access</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700'}`}>
+                                        {activistData.map((f, i) => (
+                                            <tr key={i} className="hover:opacity-70 transition-opacity">
+                                                <td className="px-6 py-3 font-mono text-xs">{f.filingDate}</td>
+                                                <td className="px-6 py-3 font-bold text-xs">{f.form}</td>
+                                                <td className="px-6 py-3 text-xs opacity-80">{f.description}</td>
+                                                <td className="px-6 py-3 text-right">
+                                                    <a href={f.url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-blue-500 hover:underline">
+                                                        Read Filing
+                                                    </a>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                        {activistData.length === 0 && (
+                                            <tr>
+                                                <td colSpan={4} className="px-6 py-8 text-center opacity-50">No SC 13D Activist filings found in recent history.</td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                </>
+            )}
 
         </div >
     );

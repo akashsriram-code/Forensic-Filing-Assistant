@@ -7,6 +7,7 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { InsiderTracker } from './components/InsiderTracker';
 import { WhaleTracker } from './components/WhaleTracker';
+import { MarketPulse } from './components/MarketPulse';
 import { FollowButton } from './components/FollowButton';
 import { InfoModal } from './components/InfoModal';
 import { IpoDashboard } from './components/IpoDashboard';
@@ -24,7 +25,7 @@ interface FilingResult {
 
 export default function Home() {
   // I'm keeping track of which tab is active here.
-  const [activeTab, setActiveTab] = useState<'downloader' | 'whale' | 'insider' | 'ipo' | 'intel'>('downloader');
+  const [activeTab, setActiveTab] = useState<'downloader' | 'whale' | 'insider' | 'ipo' | 'intel' | 'market'>('market');
 
   // These are the state variables I need for the global filing downloader.
   const [ticker, setTicker] = useState("");
@@ -201,6 +202,12 @@ export default function Home() {
                   Intelligence
                 </span>
               </button>
+              <button
+                onClick={() => setActiveTab('market')}
+                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === 'market' ? (theme === 'dark' ? 'bg-zinc-800 text-white shadow-sm' : 'bg-white text-gray-900 shadow-sm') : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'}`}
+              >
+                Market Pulse
+              </button>
             </div>
 
             <button
@@ -223,6 +230,8 @@ export default function Home() {
           <IpoDashboard theme={theme} />
         ) : activeTab === 'intel' ? (
           <IntelligenceDashboard ticker={ticker} theme={theme} />
+        ) : activeTab === 'market' ? (
+          <MarketPulse theme={theme} />
         ) : (
           <div className="max-w-4xl mx-auto space-y-12">
             {/* Search Section */}

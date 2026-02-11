@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
             JOIN funds f ON fil.cik = f.cik 
             WHERE 
                 h.issuer LIKE ? 
-            ORDER BY fil.filing_date ASC
+            ORDER BY fil.filing_date ASC, fil.accession_number ASC
         `;
 
         const rs = await turso.execute({ sql: query, args: [searchPattern] });
@@ -91,18 +91,32 @@ export async function POST(req: NextRequest) {
 
             const fund = fundsMap.get(row.cik);
 
-            // Add to history
+            // Normalization Heuristic: Convert mixed DB units (Thousands vs Ones) to Actual Dollars
+            const rawVal = row.value;
+            const shares = row.shares;
+            const ratio = shares > 0 ? rawVal / shares : 0;
+            // Standardize to Actual Dollars (Ratio > 4 implies Ones)
+            const realValue = (ratio > 500) ? rawVal : (ratio > 4 ? rawVal : rawVal * 1000);
+
             const point = {
                 date: row.filing_date,
                 quarter: row.quarter,
                 shares: row.shares,
-                value: row.value
+                value: realValue
             };
-            fund.history.push(point);
 
-            // Update "Current" to be the latest entry processed (Rows are sorted by Date ASC)
-            fund.shares = row.shares;
-            fund.value = row.value;
+            // Deduplicate by Quarter: Keep only the latest filing for a given quarter
+            const lastPoint = fund.history[fund.history.length - 1];
+            if (lastPoint && lastPoint.quarter === row.quarter) {
+                // If same quarter, overwrite the previous entry (assuming sorted by date/accession ascending)
+                fund.history[fund.history.length - 1] = point;
+            } else {
+                fund.history.push(point);
+            }
+
+            fund.shares = shares;
+            fund.value = realValue;
+            fund.filing_date = row.filing_date;
         }
 
         // Convert to array and sort by Current Value DESC
