@@ -530,19 +530,39 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                 </div>
                             </div>
 
-                            {/* Detailed Table (Simplified for brevity of overwrite) */}
+                            {/* Detailed Table */}
                             <div className={`rounded-xl border overflow-hidden ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900/30' : 'border-gray-200 bg-white'}`}>
                                 <div className={`px-6 py-4 border-b ${theme === 'dark' ? 'border-zinc-800' : 'border-gray-100'}`}><h3 className="font-semibold text-sm">Portfolio Changes</h3></div>
                                 <table className="w-full text-sm text-left">
                                     <thead className={`text-xs uppercase font-medium ${theme === 'dark' ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500'}`}>
-                                        <tr><th className="px-6 py-3">Issuer</th><th className="px-6 py-3 text-right">Value (k)</th><th className="px-6 py-3 text-right">Change</th></tr>
+                                        <tr>
+                                            <th className="px-6 py-3">Issuer</th>
+                                            <th className="px-6 py-3 text-right">Prev Shares</th>
+                                            <th className="px-6 py-3 text-right">Curr Shares</th>
+                                            <th className="px-6 py-3 text-right">Change</th>
+                                            <th className="px-6 py-3 text-right">% Change</th>
+                                            <th className="px-6 py-3 text-right">Value (k)</th>
+                                        </tr>
                                     </thead>
                                     <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700'}`}>
-                                        {sortedChanges.slice(0, 20).map((h, i) => (
+                                        {sortedChanges.slice(0, 50).map((h, i) => (
                                             <tr key={i} onClick={() => handleHistoryClick(h.issuer)} className="cursor-pointer hover:opacity-70">
                                                 <td className="px-6 py-3 font-medium">{h.issuer}</td>
-                                                <td className="px-6 py-3 text-right font-mono text-xs">${formatNumber(h.value)}</td>
-                                                <td className={`px-6 py-3 text-right font-mono text-xs ${h.change > 0 ? 'text-emerald-500' : 'text-red-500'}`}>{h.change > 0 ? '+' : ''}{formatNumber(h.change)}</td>
+                                                <td className="px-6 py-3 text-right font-mono text-xs opacity-70">
+                                                    {new Intl.NumberFormat('en-US').format(h.sharesPrev)}
+                                                </td>
+                                                <td className="px-6 py-3 text-right font-mono text-xs font-bold">
+                                                    {new Intl.NumberFormat('en-US').format(h.sharesCurr)}
+                                                </td>
+                                                <td className={`px-6 py-3 text-right font-mono text-xs ${h.change > 0 ? 'text-emerald-500' : (h.change < 0 ? 'text-red-500' : 'opacity-50')}`}>
+                                                    {h.change > 0 ? '+' : ''}{new Intl.NumberFormat('en-US').format(h.change)}
+                                                </td>
+                                                <td className={`px-6 py-3 text-right font-mono text-xs ${h.percentChange > 0 ? 'text-emerald-500' : (h.percentChange < 0 ? 'text-red-500' : 'opacity-50')}`}>
+                                                    {h.percentChange > 0 ? '+' : ''}{h.percentChange.toFixed(2)}%
+                                                </td>
+                                                <td className="px-6 py-3 text-right font-mono text-xs opacity-60">
+                                                    ${formatNumber(h.value)}
+                                                </td>
                                             </tr>
                                         ))}
                                     </tbody>
