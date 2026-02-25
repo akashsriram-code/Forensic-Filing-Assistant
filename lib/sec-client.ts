@@ -116,7 +116,7 @@ export async function fetchCIK(query: string): Promise<string | null> {
             method: "POST",
             headers: {
                 "User-Agent": SEC_USER_AGENT,
-                "Content-Type": "application/x-www-form-urlencoded" // API often expects simple form or json
+                "Content-Type": "application/x-www-form-urlencoded"
             },
             body: JSON.stringify({ keys_typed: query })
         });
@@ -135,6 +135,58 @@ export async function fetchCIK(query: string): Promise<string | null> {
         }
     } catch (error) {
         console.error("Error in EFTS CIK search:", error);
+    }
+
+    // 3. FALLBACK: EDGAR Full-Text Search (catches institutional filers like sovereign wealth funds,
+    // hedge funds, etc. that don't have traded tickers and aren't in company_tickers.json)
+    console.log(`[CIK Lookup] Attempting EDGAR full-text search for: ${query}`);
+    try {
+        const encoded = encodeURIComponent(`"${query}"`);
+        const response = await fetch(
+            `https://efts.sec.gov/LATEST/search-index?q=${encoded}&dateRange=custom&startdt=2000-01-01&forms=13F-HR,SC+13D,SC+13G`,
+            {
+                headers: { "User-Agent": SEC_USER_AGENT },
+            }
+        );
+
+        if (response.ok) {
+            const data = await response.json();
+            if (data.hits && data.hits.hits && data.hits.hits.length > 0) {
+                const bestMatch = data.hits.hits[0];
+                const cik = bestMatch._source?.entity_id || bestMatch._id;
+                const name = bestMatch._source?.entity || query;
+
+                console.log(`[CIK Lookup] Found match via EDGAR full-text: ${name} -> ${cik}`);
+                return cik.toString().padStart(10, '0');
+            }
+        }
+    } catch (error) {
+        console.error("Error in EDGAR full-text search:", error);
+    }
+
+    // 4. LAST RESORT: EDGAR Company Search page scrape
+    // Handles edge cases where the EFTS APIs don't return the entity
+    console.log(`[CIK Lookup] Attempting EDGAR company search for: ${query}`);
+    try {
+        const encoded = encodeURIComponent(query);
+        const response = await fetch(
+            `https://www.sec.gov/cgi-bin/browse-edgar?company=${encoded}&CIK=&type=13F&dateb=&owner=include&count=1&search_text=&action=getcompany`,
+            {
+                headers: { "User-Agent": SEC_USER_AGENT },
+            }
+        );
+
+        if (response.ok) {
+            const html = await response.text();
+            // The EDGAR results page has CIK links in the format: /cgi-bin/browse-edgar?action=getcompany&CIK=0001234567
+            const cikMatch = html.match(/CIK=(\d{10})/);
+            if (cikMatch) {
+                console.log(`[CIK Lookup] Found match via EDGAR company search: ${cikMatch[1]}`);
+                return cikMatch[1];
+            }
+        }
+    } catch (error) {
+        console.error("Error in EDGAR company search:", error);
     }
 
     return null;
