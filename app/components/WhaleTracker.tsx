@@ -603,7 +603,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                         </tr>
                                     </thead>
                                     <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700'}`}>
-                                        {sortedChanges.slice(0, 50).map((h, i) => (
+                                        {sortedChanges.map((h, i) => (
                                             <tr key={i} onClick={() => handleHistoryClick(h.issuer)} className="cursor-pointer hover:opacity-70">
                                                 <td className="px-6 py-3 font-medium">{h.issuer}</td>
                                                 <td className="px-6 py-3 text-right font-mono text-xs opacity-70">
