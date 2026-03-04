@@ -223,6 +223,8 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({
             ticker,
+            filerName: submission.name || null,
+            cik,
             filingDateCurr: recent.filingDate[currIdx],
             filingDatePrev: recent.filingDate[prevIdx],
             topHoldings,

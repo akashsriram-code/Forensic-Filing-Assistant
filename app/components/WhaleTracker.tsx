@@ -1,8 +1,8 @@
 ﻿"use client";
 
 import { useState } from 'react';
-import { Download, X, Search, Loader2, TrendingUp, TrendingDown, CirclePlus, Plus, Users, GitMerge, Database, Megaphone } from 'lucide-react';
-import { LineChart, Line, BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter, ReferenceLine } from 'recharts';
+import { Download, X, Loader2, TrendingUp, Users, GitMerge, Database, Megaphone } from 'lucide-react';
+import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter, ReferenceLine } from 'recharts';
 import { getSector } from '@/lib/sectors';
 import { TickerSearch } from './TickerSearch';
 import { FollowButton } from './FollowButton';
@@ -22,6 +22,8 @@ interface Holding {
 
 interface WhaleData {
     ticker: string;
+    filerName?: string | null;
+    cik?: string;
     filingDateCurr: string;
     filingDatePrev: string;
     topHoldings: Holding[];
@@ -59,30 +61,65 @@ interface ActivistFiling {
     purpose?: string;
 }
 
+interface TooltipPayloadItem {
+    name?: string;
+    value?: number;
+    payload?: {
+        name?: string;
+        x?: number;
+        originalPercent?: number;
+    };
+}
+
+interface FundHistoryPoint {
+    date: string;
+    quarter?: string;
+    shares: number;
+    value: number;
+    price?: number;
+}
+
+interface ReverseFund {
+    fundName: string;
+    cik: string;
+    shares: number;
+    value: number;
+    filing_date: string;
+    history: FundHistoryPoint[];
+}
+
+interface ReverseLookupData {
+    companyName: string;
+    matchCount: number;
+    funds: ReverseFund[];
+}
+
 const COLORS = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ef4444', '#64748b'];
 
 // --- Tooltips ---
-const CustomTooltip = ({ active, payload, label, theme }: any) => {
+const CustomTooltip = ({ active, payload, theme }: { active?: boolean; payload?: TooltipPayloadItem[]; theme: 'light' | 'dark' }) => {
     if (active && payload && payload.length) {
         return (
             <div className={`p-3 rounded-lg border shadow-lg text-xs ${theme === 'dark' ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}>
                 <p className="font-semibold mb-1">{payload[0].name}</p>
-                <p className="font-mono opacity-80">${new Intl.NumberFormat('en-US', { notation: "compact" }).format(payload[0].value)}</p>
+                <p className="font-mono opacity-80">${new Intl.NumberFormat('en-US', { notation: "compact" }).format(payload[0].value ?? 0)}</p>
             </div>
         );
     }
     return null;
 };
 
-const CustomScatterTooltip = ({ active, payload, theme }: any) => {
+const CustomScatterTooltip = ({ active, payload, theme }: { active?: boolean; payload?: TooltipPayloadItem[]; theme: 'light' | 'dark' }) => {
     if (active && payload && payload.length) {
         const data = payload[0].payload;
+        const x = data?.x ?? 0;
+        const originalPercent = data?.originalPercent ?? 0;
         return (
             <div className={`p-3 rounded-lg border shadow-lg text-xs ${theme === 'dark' ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}>
-                <p className="font-semibold mb-1">{data.name}</p>
-                <p className="font-mono">Value: ${new Intl.NumberFormat('en-US', { notation: "compact" }).format(data.x)}</p>
-                <p className={`font-mono ${data.originalPercent > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                    Action: {data.originalPercent > 0 ? '+' : ''}{data.originalPercent.toFixed(1)}%
+                <p className="font-semibold mb-1">{data?.name}</p>
+                <p className="font-mono">Value: ${new Intl.NumberFormat('en-US', { notation: "compact" }).format(x)}</p>
+                <p className={`font-mono ${originalPercent > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                    Action: {originalPercent > 0 ? '+' : ''}{originalPercent.toFixed(1)}%
                 </p>
             </div>
         );
@@ -98,7 +135,6 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
     const [loading, setLoading] = useState(false);
     const [data, setData] = useState<WhaleData | null>(null);
     const [error, setError] = useState("");
-    const [sortConfig, setSortConfig] = useState<{ key: 'change' | 'percentChange', direction: 'asc' | 'desc' } | null>(null);
 
     // Compare Mode State
     const [tickerA, setTickerA] = useState("");
@@ -107,19 +143,24 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
 
     // History State
     const [analyzingHistory, setAnalyzingHistory] = useState(false);
-    const [historyData, setHistoryData] = useState<any[] | null>(null);
+    const [historyData, setHistoryData] = useState<FundHistoryPoint[] | null>(null);
     const [selectedHolding, setSelectedHolding] = useState<string | null>(null);
 
     // Reverse Lookup State (Existing)
     const [reverseTicker, setReverseTicker] = useState("");
-    const [reverseData, setReverseData] = useState<any | null>(null);
+    const [reverseData, setReverseData] = useState<ReverseLookupData | null>(null);
 
     // Activist Watch State
     const [activistTicker, setActivistTicker] = useState("");
     const [activistData, setActivistData] = useState<ActivistFiling[] | null>(null);
     // NEW: Popout State
-    const [selectedFundHistory, setSelectedFundHistory] = useState<any[] | null>(null);
+    const [selectedFundHistory, setSelectedFundHistory] = useState<FundHistoryPoint[] | null>(null);
     const [selectedFundName, setSelectedFundName] = useState<string | null>(null);
+
+    const getErrorMessage = (e: unknown, fallback: string) => {
+        if (e instanceof Error && e.message) return e.message;
+        return fallback;
+    };
 
     // --- Handlers (Existing) ---
     // ...
@@ -159,13 +200,13 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
 
             if (!resWhale.ok) throw new Error(resultWhale.error || "Analysis failed");
 
-            setData(resultWhale);
+            setData(resultWhale as WhaleData);
             if (resultActivist && resultActivist.filings) {
                 setActivistData(resultActivist.filings);
             }
 
-        } catch (e: any) {
-            setError(e.message || "An error occurred");
+        } catch (e: unknown) {
+            setError(getErrorMessage(e, "An error occurred"));
         } finally {
             setLoading(false);
         }
@@ -185,9 +226,9 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
             });
             const result = await res.json();
             if (!res.ok) throw new Error(result.error || "Comparison failed");
-            setClusterData(result);
-        } catch (e: any) {
-            setError(e.message || "Comparison failed");
+            setClusterData(result as ClusterData);
+        } catch (e: unknown) {
+            setError(getErrorMessage(e, "Comparison failed"));
         } finally {
             setLoading(false);
         }
@@ -223,13 +264,13 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
             }
 
             if (!resReverse.ok) throw new Error(result.error || "Lookup failed");
-            setReverseData(result);
+            setReverseData(result as ReverseLookupData);
             if (resultActivist && resultActivist.filings) {
                 setActivistData(resultActivist.filings);
             }
 
-        } catch (e: any) {
-            setError(e.message || "An error occurred");
+        } catch (e: unknown) {
+            setError(getErrorMessage(e, "An error occurred"));
         } finally {
             setLoading(false);
         }
@@ -249,8 +290,8 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
             const result = await res.json();
             if (!res.ok) throw new Error(result.error || "Analysis failed");
             setActivistData(result.filings || []);
-        } catch (e: any) {
-            setError(e.message || "An error occurred");
+        } catch (e: unknown) {
+            setError(getErrorMessage(e, "An error occurred"));
         } finally {
             setLoading(false);
         }
@@ -260,11 +301,11 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         return new Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 }).format(num);
     };
 
-    const handleDownloadCSV = (dataToExport: any[], filename: string) => {
+    const handleDownloadCSV = <T extends object>(dataToExport: T[], filename: string) => {
         if (!dataToExport || dataToExport.length === 0) return;
-        const headers = Object.keys(dataToExport[0]);
+        const headers = Object.keys(dataToExport[0]) as (keyof T)[];
         const csvContent = [
-            headers.join(','),
+            headers.map((h) => String(h)).join(','),
             ...dataToExport.map(row => headers.map(header => JSON.stringify(row[header])).join(','))
         ].join('\n');
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -350,11 +391,26 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
     const sectorMap = new Map<string, number>();
     data?.topHoldings.forEach(h => { const s = getSector(h.issuer); sectorMap.set(s, (sectorMap.get(s) || 0) + h.value); });
     const sectorData = Array.from(sectorMap.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
-    const sortedChanges = data ? [...data.allChanges].sort((a, b) => {
-        if (!sortConfig) return 0;
-        const multiplier = sortConfig.direction === 'asc' ? 1 : -1;
-        return (a[sortConfig.key] - b[sortConfig.key]) * multiplier;
-    }) : [];
+    const sortedChanges = data
+        ? [...data.allChanges].sort((a, b) => {
+            const getRank = (h: Holding) => {
+                const isDissolved = h.sharesCurr === 0 && h.sharesPrev > 0;
+                if (h.isNew) return 0; // New stakes first
+                if (isDissolved) return 1; // Fully dissolved stakes next
+                return 2; // Other stake changes last
+            };
+
+            const rankDiff = getRank(a) - getRank(b);
+            if (rankDiff !== 0) return rankDiff;
+
+            // Within each bucket, show bigger moves first.
+            const changeDiff = Math.abs(b.change) - Math.abs(a.change);
+            if (changeDiff !== 0) return changeDiff;
+
+            // Final deterministic tie-breaker.
+            return b.value - a.value;
+        })
+        : [];
 
     const scatterData = data?.allChanges.filter(h => h.value > 1000).map(h => ({ name: h.issuer, x: h.value * 1000, y: h.percentChange > 200 ? 200 : (h.percentChange < -100 ? -100 : h.percentChange), originalPercent: h.percentChange, fill: h.change > 0 ? '#10b981' : (h.change < 0 ? '#ef4444' : '#94a3b8') })) || [];
 
@@ -471,7 +527,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                     <div className={`p-8 rounded-2xl border transition-all ${theme === 'dark' ? 'bg-zinc-900/50 border-zinc-800 shadow-xl' : 'bg-white border-gray-200 shadow-sm'}`}>
                         <div className="max-w-2xl mx-auto text-center mb-8">
                             <h2 className={`text-2xl font-bold tracking-tight mb-2 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>Institutional 13-F Analysis</h2>
-                            <p className={`text-sm ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Track major holdings andportfolio shifts.</p>
+                            <p className={`text-sm ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Track major holdings and portfolio shifts.</p>
                         </div>
                         <div className="max-w-xl mx-auto flex gap-3">
                             <div className="relative flex-1">
@@ -490,12 +546,14 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                             <div className="flex items-center justify-between px-2">
                                 <div className="flex items-center gap-2">
                                     <TrendingUp className={`h-5 w-5 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-400'}`} />
-                                    <span className={`font-semibold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>{data.ticker}</span>
+                                    <span className={`font-semibold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+                                        {data.filerName ? `${data.filerName} (${data.cik || data.ticker})` : data.ticker}
+                                    </span>
                                     <FollowButton ticker={data.ticker} theme={theme} />
                                 </div>
                                 <div className="flex items-center gap-4">
                                     <div className={`text-xs font-mono ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>
-                                        {data.filingDatePrev} <span className="mx-1">â†’</span> {data.filingDateCurr}
+                                        {data.filingDatePrev} <span className="mx-1">→</span> {data.filingDateCurr}
                                     </div>
 
                                     <button onClick={() => handleDownloadCSV(data.allChanges, `${data.ticker}_QoQ_changes`)} className={`text-xs flex items-center gap-1 font-medium hover:underline text-emerald-500`}>
@@ -507,11 +565,11 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                                 <div className={`col-span-1 p-6 rounded-xl border flex flex-col items-center justify-center ${theme === 'dark' ? 'bg-zinc-900/40 border-zinc-800' : 'bg-white border-gray-200'}`}>
                                     <h3 className={`text-xs font-semibold uppercase tracking-wider mb-4 ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Stock Weighing (Top 5)</h3>
-                                    <div className="h-40 w-full"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={chartData} innerRadius={50} outerRadius={70} paddingAngle={2} dataKey="value">{chartData.map((e, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Pie><Tooltip content={<CustomTooltip theme={theme} />} /></PieChart></ResponsiveContainer></div>
+                                    <div className="h-40 w-full"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={chartData} innerRadius={50} outerRadius={70} paddingAngle={2} dataKey="value">{chartData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Pie><Tooltip content={<CustomTooltip theme={theme} />} /></PieChart></ResponsiveContainer></div>
                                 </div>
                                 <div className={`col-span-1 p-6 rounded-xl border flex flex-col items-center justify-center ${theme === 'dark' ? 'bg-zinc-900/40 border-zinc-800' : 'bg-white border-gray-200'}`}>
                                     <h3 className={`text-xs font-semibold uppercase tracking-wider mb-4 ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Sector Exposure</h3>
-                                    <div className="h-40 w-full"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={sectorData} innerRadius={40} outerRadius={70} paddingAngle={2} dataKey="value">{sectorData.map((e, i) => <Cell key={i} fill={COLORS[(i + 3) % COLORS.length]} />)}</Pie><Tooltip content={<CustomTooltip theme={theme} />} /></PieChart></ResponsiveContainer></div>
+                                    <div className="h-40 w-full"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={sectorData} innerRadius={40} outerRadius={70} paddingAngle={2} dataKey="value">{sectorData.map((_, i) => <Cell key={i} fill={COLORS[(i + 3) % COLORS.length]} />)}</Pie><Tooltip content={<CustomTooltip theme={theme} />} /></PieChart></ResponsiveContainer></div>
                                 </div>
                                 <div className={`col-span-1 md:col-span-2 p-6 rounded-xl border ${theme === 'dark' ? 'bg-zinc-900/40 border-zinc-800' : 'bg-white border-gray-200'}`}>
                                     <h3 className={`text-xs font-semibold uppercase tracking-wider mb-6 ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Conviction (Value vs. Action)</h3>
@@ -584,12 +642,12 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                         <div className="max-w-3xl mx-auto flex items-center gap-4">
                             <div className="flex-1">
                                 <label className="text-[10px] uppercase font-bold text-blue-500 mb-1 block">Fund A</label>
-                                <TickerSearch value={tickerA} onChange={setTickerA} onSelect={() => { }} theme={theme} placeholder="e.g. Berkshire..." />
+                                <TickerSearch value={tickerA} onChange={setTickerA} onSelect={handleCompare} theme={theme} placeholder="e.g. Berkshire..." />
                             </div>
                             <div className="pt-5 text-zinc-500 font-bold">VS</div>
                             <div className="flex-1">
                                 <label className="text-[10px] uppercase font-bold text-orange-500 mb-1 block">Fund B</label>
-                                <TickerSearch value={tickerB} onChange={setTickerB} onSelect={() => { }} theme={theme} placeholder="e.g. Bridgewater..." />
+                                <TickerSearch value={tickerB} onChange={setTickerB} onSelect={handleCompare} theme={theme} placeholder="e.g. Bridgewater..." />
                             </div>
                             <div className="pt-5">
                                 <button onClick={handleCompare} disabled={loading} className={`px-6 py-2.5 font-medium rounded-lg text-sm ${theme === 'dark' ? 'bg-white text-black' : 'bg-gray-900 text-white'}`}>
@@ -714,7 +772,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                             </tr>
                                         </thead>
                                         <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700'}`}>
-                                            {reverseData.funds.map((f: any, i: number) => (
+                                            {reverseData.funds.map((f: ReverseFund, i: number) => (
                                                 <tr key={i} className="hover:opacity-70 transition-opacity">
                                                     <td className="px-6 py-3 font-medium">
                                                         <div>{f.fundName}</div>
