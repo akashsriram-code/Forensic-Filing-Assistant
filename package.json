@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "alerts:run": "tsx scripts/run-email-alert-job.ts",
     "ingest:13f": "npx ts-node scripts/ingest-13f-raw.ts"
   },
   "dependencies": {
@@ -15,6 +16,7 @@
     "@libsql/client": "^0.17.0",
     "@types/diff": "^7.0.2",
     "@types/file-saver": "^2.0.7",
+    "@types/nodemailer": "^7.0.11",
     "cheerio": "^1.1.2",
     "clsx": "^2.1.1",
     "diff": "^8.0.3",
@@ -24,6 +26,7 @@
     "jszip": "^3.10.1",
     "lucide-react": "^0.562.0",
     "next": "16.1.1",
+    "nodemailer": "^8.0.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.6.0",
@@ -43,6 +46,7 @@
     "prisma": "^7.3.0",
     "sqlite3": "^5.1.7",
     "tailwindcss": "^4",
+    "tsx": "^4.20.6",
     "typescript": "^5"
   }
 }
