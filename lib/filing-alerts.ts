@@ -44,7 +44,7 @@ export async function runEmailAlertJob(): Promise<EmailAlertJobResult> {
     startDate: toIsoDate(startDate),
     endDate: toIsoDate(endDate),
     filingType: 'ALL',
-  }))
+  })).results
     .filter((filing) => matchesFilingType(filing.form, config.filingType))
     .sort((a, b) => a.filingDate.localeCompare(b.filingDate));
 

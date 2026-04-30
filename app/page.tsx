@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Search, FileText, Download, Calendar, Filter, Loader2, Sparkles, FolderDown, Activity, Split } from 'lucide-react';
+import { AlertTriangle, Download, FileText, FolderDown, Loader2, Sparkles, Activity, Split } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { InsiderTracker } from './components/InsiderTracker';
@@ -20,28 +20,41 @@ interface FilingResult {
   size: number;
   primaryDocument: string;
   description: string;
-  downloadUrl: string; // Direct SEC URL
+  downloadUrl: string;
+  companyQuery: string;
+  companyName: string;
+  companyTicker: string;
+  companyCik: string;
+  matchedKeywords: string[];
+  matchCount: number;
+  matchSnippets: string[];
 }
 
-export default function Home() {
-  // I'm keeping track of which tab is active here.
-  const [activeTab, setActiveTab] = useState<'downloader' | 'whale' | 'insider' | 'ipo' | 'intel' | 'market'>('market');
+const parseInputList = (value: string) =>
+  value
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 
-  // These are the state variables I need for the global filing downloader.
-  const [ticker, setTicker] = useState("");
+export default function Home() {
+  const [activeTab, setActiveTab] = useState<'downloader' | 'whale' | 'insider' | 'ipo' | 'intel' | 'market'>('market');
+  const [entityInput, setEntityInput] = useState("");
+  const [keywordInput, setKeywordInput] = useState("");
   const [startDate, setStartDate] = useState("2023-01-01");
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [filingType, setFilingType] = useState('ALL');
-
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [results, setResults] = useState<FilingResult[] | null>(null);
   const [error, setError] = useState("");
-
-  // Tracking the theme state (light/dark) so I can style components accordingly.
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [partialResults, setPartialResults] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
-  // This handles switching the CSS class on the document root when I toggle the button.
+  const parsedEntities = parseInputList(entityInput);
+  const parsedKeywords = parseInputList(keywordInput);
+  const primaryEntity = parsedEntities[0] || "";
+
   const toggleTheme = () => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
     setTheme(newTheme);
@@ -53,32 +66,40 @@ export default function Home() {
   };
 
   const handleSearch = async () => {
-    if (!ticker) return;
+    if (parsedEntities.length === 0) return;
     setLoading(true);
     setError("");
+    setWarnings([]);
+    setPartialResults(false);
     setResults(null);
 
     try {
       const res = await fetch('/api/search-filings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker, startDate, endDate, filingType }),
+        body: JSON.stringify({
+          entities: parsedEntities,
+          keywords: parsedKeywords,
+          startDate,
+          endDate,
+          filingType,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to fetch filings");
-      setResults(data.results);
-    } catch (err: any) {
+      setResults(data.results || []);
+      setWarnings(data.warnings || []);
+      setPartialResults(Boolean(data.partial));
+    } catch (err: unknown) {
       console.error(err);
-      setError(err.message || "An error occurred");
+      setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
     }
   };
 
   const downloadFile = (url: string, filename: string) => {
-    // Ensure the filename uses .html instead of .htm for better compatibility.
     const safeFilename = filename.replace(/\.htm$/i, '.html');
-    // I'm forcing the download through my proxy to avoid CORS issues with the SEC.
     window.location.href = `/api/download-proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(safeFilename)}`;
   };
 
@@ -88,7 +109,7 @@ export default function Home() {
 
     try {
       const zip = new JSZip();
-      const filesToDownload = results.slice(0, 20); // Limit to 20 to prevent browser freeze
+      const filesToDownload = results.slice(0, 20);
       let processed = 0;
 
       for (const item of filesToDownload) {
@@ -97,49 +118,39 @@ export default function Home() {
           if (!response.ok) continue;
 
           let htmlContent = await response.text();
-
-          // --- ENHANCEMENT: Make the HTML "Reader Ready" (looks like a PDF) ---
-          // 1. Inject Reader CSS directly into the head
           const readerStyles = `
                         <style>
                             body { font-family: 'Times New Roman', Times, serif; line-height: 1.5; color: #333; max-width: 900px; margin: 40px auto; padding: 20px; }
                             table { width: 100% !important; border-collapse: collapse; margin-bottom: 20px; }
                             td, th { padding: 4px; vertical-align: top; }
                             img { max-width: 100%; height: auto; }
-                            .sec-header { display: none; } /* Hide some junk if possible */
+                            .sec-header { display: none; }
                             @media print { body { margin: 0; padding: 0; max-width: none; } }
                         </style>
-                        <base href="https://www.sec.gov/Archives/edgar/data/"> <!-- Try to fix relative links -->
+                        <base href="https://www.sec.gov/Archives/edgar/data/">
                     `;
 
-          // Simple injection before </head> or just at top if missing
           if (htmlContent.includes('</head>')) {
             htmlContent = htmlContent.replace('</head>', `${readerStyles}</head>`);
           } else {
             htmlContent = `<!DOCTYPE html><html><head>${readerStyles}</head><body>${htmlContent}</body></html>`;
           }
 
-          // 2. Fix Image URLs (Rough heuristic)
-          // SEC images are often relative. We try to make them absolute based on the accession path.
-          // (Note: <base> tag above handles many cases, but manual replace is safer for some clients)
-
-          const ext = item.primaryDocument.split('.').pop() || 'htm';
-          const filename = `${item.filingDate}_${item.form}_${item.accessionNumber}_Enhanced.html`;
-
+          const filename = `${item.filingDate}_${item.companyTicker}_${item.form}_${item.accessionNumber}_Enhanced.html`;
           zip.file(filename, htmlContent);
           processed++;
-        } catch (e) {
+        } catch {
           console.error("Failed to zip file", item.accessionNumber);
         }
       }
 
       if (processed > 0) {
         const content = await zip.generateAsync({ type: "blob" });
-        saveAs(content, `${ticker}_SEC_Filings_Readable.zip`);
+        const label = parsedEntities.length === 1 ? parsedEntities[0] : 'multi_entity';
+        saveAs(content, `${label}_SEC_Filings_Readable.zip`);
       } else {
         alert("Failed to download any files for zipping.");
       }
-
     } catch (e) {
       console.error("Zip Error", e);
       alert("Error creating zip file.");
@@ -150,8 +161,6 @@ export default function Home() {
 
   return (
     <div className={`min-h-screen transition-colors duration-300 ${theme === 'dark' ? 'bg-zinc-950 text-zinc-100' : 'bg-gray-50 text-gray-900'} font-sans selection:bg-gray-200 selection:text-gray-900 dark:selection:bg-zinc-800 dark:selection:text-white`}>
-
-      {/* Minimal Header */}
       <header className={`sticky top-0 z-50 border-b transition-colors duration-300 ${theme === 'dark' ? 'border-zinc-800 bg-zinc-950/80' : 'border-gray-200 bg-white/80'} backdrop-blur-md`}>
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -214,13 +223,12 @@ export default function Home() {
               onClick={toggleTheme}
               className={`p-2 rounded-full border transition-all ${theme === 'dark' ? 'border-zinc-800 hover:bg-zinc-900 text-zinc-400' : 'border-gray-200 hover:bg-gray-100 text-gray-500'}`}
             >
-              {theme === 'light' ? '🌙' : '☀️'}
+              {theme === 'light' ? 'Night' : 'Day'}
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-6xl mx-auto px-6 py-12">
         {activeTab === 'whale' ? (
           <WhaleTracker theme={theme} />
@@ -229,27 +237,44 @@ export default function Home() {
         ) : activeTab === 'ipo' ? (
           <IpoDashboard theme={theme} />
         ) : activeTab === 'intel' ? (
-          <IntelligenceDashboard ticker={ticker} theme={theme} />
+          <IntelligenceDashboard ticker={primaryEntity} theme={theme} />
         ) : activeTab === 'market' ? (
           <MarketPulse theme={theme} />
         ) : (
-          <div className="max-w-4xl mx-auto space-y-12">
-            {/* Search Section */}
+          <div className="max-w-5xl mx-auto space-y-8">
             <div className={`p-8 rounded-2xl border transition-all duration-300 ${theme === 'dark' ? 'bg-zinc-900/50 border-zinc-800 shadow-2xl' : 'bg-white border-gray-200 shadow-sm'}`}>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6 items-end">
-                <div className="col-span-1">
-                  <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-2">Ticker</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      placeholder="NVDA"
-                      className={`w-full px-4 py-3 rounded-lg border transition-all outline-none font-mono text-sm ${theme === 'dark' ? 'bg-black/20 border-zinc-800 focus:border-white text-white' : 'bg-gray-50 border-gray-200 focus:border-black text-gray-900'}`}
-                      value={ticker}
-                      onChange={(e) => setTicker(e.target.value)}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-gray-500">Entities</label>
+                  <div className="flex gap-2 items-start">
+                    <textarea
+                      placeholder="NVDA, AAPL, Bridgewater Associates"
+                      className={`min-h-28 w-full px-4 py-3 rounded-lg border transition-all outline-none font-mono text-sm resize-y ${theme === 'dark' ? 'bg-black/20 border-zinc-800 focus:border-white text-white' : 'bg-gray-50 border-gray-200 focus:border-black text-gray-900'}`}
+                      value={entityInput}
+                      onChange={(e) => setEntityInput(e.target.value)}
                     />
-                    <FollowButton ticker={ticker} theme={theme} className={`p-3 rounded-lg border ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900' : 'border-gray-200 bg-white'}`} />
+                    <FollowButton
+                      ticker={primaryEntity}
+                      theme={theme}
+                      className={`p-3 rounded-lg border shrink-0 ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900' : 'border-gray-200 bg-white'}`}
+                    />
                   </div>
+                  <p className={`text-xs ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Enter tickers or company names separated by commas, semicolons, or new lines.</p>
                 </div>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-gray-500">Keywords</label>
+                  <textarea
+                    placeholder="supply chain, material weakness, going concern"
+                    className={`min-h-28 w-full px-4 py-3 rounded-lg border transition-all outline-none text-sm resize-y ${theme === 'dark' ? 'bg-black/20 border-zinc-800 focus:border-white text-white' : 'bg-gray-50 border-gray-200 focus:border-black text-gray-900'}`}
+                    value={keywordInput}
+                    onChange={(e) => setKeywordInput(e.target.value)}
+                  />
+                  <p className={`text-xs ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Optional. Searches full filing text and returns filings containing any keyword.</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end mt-6">
                 <div>
                   <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-2">Start Date</label>
                   <input
@@ -295,15 +320,34 @@ export default function Home() {
               <div className="mt-8 flex justify-end">
                 <button
                   onClick={handleSearch}
-                  disabled={loading}
-                  className={`px-8 py-3 rounded-lg text-sm font-medium transition-all ${theme === 'dark' ? 'bg-white text-black hover:bg-gray-200' : 'bg-gray-900 text-white hover:bg-black'}`}
+                  disabled={loading || parsedEntities.length === 0}
+                  className={`px-8 py-3 rounded-lg text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed ${theme === 'dark' ? 'bg-white text-black hover:bg-gray-200' : 'bg-gray-900 text-white hover:bg-black'}`}
                 >
-                  {loading ? "Searching..." : "Search Filings"}
+                  {loading ? (parsedKeywords.length > 0 ? "Searching Filing Text..." : "Searching Entities...") : "Search Filings"}
                 </button>
               </div>
             </div>
 
-            {/* Results Table */}
+            {error && (
+              <div className={`rounded-xl border px-4 py-3 text-sm ${theme === 'dark' ? 'border-red-900/70 bg-red-950/30 text-red-200' : 'border-red-200 bg-red-50 text-red-700'}`}>
+                {error}
+              </div>
+            )}
+
+            {warnings.length > 0 && (
+              <div className={`rounded-xl border px-4 py-4 space-y-2 ${theme === 'dark' ? 'border-amber-900/70 bg-amber-950/20 text-amber-100' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <AlertTriangle className="h-4 w-4" />
+                  {partialResults ? 'Partial results returned' : 'Search notes'}
+                </div>
+                <ul className="space-y-1 text-sm">
+                  {warnings.map((warning, index) => (
+                    <li key={`${warning}-${index}`}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {results && (
               <div className={`rounded-xl border overflow-hidden ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900/30' : 'border-gray-200 bg-white'}`}>
                 <div className={`px-6 py-4 border-b flex justify-between items-center ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-100 bg-gray-50/50'}`}>
@@ -321,62 +365,102 @@ export default function Home() {
                     </button>
                   )}
                 </div>
-                <table className="w-full text-sm text-left">
-                  <thead className={`${theme === 'dark' ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500'} text-xs uppercase font-medium`}>
-                    <tr>
-                      <th className="px-6 py-4">Date</th>
-                      <th className="px-6 py-4">Type</th>
-                      <th className="px-6 py-4">Description</th>
-                      <th className="px-6 py-4 text-right">Size</th>
-                      <th className="px-6 py-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700'}`}>
-                    {results.map((item, idx) => (
-                      <tr key={idx} className={`transition-colors ${theme === 'dark' ? 'hover:bg-zinc-800/50' : 'hover:bg-gray-50'}`}>
-                        <td className="px-6 py-4 font-mono text-xs opacity-70">{item.filingDate}</td>
-                        <td className="px-6 py-4"><span className="font-medium">{item.form}</span></td>
-                        <td className="px-6 py-4 truncate max-w-xs opacity-80">{item.description || item.primaryDocument}</td>
-                        <td className="px-6 py-4 text-right font-mono text-xs opacity-60">{(item.size / 1024).toFixed(0)} KB</td>
-                        <td className="px-6 py-4 text-right flex justify-end gap-3">
-                          {/* DIFF ENGINE: Compare with previous if available */}
-                          {['10-K', '10-Q'].some(t => item.form.includes(t)) && idx < results.length - 1 && (() => {
-                            // Find previous filing of same type
-                            const prev = results.slice(idx + 1).find(r => r.form === item.form);
-                            if (prev) {
-                              return (
-                                <Link
-                                  href={`/diff?url1=${encodeURIComponent(prev.downloadUrl)}&url2=${encodeURIComponent(item.downloadUrl)}&title=${encodeURIComponent(`Diff: ${item.form} (${prev.filingDate} vs ${item.filingDate})`)}`}
-                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${theme === 'dark' ? 'bg-purple-900/30 hover:bg-purple-900/50 text-purple-300' : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200'}`}
-                                  title={`Compare with ${prev.filingDate}`}
-                                >
-                                  <Split className="h-3 w-3" />
-                                  Diff
-                                </Link>
-                              );
-                            }
-                            return null;
-                          })()}
-
-                          <Link
-                            href={`/reader?url=${encodeURIComponent(item.downloadUrl)}`}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${theme === 'dark' ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300' : 'bg-white border border-gray-200 hover:bg-gray-50 text-gray-700'}`}
-                          >
-                            <FileText className="h-3 w-3" />
-                            Read
-                          </Link>
-                          <button
-                            onClick={() => downloadFile(item.downloadUrl, item.primaryDocument)}
-                            className="hover:text-black opacity-60 hover:opacity-100 transition-opacity"
-                            title="Download Raw HTML"
-                          >
-                            <Download className="h-4 w-4" />
-                          </button>
-                        </td>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm text-left">
+                    <thead className={`${theme === 'dark' ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500'} text-xs uppercase font-medium`}>
+                      <tr>
+                        <th className="px-6 py-4">Date</th>
+                        <th className="px-6 py-4">Company</th>
+                        <th className="px-6 py-4">Type</th>
+                        <th className="px-6 py-4">Description</th>
+                        <th className="px-6 py-4">Matches</th>
+                        <th className="px-6 py-4 text-right">Size</th>
+                        <th className="px-6 py-4 text-right">Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700'}`}>
+                      {results.map((item, idx) => (
+                        <tr key={`${item.companyCik}-${item.accessionNumber}-${idx}`} className={`transition-colors ${theme === 'dark' ? 'hover:bg-zinc-800/50' : 'hover:bg-gray-50'}`}>
+                          <td className="px-6 py-4 font-mono text-xs opacity-70 whitespace-nowrap">{item.filingDate}</td>
+                          <td className="px-6 py-4 min-w-52">
+                            <div className="font-medium">{item.companyName}</div>
+                            <div className="text-xs opacity-60 font-mono">{item.companyTicker}</div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap"><span className="font-medium">{item.form}</span></td>
+                          <td className="px-6 py-4 min-w-64">
+                            <div className="opacity-80">{item.description || item.primaryDocument}</div>
+                            {item.matchSnippets.length > 0 && (
+                              <div className={`mt-2 text-xs leading-5 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-500'}`}>
+                                {item.matchSnippets.slice(0, 2).map((snippet, snippetIndex) => (
+                                  <p key={`${item.accessionNumber}-snippet-${snippetIndex}`}>{snippet}</p>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 min-w-40">
+                            {item.matchedKeywords.length > 0 ? (
+                              <div className="space-y-2">
+                                <div className="text-xs font-medium">{item.matchCount} match{item.matchCount === 1 ? '' : 'es'}</div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {item.matchedKeywords.map((keyword) => (
+                                    <span
+                                      key={`${item.accessionNumber}-${keyword}`}
+                                      className={`px-2 py-1 rounded-full text-[11px] ${theme === 'dark' ? 'bg-zinc-800 text-zinc-200' : 'bg-gray-100 text-gray-700'}`}
+                                    >
+                                      {keyword}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-xs opacity-50">No keyword filter</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 text-right font-mono text-xs opacity-60 whitespace-nowrap">{(item.size / 1024).toFixed(0)} KB</td>
+                          <td className="px-6 py-4 text-right">
+                            <div className="flex justify-end gap-3">
+                              {['10-K', '10-Q'].some((t) => item.form.includes(t)) && idx < results.length - 1 && (() => {
+                                const prev = results
+                                  .slice(idx + 1)
+                                  .find((result) => result.form === item.form && result.companyCik === item.companyCik);
+
+                                if (prev) {
+                                  return (
+                                    <Link
+                                      href={`/diff?url1=${encodeURIComponent(prev.downloadUrl)}&url2=${encodeURIComponent(item.downloadUrl)}&title=${encodeURIComponent(`Diff: ${item.companyTicker} ${item.form} (${prev.filingDate} vs ${item.filingDate})`)}`}
+                                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${theme === 'dark' ? 'bg-purple-900/30 hover:bg-purple-900/50 text-purple-300' : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200'}`}
+                                      title={`Compare with ${prev.filingDate}`}
+                                    >
+                                      <Split className="h-3 w-3" />
+                                      Diff
+                                    </Link>
+                                  );
+                                }
+
+                                return null;
+                              })()}
+
+                              <Link
+                                href={`/reader?url=${encodeURIComponent(item.downloadUrl)}`}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${theme === 'dark' ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300' : 'bg-white border border-gray-200 hover:bg-gray-50 text-gray-700'}`}
+                              >
+                                <FileText className="h-3 w-3" />
+                                Read
+                              </Link>
+                              <button
+                                onClick={() => downloadFile(item.downloadUrl, item.primaryDocument)}
+                                className="hover:text-black opacity-60 hover:opacity-100 transition-opacity"
+                                title="Download Raw HTML"
+                              >
+                                <Download className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
