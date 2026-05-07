@@ -12,6 +12,7 @@ import { FollowButton } from './components/FollowButton';
 import { InfoModal } from './components/InfoModal';
 import { IpoDashboard } from './components/IpoDashboard';
 import { IntelligenceDashboard } from './components/IntelligenceDashboard';
+import { ThirteenFRadar } from './components/ThirteenFRadar';
 
 interface FilingResult {
   accessionNumber: string;
@@ -37,7 +38,7 @@ const parseInputList = (value: string) =>
     .filter(Boolean);
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'downloader' | 'whale' | 'insider' | 'ipo' | 'intel' | 'market'>('market');
+  const [activeTab, setActiveTab] = useState<'downloader' | 'whale' | 'radar' | 'insider' | 'ipo' | 'intel' | 'market'>('market');
   const [entityInput, setEntityInput] = useState("");
   const [keywordInput, setKeywordInput] = useState("");
   const [startDate, setStartDate] = useState("2023-01-01");
@@ -162,7 +163,7 @@ export default function Home() {
   return (
     <div className={`min-h-screen transition-colors duration-300 ${theme === 'dark' ? 'bg-zinc-950 text-zinc-100' : 'bg-gray-50 text-gray-900'} font-sans selection:bg-gray-200 selection:text-gray-900 dark:selection:bg-zinc-800 dark:selection:text-white`}>
       <header className={`sticky top-0 z-50 border-b transition-colors duration-300 ${theme === 'dark' ? 'border-zinc-800 bg-zinc-950/80' : 'border-gray-200 bg-white/80'} backdrop-blur-md`}>
-        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className={`p-1.5 rounded-md ${theme === 'dark' ? 'bg-zinc-800 text-white' : 'bg-gray-900 text-white'}`}>
               <Activity className="h-4 w-4" />
@@ -189,6 +190,12 @@ export default function Home() {
                 className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === 'whale' ? (theme === 'dark' ? 'bg-zinc-800 text-white shadow-sm' : 'bg-white text-gray-900 shadow-sm') : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'}`}
               >
                 Whale Tracker
+              </button>
+              <button
+                onClick={() => setActiveTab('radar')}
+                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === 'radar' ? (theme === 'dark' ? 'bg-zinc-800 text-white shadow-sm' : 'bg-white text-gray-900 shadow-sm') : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'}`}
+              >
+                13F Radar
               </button>
               <button
                 onClick={() => setActiveTab('insider')}
@@ -229,9 +236,11 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-12">
+      <main className="max-w-7xl mx-auto px-6 py-12">
         {activeTab === 'whale' ? (
           <WhaleTracker theme={theme} />
+        ) : activeTab === 'radar' ? (
+          <ThirteenFRadar theme={theme} />
         ) : activeTab === 'insider' ? (
           <InsiderTracker theme={theme} />
         ) : activeTab === 'ipo' ? (

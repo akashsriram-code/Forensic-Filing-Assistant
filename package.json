@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "alerts:run": "tsx scripts/run-email-alert-job.ts",
-    "ingest:13f": "npx ts-node scripts/ingest-13f-raw.ts"
+    "ingest:13f": "npx ts-node scripts/ingest-13f-raw.ts",
+    "ingest:13f-sec": "tsx scripts/ingest-sec-13f-dataset.ts",
+    "test:13f-radar": "tsx scripts/test-13f-radar.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
@@ -20,6 +22,7 @@
     "cheerio": "^1.1.2",
     "clsx": "^2.1.1",
     "diff": "^8.0.3",
+    "dotenv": "^17.4.2",
     "file-saver": "^2.0.5",
     "flexsearch": "^0.8.212",
     "html2pdf.js": "^0.14.0",
