@@ -7,6 +7,7 @@ import {
     buildRadarComparison,
     compareQuartersAsc,
     matchIssuerToWatchlists,
+    selectLatestFilings,
     sortQuartersDesc,
     type EventLensSummary,
     type FilerSideMatch,
@@ -152,8 +153,16 @@ async function runComparison(params: {
     const { turso, currentQuarter, previousQuarter, watchlists, selectedCategories, movementBasis, dbShape } = params;
     const quarters = [currentQuarter, previousQuarter];
     const filings = await queryFilings(turso, quarters);
-    const patterns = buildIssuerSqlPatterns(watchlists, selectedCategories);
-    const holdings = await queryWatchedHoldings(turso, quarters, patterns, dbShape.putCallColumn);
+    const currentFilings = selectLatestFilings(filings, currentQuarter);
+    const previousFilings = selectLatestFilings(filings, previousQuarter);
+    const previousByCik = new Map(previousFilings.map((filing) => [filing.cik, filing]));
+    const comparableFilings = currentFilings.flatMap((currentFiling) => {
+        const previousFiling = previousByCik.get(currentFiling.cik);
+        return previousFiling ? [currentFiling, previousFiling] : [];
+    });
+    const holdings = selectedCategories.length > 0
+        ? await queryWatchedHoldings(turso, comparableFilings, dbShape.putCallColumn)
+        : [];
 
     return buildRadarComparison({
         currentQuarter,
@@ -252,51 +261,54 @@ async function queryFilings(turso: TursoClient, quarters: string[]): Promise<Rad
 
 async function queryWatchedHoldings(
     turso: TursoClient,
-    quarters: string[],
-    patterns: string[],
+    filings: RadarFilingRow[],
     putCallColumn: string | null
 ): Promise<RadarHoldingRow[]> {
-    if (patterns.length === 0) return [];
+    if (filings.length === 0) return [];
 
-    const quarterPlaceholders = quarters.map(() => '?').join(', ');
-    const patternClauses = patterns.map(() => "UPPER(h.issuer) LIKE ? ESCAPE '\\'").join(' OR ');
+    const filingByAccession = new Map(filings.map((filing) => [filing.accessionNumber, filing]));
     const putCallFilter = putCallColumn
         ? `AND (${quoteIdentifier('h', putCallColumn)} IS NULL OR TRIM(${quoteIdentifier('h', putCallColumn)}) = '')`
         : '';
+    const holdings: RadarHoldingRow[] = [];
 
-    const result = await turso.execute({
-        sql: `
-            SELECT
-                fil.cik AS cik,
-                COALESCE(f.name, fil.cik) AS fundName,
-                h.accession_number AS accessionNumber,
-                fil.filing_date AS filingDate,
-                fil.quarter AS quarter,
-                h.issuer AS issuer,
-                h.cusip AS cusip,
-                h.value AS value,
-                h.shares AS shares
-            FROM holdings h
-            JOIN filings fil ON h.accession_number = fil.accession_number
-            LEFT JOIN funds f ON fil.cik = f.cik
-            WHERE fil.quarter IN (${quarterPlaceholders})
-              AND (${patternClauses})
-              ${putCallFilter}
-        `,
-        args: [...quarters, ...patterns],
-    });
+    for (const filingChunk of chunkArray(filings, 400)) {
+        const placeholders = filingChunk.map(() => '?').join(', ');
+        const result = await turso.execute({
+            sql: `
+                SELECT
+                    h.accession_number AS accessionNumber,
+                    h.issuer AS issuer,
+                    h.cusip AS cusip,
+                    h.value AS value,
+                    h.shares AS shares
+                FROM holdings h
+                WHERE h.accession_number IN (${placeholders})
+                  ${putCallFilter}
+            `,
+            args: filingChunk.map((filing) => filing.accessionNumber),
+        });
 
-    return result.rows.map((row) => ({
-        cik: toStringValue(row, 'cik'),
-        fundName: toStringValue(row, 'fundName'),
-        accessionNumber: toStringValue(row, 'accessionNumber'),
-        filingDate: toStringValue(row, 'filingDate'),
-        quarter: toStringValue(row, 'quarter'),
-        issuer: toStringValue(row, 'issuer'),
-        cusip: nullableStringValue(row, 'cusip'),
-        value: toNumberValue(row, 'value'),
-        shares: toNumberValue(row, 'shares'),
-    }));
+        for (const row of result.rows) {
+            const accessionNumber = toStringValue(row, 'accessionNumber');
+            const filing = filingByAccession.get(accessionNumber);
+            if (!filing) continue;
+
+            holdings.push({
+                cik: filing.cik,
+                fundName: filing.fundName,
+                accessionNumber,
+                filingDate: filing.filingDate,
+                quarter: filing.quarter,
+                issuer: toStringValue(row, 'issuer'),
+                cusip: nullableStringValue(row, 'cusip'),
+                value: toNumberValue(row, 'value'),
+                shares: toNumberValue(row, 'shares'),
+            });
+        }
+    }
+
+    return holdings;
 }
 
 async function queryFilerSideMatches(params: {
@@ -310,25 +322,32 @@ async function queryFilerSideMatches(params: {
     const patterns = buildIssuerSqlPatterns(watchlists, selectedCategories);
     if (patterns.length === 0) return [];
 
-    const patternClauses = patterns.map(() => "UPPER(f.name) LIKE ? ESCAPE '\\'").join(' OR ');
-    const result = await turso.execute({
-        sql: `
-            SELECT
-                f.cik AS cik,
-                f.name AS fundName,
-                MAX(fil.filing_date) AS latestFilingDate,
-                SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS currentCount,
-                SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS previousCount
-            FROM funds f
-            LEFT JOIN filings fil ON fil.cik = f.cik
-            WHERE ${patternClauses}
-            GROUP BY f.cik, f.name
-            LIMIT 200
-        `,
-        args: [currentQuarter, previousQuarter, ...patterns],
-    });
+    const rowsByCik = new Map<string, DbRow>();
+    for (const patternChunk of chunkArray(patterns, 40)) {
+        const patternClauses = patternChunk.map(() => "UPPER(f.name) LIKE ? ESCAPE '\\'").join(' OR ');
+        const result = await turso.execute({
+            sql: `
+                SELECT
+                    f.cik AS cik,
+                    f.name AS fundName,
+                    MAX(fil.filing_date) AS latestFilingDate,
+                    SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS currentCount,
+                    SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS previousCount
+                FROM funds f
+                LEFT JOIN filings fil ON fil.cik = f.cik
+                WHERE ${patternClauses}
+                GROUP BY f.cik, f.name
+                LIMIT 200
+            `,
+            args: [currentQuarter, previousQuarter, ...patternChunk],
+        });
 
-    return result.rows
+        for (const row of result.rows) {
+            rowsByCik.set(toStringValue(row, 'cik'), row);
+        }
+    }
+
+    return Array.from(rowsByCik.values())
         .map((row) => {
             const fundName = toStringValue(row, 'fundName');
             const matches = matchIssuerToWatchlists(fundName, watchlists, selectedCategories);
@@ -442,4 +461,12 @@ function quoteIdentifier(prefix: string, identifier: string): string {
     const safePrefix = prefix.replace(/"/g, '""');
     const safeIdentifier = identifier.replace(/"/g, '""');
     return `"${safePrefix}"."${safeIdentifier}"`;
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) {
+        chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
 }

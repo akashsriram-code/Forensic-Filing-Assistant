@@ -742,7 +742,7 @@ function parseQuarter(value: string): { year: number; quarter: number } | null {
 }
 
 function getItemAliases(item: RadarWatchlistItem): string[] {
-    return [item.label, item.ticker, ...item.aliases]
+    return item.aliases
         .map((alias) => alias.trim())
         .filter(Boolean);
 }
