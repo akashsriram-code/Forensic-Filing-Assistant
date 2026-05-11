@@ -13,6 +13,7 @@ import {
     getArg,
     hasArg,
     isDirectRun,
+    normalizeCikForStorage,
     parseLive13FSubmissionText,
     quarterFromReportDate,
     startIngestionRun,
@@ -221,7 +222,7 @@ async function processLiveFiling(
     } catch (error) {
         return {
             accessionNumber,
-            cik: entry.cik,
+            cik: normalizeCikForStorage(entry.cik),
             fundName: entry.name,
             form: entry.form,
             filingDate: entry.date,
@@ -244,7 +245,7 @@ async function processLiveFiling(
 
     return {
         accessionNumber,
-        cik: entry.cik,
+        cik: normalizeCikForStorage(entry.cik),
         fundName: entry.name,
         form: entry.form,
         filingDate: entry.date,
@@ -365,7 +366,7 @@ async function downloadMasterIndex(url: string): Promise<IndexEntry[]> {
         const form = parts[2].trim().toUpperCase();
         if (!['13F-HR', '13F-HR/A'].includes(form)) continue;
         entries.push({
-            cik: parts[0].trim(),
+            cik: normalizeCikForStorage(parts[0].trim()),
             name: parts[1].trim(),
             form,
             date: parts[3].trim(),

@@ -97,6 +97,13 @@ export function quarterFromReportDate(value: string): string | null {
     return `${date.getUTCFullYear()}-Q${quarter}`;
 }
 
+export function normalizeCikForStorage(cik: string): string {
+    const raw = String(cik || '').trim();
+    const digits = raw.replace(/\D/g, '');
+    const unpadded = digits.replace(/^0+/, '');
+    return unpadded || raw;
+}
+
 export function quarterEndDateString(quarterKey: string): string {
     const { year, quarter } = parseQuarterKey(quarterKey);
     const monthDayByQuarter: Record<number, string> = {

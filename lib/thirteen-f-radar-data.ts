@@ -6,6 +6,7 @@ import {
     buildRadarComparison,
     compareQuartersAsc,
     matchIssuerToWatchlists,
+    normalizeCik,
     selectLatestFilings,
     sortQuartersDesc,
     type EventLensSummary,
@@ -19,6 +20,9 @@ import {
 
 export const MISSING_TURSO_ERROR =
     'Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN. 13F Radar needs the Turso holdings database.';
+
+const HOLDING_QUERY_CHUNK_SIZE = 500;
+const HOLDING_QUERY_CONCURRENCY = 12;
 
 export type TursoClient = ReturnType<typeof createClient>;
 type DbRow = Record<string, unknown>;
@@ -159,7 +163,7 @@ export async function buildEventLens(params: {
     request: ResolvedRadarRequest;
     mainComparison: RadarComparison;
 }): Promise<EventLensSummary[]> {
-    const { turso, request, mainComparison } = params;
+    const { request, mainComparison } = params;
     const eventPairs: Array<{ key: EventLensSummary['key']; currentQuarter: string; previousQuarter: string }> = [
         { key: 'pre-event', currentQuarter: '2025-Q4', previousQuarter: '2025-Q3' },
         { key: 'post-event', currentQuarter: '2026-Q1', previousQuarter: '2025-Q4' },
@@ -176,17 +180,15 @@ export async function buildEventLens(params: {
             continue;
         }
 
-        const comparison =
+        const isSelectedComparison =
             mainComparison.coverage.currentQuarter === eventPair.currentQuarter &&
-                mainComparison.coverage.previousQuarter === eventPair.previousQuarter
-                ? mainComparison
-                : (await loadRadarComparison(turso, {
-                    ...request,
-                    currentQuarter: eventPair.currentQuarter,
-                    previousQuarter: eventPair.previousQuarter,
-                })).comparison;
+            mainComparison.coverage.previousQuarter === eventPair.previousQuarter;
 
-        lenses.push(buildEventLensSummary(eventPair.key, request.availableQuarters, comparison));
+        lenses.push(buildEventLensSummary(
+            eventPair.key,
+            request.availableQuarters,
+            isSelectedComparison ? mainComparison : null
+        ));
     }
 
     return lenses;
@@ -235,7 +237,7 @@ export async function queryFilerSideMatches(params: {
             if (matches.length === 0) return null;
 
             return {
-                cik: toStringValue(row, 'cik'),
+                cik: normalizeCik(toStringValue(row, 'cik')),
                 fundName,
                 matchedCategories: matches.map((match) => match.category.label),
                 matchedItems: matches.flatMap((match) => match.items.map((item) => item.label)),
@@ -290,7 +292,7 @@ async function queryFilings(turso: TursoClient, quarters: string[]): Promise<Rad
     });
 
     return result.rows.map((row) => ({
-        cik: toStringValue(row, 'cik'),
+        cik: normalizeCik(toStringValue(row, 'cik')),
         fundName: toStringValue(row, 'fundName'),
         accessionNumber: toStringValue(row, 'accessionNumber'),
         filingDate: toStringValue(row, 'filingDate'),
@@ -310,42 +312,55 @@ async function queryWatchedHoldings(
         ? `AND (${quoteIdentifier('h', putCallColumn)} IS NULL OR TRIM(${quoteIdentifier('h', putCallColumn)}) = '')`
         : '';
     const holdings: RadarHoldingRow[] = [];
+    const filingChunks = chunkArray(filings, HOLDING_QUERY_CHUNK_SIZE);
+    let nextChunkIndex = 0;
 
-    for (const filingChunk of chunkArray(filings, 900)) {
-        const placeholders = filingChunk.map(() => '?').join(', ');
-        const result = await turso.execute({
-            sql: `
-                SELECT
-                    h.accession_number AS accessionNumber,
-                    h.issuer AS issuer,
-                    h.cusip AS cusip,
-                    h.value AS value,
-                    h.shares AS shares
-                FROM holdings h
-                WHERE h.accession_number IN (${placeholders})
-                  ${putCallFilter}
-            `,
-            args: filingChunk.map((filing) => filing.accessionNumber),
-        });
+    const worker = async () => {
+        while (true) {
+            const chunkIndex = nextChunkIndex++;
+            if (chunkIndex >= filingChunks.length) return;
 
-        for (const row of result.rows) {
-            const accessionNumber = toStringValue(row, 'accessionNumber');
-            const filing = filingByAccession.get(accessionNumber);
-            if (!filing) continue;
-
-            holdings.push({
-                cik: filing.cik,
-                fundName: filing.fundName,
-                accessionNumber,
-                filingDate: filing.filingDate,
-                quarter: filing.quarter,
-                issuer: toStringValue(row, 'issuer'),
-                cusip: nullableStringValue(row, 'cusip'),
-                value: toNumberValue(row, 'value'),
-                shares: toNumberValue(row, 'shares'),
+            const filingChunk = filingChunks[chunkIndex];
+            const placeholders = filingChunk.map(() => '?').join(', ');
+            const result = await turso.execute({
+                sql: `
+                    SELECT
+                        h.accession_number AS accessionNumber,
+                        h.issuer AS issuer,
+                        h.cusip AS cusip,
+                        h.value AS value,
+                        h.shares AS shares
+                    FROM holdings h
+                    WHERE h.accession_number IN (${placeholders})
+                      ${putCallFilter}
+                `,
+                args: filingChunk.map((filing) => filing.accessionNumber),
             });
+
+            for (const row of result.rows) {
+                const accessionNumber = toStringValue(row, 'accessionNumber');
+                const filing = filingByAccession.get(accessionNumber);
+                if (!filing) continue;
+
+                holdings.push({
+                    cik: filing.cik,
+                    fundName: filing.fundName,
+                    accessionNumber,
+                    filingDate: filing.filingDate,
+                    quarter: filing.quarter,
+                    issuer: toStringValue(row, 'issuer'),
+                    cusip: nullableStringValue(row, 'cusip'),
+                    value: toNumberValue(row, 'value'),
+                    shares: toNumberValue(row, 'shares'),
+                });
+            }
         }
-    }
+    };
+
+    await Promise.all(Array.from(
+        { length: Math.min(HOLDING_QUERY_CONCURRENCY, filingChunks.length) },
+        () => worker()
+    ));
 
     return holdings;
 }

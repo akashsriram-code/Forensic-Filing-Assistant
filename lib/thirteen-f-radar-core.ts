@@ -568,6 +568,13 @@ export function sortQuartersDesc(quarters: string[]): string[] {
     return [...new Set(quarters)].sort((a, b) => compareQuartersAsc(b, a));
 }
 
+export function normalizeCik(cik: string): string {
+    const raw = String(cik || '').trim();
+    const digits = raw.replace(/\D/g, '');
+    const unpadded = digits.replace(/^0+/, '');
+    return unpadded || raw;
+}
+
 export function classifyMovement(previousShares: number, currentShares: number): MovementAction {
     if (previousShares <= 0 && currentShares <= 0) return 'absent';
     if (previousShares <= 0 && currentShares > 0) return 'initiated';
@@ -588,8 +595,9 @@ export function selectLatestFilings(rows: RadarFilingRow[], quarter?: string): R
         });
 
     for (const row of sorted) {
-        if (!latestByCik.has(row.cik)) {
-            latestByCik.set(row.cik, row);
+        const cik = normalizeCik(row.cik);
+        if (!latestByCik.has(cik)) {
+            latestByCik.set(cik, { ...row, cik });
         }
     }
 
@@ -697,8 +705,10 @@ export function buildRadarComparison(params: {
         !selectedCategories || selectedCategories.length === 0 || selectedCategories.includes(watchlist.key)
     );
 
-    const currentFilings = selectLatestFilings(filings, currentQuarter);
-    const previousFilings = selectLatestFilings(filings, previousQuarter);
+    const normalizedFilings = filings.map((filing) => ({ ...filing, cik: normalizeCik(filing.cik) }));
+    const normalizedHoldings = holdings.map((holding) => ({ ...holding, cik: normalizeCik(holding.cik) }));
+    const currentFilings = selectLatestFilings(normalizedFilings, currentQuarter);
+    const previousFilings = selectLatestFilings(normalizedFilings, previousQuarter);
     const currentByCik = new Map(currentFilings.map((filing) => [filing.cik, filing]));
     const previousByCik = new Map(previousFilings.map((filing) => [filing.cik, filing]));
     const comparableCiks = Array.from(currentByCik.keys()).filter((cik) => previousByCik.has(cik)).sort();
@@ -715,7 +725,7 @@ export function buildRadarComparison(params: {
     const sectorSecurityStates = new Map<string, SectorFilerState>();
     let watchedHoldingRows = 0;
 
-    for (const row of holdings) {
+    for (const row of normalizedHoldings) {
         if (!comparableSet.has(row.cik)) continue;
 
         const period =
@@ -1167,8 +1177,10 @@ export function buildRadarAudit(params: {
         !selectedCategories || selectedCategories.length === 0 || selectedCategories.includes(watchlist.key)
     );
 
-    const currentFilings = selectLatestFilings(filings, currentQuarter);
-    const previousFilings = selectLatestFilings(filings, previousQuarter);
+    const normalizedFilings = filings.map((filing) => ({ ...filing, cik: normalizeCik(filing.cik) }));
+    const normalizedHoldings = holdings.map((holding) => ({ ...holding, cik: normalizeCik(holding.cik) }));
+    const currentFilings = selectLatestFilings(normalizedFilings, currentQuarter);
+    const previousFilings = selectLatestFilings(normalizedFilings, previousQuarter);
     const currentByCik = new Map(currentFilings.map((filing) => [filing.cik, filing]));
     const previousByCik = new Map(previousFilings.map((filing) => [filing.cik, filing]));
     const comparableSet = new Set(Array.from(currentByCik.keys()).filter((cik) => previousByCik.has(cik)));
@@ -1176,7 +1188,7 @@ export function buildRadarAudit(params: {
     const rawCurrentHoldings: MatchedRawHoldingRow[] = [];
     const rawPreviousHoldings: MatchedRawHoldingRow[] = [];
 
-    for (const row of holdings) {
+    for (const row of normalizedHoldings) {
         if (!comparableSet.has(row.cik)) continue;
 
         const currentFiling = currentByCik.get(row.cik);

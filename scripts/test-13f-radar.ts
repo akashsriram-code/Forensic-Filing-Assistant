@@ -8,6 +8,7 @@ import {
     buildSecSubmissionTextUrl,
     classifyMovement,
     issuerMatchesItem,
+    normalizeCik,
     selectLatestFilings,
     type RadarFilingRow,
     type RadarHoldingRow,
@@ -46,6 +47,9 @@ async function run() {
     assert.equal(classifyMovement(10, 11), 'increased');
     assert.equal(classifyMovement(10, 9), 'decreased');
     assert.equal(classifyMovement(10, 10), 'unchanged');
+    assert.equal(normalizeCik('0001001011'), '1001011');
+    assert.equal(normalizeCik('1001011'), '1001011');
+    assert.equal(normalizeCik('A'), 'A');
 
     const palantir = DEFAULT_RADAR_WATCHLISTS
         .find((watchlist) => watchlist.key === 'palantir')!
@@ -76,6 +80,13 @@ async function run() {
 
     const latest = selectLatestFilings(filings, '2025-Q4').find((row) => row.cik === 'A');
     assert.equal(latest?.accessionNumber, 'A-curr');
+    const paddedLatest = selectLatestFilings([
+        filing('0001001011', 'Padded Fund', 'pad-old', '2026-02-10', '2025-Q4'),
+        filing('1001011', 'Padded Fund', 'pad-new', '2026-02-11', '2025-Q4'),
+    ], '2025-Q4');
+    assert.equal(paddedLatest.length, 1);
+    assert.equal(paddedLatest[0].cik, '1001011');
+    assert.equal(paddedLatest[0].accessionNumber, 'pad-new');
 
     const comparison = buildRadarComparison({
         currentQuarter: '2025-Q4',
@@ -87,6 +98,23 @@ async function run() {
     });
 
     assert.equal(comparison.coverage.comparableFilers, 4);
+
+    const mixedCikComparison = buildRadarComparison({
+        currentQuarter: '2026-Q1',
+        previousQuarter: '2025-Q4',
+        filings: [
+            filing('0001001011', 'Mixed CIK Fund', 'mixed-prev', '2026-02-14', '2025-Q4'),
+            filing('1001011', 'Mixed CIK Fund', 'mixed-curr', '2026-05-10', '2026-Q1'),
+        ],
+        holdings: [
+            holding('0001001011', 'Mixed CIK Fund', 'mixed-prev', '2026-02-14', '2025-Q4', 'SALESFORCE INC', '79466L302', 1000, 10),
+            holding('1001011', 'Mixed CIK Fund', 'mixed-curr', '2026-05-10', '2026-Q1', 'SALESFORCE INC', '79466L302', 2000, 20),
+        ],
+        watchlists: DEFAULT_RADAR_WATCHLISTS,
+        selectedCategories: ['software'],
+    });
+    assert.equal(mixedCikComparison.coverage.comparableFilers, 1);
+    assert.equal(mixedCikComparison.categorySummaries[0].buyers, 1);
 
     const software = comparison.categorySummaries.find((summary) => summary.key === 'software');
     assert.ok(software);

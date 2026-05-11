@@ -15,6 +15,7 @@ import {
     getArg,
     hasArg,
     isDirectRun,
+    normalizeCikForStorage,
     normalizeSecDate,
     parseNumber,
     parseTsv,
@@ -167,7 +168,7 @@ async function upsertFilings(params: {
     for (const chunk of chunkRows(submissions, 100)) {
         await batchWithRetry(turso, chunk.flatMap((row) => {
             const accession = row.ACCESSION_NUMBER;
-            const cik = row.CIK;
+            const cik = normalizeCikForStorage(row.CIK);
             const managerName = managerByAccession.get(accession) || cik;
             return [
                 {
