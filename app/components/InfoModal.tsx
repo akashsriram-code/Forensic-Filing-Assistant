@@ -92,18 +92,7 @@ export function InfoModal({ theme }: { theme: 'light' | 'dark' }) {
                         </div>
                     </section>
 
-                    {/* 3. Insider Analysis */}
-                    <section className="space-y-3">
-                        <div className="flex items-center gap-2 text-emerald-500 font-semibold">
-                            <Activity className="w-5 h-5" />
-                            <h3>Insider Analysis (Form 4)</h3>
-                        </div>
-                        <p className={`text-sm leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-600'}`}>
-                            Track C-suite execution. Enter a company ticker to visualize recent insider buying and selling activity. Note: Bars represent net transaction value.
-                        </p>
-                    </section>
-
-                    {/* 4. Diff Engine */}
+                    {/* 3. Diff Engine */}
                     <section className="space-y-3">
                         <div className="flex items-center gap-2 text-orange-500 font-semibold">
                             <Split className="w-5 h-5" />
@@ -111,18 +100,18 @@ export function InfoModal({ theme }: { theme: 'light' | 'dark' }) {
                         </div>
                         <p className={`text-sm leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-600'}`}>
                             Automatically compare a current 10-K/10-Q with the previous period.
-                            The engine extracts "Risk Factors" and "MD&A" sections for focused side-by-side comparison, highlighting semantic changes.
+                            The engine extracts Risk Factors and MD&A sections for focused side-by-side comparison, highlighting semantic changes.
                         </p>
                     </section>
 
-                    {/* 5. Corporate Intelligence */}
+                    {/* 4. Corporate Intelligence */}
                     <section className="space-y-3">
                         <div className="flex items-center gap-2 text-cyan-500 font-semibold">
                             <BrainCircuit className="w-5 h-5" />
                             <h3>Corporate Intelligence</h3>
                         </div>
                         <p className={`text-sm leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-600'}`}>
-                            <strong>Deep AI Analysis:</strong> Generates "Business Intelligence" reports by comparing current and historical filings.
+                            <strong>Deep AI Analysis:</strong> Generates Business Intelligence reports by comparing current and historical filings.
                         </p>
                         <ul className="list-disc pl-4 space-y-1 opacity-90 text-sm">
                             <li className={theme === 'dark' ? 'text-zinc-400' : 'text-gray-600'}><strong>Supply Chain:</strong> Identify major customers, suppliers, and dependency risks.</li>
@@ -131,7 +120,7 @@ export function InfoModal({ theme }: { theme: 'light' | 'dark' }) {
                         </ul>
                     </section>
 
-                    {/* 6. Notifications */}
+                    {/* 5. Notifications */}
                     <section className="space-y-3">
                         <div className="flex items-center gap-2 text-pink-500 font-semibold">
                             <Bell className="w-5 h-5" />
@@ -147,7 +136,7 @@ export function InfoModal({ theme }: { theme: 'light' | 'dark' }) {
                         </div>
                     </section>
 
-                    {/* 7. IPO Watch */}
+                    {/* 6. IPO Watch */}
                     <section className="space-y-3">
                         <div className="flex items-center gap-2 text-blue-600 font-semibold">
                             <TrendingUp className="w-5 h-5" />

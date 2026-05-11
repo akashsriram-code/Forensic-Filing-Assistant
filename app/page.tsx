@@ -5,9 +5,7 @@ import Link from 'next/link';
 import { AlertTriangle, Download, FileText, FolderDown, Loader2, Sparkles, Activity, Split } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import { InsiderTracker } from './components/InsiderTracker';
 import { WhaleTracker } from './components/WhaleTracker';
-import { MarketPulse } from './components/MarketPulse';
 import { FollowButton } from './components/FollowButton';
 import { InfoModal } from './components/InfoModal';
 import { IpoDashboard } from './components/IpoDashboard';
@@ -38,7 +36,7 @@ const parseInputList = (value: string) =>
     .filter(Boolean);
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'downloader' | 'whale' | 'radar' | 'insider' | 'ipo' | 'intel' | 'market'>('market');
+  const [activeTab, setActiveTab] = useState<'downloader' | 'whale' | 'radar' | 'ipo' | 'intel'>('radar');
   const [entityInput, setEntityInput] = useState("");
   const [keywordInput, setKeywordInput] = useState("");
   const [startDate, setStartDate] = useState("2023-01-01");
@@ -198,12 +196,6 @@ export default function Home() {
                 13F Radar
               </button>
               <button
-                onClick={() => setActiveTab('insider')}
-                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === 'insider' ? (theme === 'dark' ? 'bg-zinc-800 text-white shadow-sm' : 'bg-white text-gray-900 shadow-sm') : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'}`}
-              >
-                Insider Analysis
-              </button>
-              <button
                 onClick={() => setActiveTab('ipo')}
                 className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === 'ipo' ? (theme === 'dark' ? 'bg-zinc-800 text-white shadow-sm' : 'bg-white text-gray-900 shadow-sm') : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'}`}
               >
@@ -217,12 +209,6 @@ export default function Home() {
                   <Sparkles className="w-3 h-3 text-purple-500" />
                   Intelligence
                 </span>
-              </button>
-              <button
-                onClick={() => setActiveTab('market')}
-                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === 'market' ? (theme === 'dark' ? 'bg-zinc-800 text-white shadow-sm' : 'bg-white text-gray-900 shadow-sm') : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'}`}
-              >
-                Market Pulse
               </button>
             </div>
 
@@ -241,14 +227,10 @@ export default function Home() {
           <WhaleTracker theme={theme} />
         ) : activeTab === 'radar' ? (
           <ThirteenFRadar theme={theme} />
-        ) : activeTab === 'insider' ? (
-          <InsiderTracker theme={theme} />
         ) : activeTab === 'ipo' ? (
           <IpoDashboard theme={theme} />
         ) : activeTab === 'intel' ? (
           <IntelligenceDashboard ticker={primaryEntity} theme={theme} />
-        ) : activeTab === 'market' ? (
-          <MarketPulse theme={theme} />
         ) : (
           <div className="max-w-5xl mx-auto space-y-8">
             <div className={`p-8 rounded-2xl border transition-all duration-300 ${theme === 'dark' ? 'bg-zinc-900/50 border-zinc-800 shadow-2xl' : 'bg-white border-gray-200 shadow-sm'}`}>
