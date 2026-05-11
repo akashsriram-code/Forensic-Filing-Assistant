@@ -1,0 +1,138 @@
+name: 13F Ingestion
+
+on:
+  schedule:
+    - cron: '15 11 * * *'
+  workflow_dispatch:
+    inputs:
+      quarter:
+        description: 'Report quarter, e.g. 2026-Q1. Leave blank for most recent completed quarter.'
+        required: false
+        type: string
+      mode:
+        description: 'Which ingestion stage to run.'
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - live
+          - bulk
+          - both
+          - repair-indexes
+      sec_zip_url:
+        description: 'Optional SEC Form 13F Data Set ZIP URL override for bulk mode.'
+        required: false
+        type: string
+
+concurrency:
+  group: 13f-ingestion
+  cancel-in-progress: false
+
+jobs:
+  ingest-13f:
+    runs-on: ubuntu-latest
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'ForensicFilingAssistant contact@example.com' }}
+      REQUESTED_QUARTER: ${{ inputs.quarter || '' }}
+      REQUESTED_MODE: ${{ inputs.mode || 'auto' }}
+      REQUESTED_SEC_ZIP_URL: ${{ inputs.sec_zip_url || '' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve ingestion schedule
+        id: schedule
+        run: |
+          if [ -n "$REQUESTED_QUARTER" ]; then
+            npx tsx scripts/resolve-13f-schedule.ts --quarter "$REQUESTED_QUARTER" --github-output
+          else
+            npx tsx scripts/resolve-13f-schedule.ts --github-output
+          fi
+
+      - name: Check official bulk status
+        id: bulk_status
+        run: npx tsx scripts/check-13f-ingestion-status.ts --quarter "${{ steps.schedule.outputs.quarter }}" --source sec-bulk --github-output
+
+      - name: Check live EDGAR status
+        id: live_status
+        run: npx tsx scripts/check-13f-ingestion-status.ts --quarter "${{ steps.schedule.outputs.quarter }}" --source live-edgar --github-output
+
+      - name: Repair required indexes
+        if: env.REQUESTED_MODE == 'repair-indexes'
+        run: npm run repair:13f-indexes -- --quarter "${{ steps.schedule.outputs.quarter }}" --require-all --github-summary
+
+      - name: Run live EDGAR ingestion
+        id: live_ingest
+        if: |
+          (
+            env.REQUESTED_MODE == 'live' ||
+            env.REQUESTED_MODE == 'both' ||
+            (
+              env.REQUESTED_MODE == 'auto' &&
+              steps.bulk_status.outputs.done != 'true' &&
+              steps.schedule.outputs.live_active == 'true'
+            )
+          )
+        run: |
+          LIVE_ARGS=(
+            --quarter "${{ steps.schedule.outputs.quarter }}"
+            --concurrency 16
+            --rate-limit-ms 100
+            --write-batch-size 8
+            --holding-insert-chunk-size 100
+          )
+          if [ "${{ steps.live_status.outputs.live_mode }}" = "refresh-existing" ]; then
+            LIVE_ARGS+=(--refresh-existing --rebuild-search-indexes)
+          elif [ "${{ steps.live_status.outputs.live_mode }}" = "full" ]; then
+            LIVE_ARGS+=(--rebuild-search-indexes)
+          fi
+          npm run ingest:13f-live -- "${LIVE_ARGS[@]}"
+
+      - name: Resolve SEC bulk ZIP
+        id: sec_dataset
+        if: |
+          (
+            env.REQUESTED_MODE == 'bulk' ||
+            env.REQUESTED_MODE == 'both' ||
+            (
+              env.REQUESTED_MODE == 'auto' &&
+              steps.bulk_status.outputs.done != 'true' &&
+              steps.schedule.outputs.bulk_active == 'true'
+            )
+          )
+        run: |
+          if [ -n "$REQUESTED_SEC_ZIP_URL" ]; then
+            echo "sec_zip_url=$REQUESTED_SEC_ZIP_URL" >> "$GITHUB_OUTPUT"
+            echo "sec_zip_label=manual override" >> "$GITHUB_OUTPUT"
+          else
+            npx tsx scripts/resolve-sec-13f-dataset-url.ts --quarter "${{ steps.schedule.outputs.quarter }}" --github-output
+          fi
+
+      - name: Run official SEC bulk ingestion
+        id: bulk_ingest
+        if: steps.sec_dataset.outputs.sec_zip_url != ''
+        run: npm run ingest:13f-sec -- --quarter "${{ steps.schedule.outputs.quarter }}" --url "${{ steps.sec_dataset.outputs.sec_zip_url }}" --rebuild-search-indexes
+
+      - name: Verify quarter ingestion
+        if: |
+          always() &&
+          (
+            env.REQUESTED_MODE == 'repair-indexes' ||
+            env.REQUESTED_MODE != 'auto' ||
+            steps.schedule.outputs.live_active == 'true' ||
+            steps.schedule.outputs.bulk_active == 'true'
+          )
+        run: npm run verify:13f -- --quarter "${{ steps.schedule.outputs.quarter }}" --github-summary --require-indexes
