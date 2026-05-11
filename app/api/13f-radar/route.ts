@@ -272,7 +272,7 @@ async function queryWatchedHoldings(
         : '';
     const holdings: RadarHoldingRow[] = [];
 
-    for (const filingChunk of chunkArray(filings, 400)) {
+    for (const filingChunk of chunkArray(filings, 900)) {
         const placeholders = filingChunk.map(() => '?').join(', ');
         const result = await turso.execute({
             sql: `

@@ -42,6 +42,35 @@ const parseEditorList = (value: string) =>
         .map((item) => item.trim())
         .filter(Boolean);
 
+const parseRadarResponse = async (res: Response): Promise<RadarApiResponse> => {
+    const contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+    let parsed: unknown = null;
+
+    if (contentType.includes('application/json') || text.trim().startsWith('{')) {
+        try {
+            parsed = JSON.parse(text);
+        } catch {
+            throw new Error(`13F Radar returned malformed JSON (${res.status}).`);
+        }
+    }
+
+    if (!res.ok) {
+        const errorMessage =
+            parsed && typeof parsed === 'object' && 'error' in parsed && typeof parsed.error === 'string'
+                ? parsed.error
+                : text.trim().slice(0, 220) || `HTTP ${res.status}`;
+        throw new Error(`13F Radar failed: ${errorMessage}`);
+    }
+
+    if (!parsed) {
+        const preview = text.trim().slice(0, 220);
+        throw new Error(`13F Radar returned a non-JSON response${preview ? `: ${preview}` : '.'}`);
+    }
+
+    return parsed as RadarApiResponse;
+};
+
 export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
     const isDark = theme === 'dark';
     const [data, setData] = useState<RadarApiResponse | null>(null);
@@ -85,7 +114,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
         try {
             const res = await fetch('/api/13f-radar', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     currentQuarter: requestCurrent,
                     previousQuarter: requestPrevious,
@@ -94,10 +123,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                     movementBasis: 'filer-count',
                 }),
             });
-            const result = await res.json();
-            if (!res.ok) throw new Error(result.error || '13F Radar failed');
-
-            const radar = result as RadarApiResponse;
+            const radar = await parseRadarResponse(res);
             setData(radar);
             setWatchlists(radar.watchlists);
             setCurrentQuarter(radar.coverage.currentQuarter);

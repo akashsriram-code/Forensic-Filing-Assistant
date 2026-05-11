@@ -147,6 +147,13 @@ export interface RadarApiResponse extends RadarComparison {
     notes: string[];
 }
 
+interface AliasProfile {
+    normalized: string;
+    compact: string;
+}
+
+const aliasProfileCache = new WeakMap<RadarWatchlistItem, AliasProfile[]>();
+
 interface MatchResult {
     category: RadarWatchlist;
     items: RadarWatchlistItem[];
@@ -358,14 +365,8 @@ export function selectLatestFilings(rows: RadarFilingRow[], quarter?: string): R
 export function issuerMatchesItem(issuer: string, item: RadarWatchlistItem): boolean {
     const issuerNorm = normalizeIssuerName(issuer);
     const issuerCompact = compactIssuerName(issuer);
-    const aliases = getItemAliases(item);
 
-    return aliases.some((alias) => {
-        const aliasNorm = normalizeIssuerName(alias);
-        const aliasCompact = compactIssuerName(alias);
-        if (aliasCompact.length < 4) return false;
-        return issuerNorm.includes(aliasNorm) || issuerCompact.includes(aliasCompact);
-    });
+    return issuerMatchesAliasProfiles(issuerNorm, issuerCompact, item);
 }
 
 export function matchIssuerToWatchlists(
@@ -374,11 +375,13 @@ export function matchIssuerToWatchlists(
     selectedCategories?: string[]
 ): MatchResult[] {
     const selected = selectedCategories && selectedCategories.length > 0 ? new Set(selectedCategories) : null;
+    const issuerNorm = normalizeIssuerName(issuer);
+    const issuerCompact = issuerNorm.replace(/\s+/g, '');
     const matches: MatchResult[] = [];
 
     for (const watchlist of watchlists) {
         if (selected && !selected.has(watchlist.key)) continue;
-        const items = watchlist.items.filter((item) => issuerMatchesItem(issuer, item));
+        const items = watchlist.items.filter((item) => issuerMatchesAliasProfiles(issuerNorm, issuerCompact, item));
         if (items.length > 0) {
             matches.push({ category: watchlist, items });
         }
@@ -745,6 +748,27 @@ function getItemAliases(item: RadarWatchlistItem): string[] {
     return item.aliases
         .map((alias) => alias.trim())
         .filter(Boolean);
+}
+
+function getItemAliasProfiles(item: RadarWatchlistItem): AliasProfile[] {
+    const cached = aliasProfileCache.get(item);
+    if (cached) return cached;
+
+    const profiles = getItemAliases(item)
+        .map((alias) => ({
+            normalized: normalizeIssuerName(alias),
+            compact: compactIssuerName(alias),
+        }))
+        .filter((alias) => alias.compact.length >= 4);
+
+    aliasProfileCache.set(item, profiles);
+    return profiles;
+}
+
+function issuerMatchesAliasProfiles(issuerNorm: string, issuerCompact: string, item: RadarWatchlistItem): boolean {
+    return getItemAliasProfiles(item).some((alias) =>
+        issuerNorm.includes(alias.normalized) || issuerCompact.includes(alias.compact)
+    );
 }
 
 function escapeLikePattern(value: string): string {
