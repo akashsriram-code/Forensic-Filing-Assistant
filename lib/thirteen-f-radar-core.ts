@@ -1,3 +1,6 @@
+import { classifyFiler, type FilerType } from './filer-classification';
+import { getSector } from './sectors';
+
 export type MovementBasis = 'filer-count';
 
 export type MovementAction =
@@ -49,16 +52,25 @@ export interface RadarCoverage {
 export interface CategorySummary {
     key: string;
     label: string;
+    currentHolders: number;
+    previousHolders: number;
     exposedFilers: number;
+    exposedPctOfComparable: number;
     buyers: number;
     sellers: number;
     initiatedFilers: number;
     liquidatedFilers: number;
     unchangedFilers: number;
+    currentHolderPctOfComparable: number;
+    previousHolderPctOfComparable: number;
     buyerPctOfExposed: number;
     sellerPctOfExposed: number;
+    initiatedPctOfExposed: number;
+    liquidatedPctOfExposed: number;
     buyerPctOfComparable: number;
     sellerPctOfComparable: number;
+    initiatedPctOfComparable: number;
+    liquidatedPctOfComparable: number;
     currentValue: number;
     previousValue: number;
 }
@@ -97,6 +109,20 @@ export interface FilerMove {
     securityCount: number;
     initiatedCount: number;
     liquidatedCount: number;
+    details: FilerMoveDetail[];
+}
+
+export interface FilerMoveDetail {
+    itemKey: string;
+    ticker: string;
+    label: string;
+    action: MovementAction;
+    currentShares: number;
+    previousShares: number;
+    currentValue: number;
+    previousValue: number;
+    issuerSamples: string[];
+    cusips: string[];
 }
 
 export interface FilerSideMatch {
@@ -112,8 +138,15 @@ export interface FilerSideMatch {
 export interface EventLensCategorySignal {
     categoryKey: string;
     label: string;
+    currentHolders: number;
+    previousHolders: number;
+    holderDelta: number;
+    holderDeltaPctOfPrevious: number;
     buyers: number;
     sellers: number;
+    netBuyers: number;
+    initiatedFilers: number;
+    liquidatedFilers: number;
     buyerPctOfComparable: number;
     sellerPctOfComparable: number;
     exposedFilers: number;
@@ -133,6 +166,9 @@ export interface RadarComparison {
     movementBasis: MovementBasis;
     coverage: RadarCoverage;
     categorySummaries: CategorySummary[];
+    sectorMovers: SectorMovementSummary[];
+    filerTypeSummaries: FilerTypeSummary[];
+    privateCreditInstitutionSummaries: PrivateCreditInstitutionSummary[];
     securityMovements: SecurityMovement[];
     initiations: SecurityMovement[];
     liquidations: SecurityMovement[];
@@ -143,8 +179,55 @@ export interface RadarApiResponse extends RadarComparison {
     availableQuarters: string[];
     watchlists: RadarWatchlist[];
     eventLens: EventLensSummary[];
-    filerSideMatches: FilerSideMatch[];
     notes: string[];
+}
+
+export interface SectorMovementSummary {
+    sector: string;
+    exposedFilers: number;
+    currentHolders: number;
+    previousHolders: number;
+    buyers: number;
+    sellers: number;
+    initiatedFilers: number;
+    liquidatedFilers: number;
+    netBuyers: number;
+    buyerPctOfComparable: number;
+    sellerPctOfComparable: number;
+    currentValue: number;
+    previousValue: number;
+}
+
+export interface FilerTypeSummary {
+    filerType: FilerType;
+    categoryKey: string;
+    categoryLabel: string;
+    exposedFilers: number;
+    currentHolders: number;
+    previousHolders: number;
+    buyers: number;
+    sellers: number;
+    initiatedFilers: number;
+    liquidatedFilers: number;
+    netBuyers: number;
+    currentValue: number;
+    previousValue: number;
+}
+
+export interface PrivateCreditInstitutionSummary {
+    cik: string;
+    fundName: string;
+    filerType: FilerType;
+    action: MovementAction;
+    currentValue: number;
+    previousValue: number;
+    valueDelta: number;
+    currentShares: number;
+    previousShares: number;
+    currentItems: string[];
+    previousItems: string[];
+    initiatedItems: string[];
+    liquidatedItems: string[];
 }
 
 interface AliasProfile {
@@ -215,10 +298,10 @@ interface FilerSecurityState {
     previousShares: number;
     currentValue: number;
     previousValue: number;
+    matchedItems: Map<string, { ticker: string; label: string }>;
 }
 
 interface FilerSecurityAuditState extends FilerSecurityState {
-    matchedItems: Set<string>;
     currentRawValue: number;
     previousRawValue: number;
     currentAccessionNumber: string;
@@ -236,9 +319,28 @@ interface FilerCategoryState {
     previousShares: number;
     currentValue: number;
     previousValue: number;
-    securityKeys: Set<string>;
-    initiatedCount: number;
-    liquidatedCount: number;
+    itemStates: Map<string, FilerMoveDetailState>;
+}
+
+interface FilerMoveDetailState {
+    itemKey: string;
+    ticker: string;
+    label: string;
+    currentShares: number;
+    previousShares: number;
+    currentValue: number;
+    previousValue: number;
+    issuerSamples: string[];
+    cusips: Set<string>;
+}
+
+interface SectorFilerState {
+    cik: string;
+    sector: string;
+    currentShares: number;
+    previousShares: number;
+    currentValue: number;
+    previousValue: number;
 }
 
 const SQL_STOP_WORDS = new Set([
@@ -275,7 +377,8 @@ export const DEFAULT_RADAR_WATCHLISTS: RadarWatchlist[] = [
             { ticker: 'AMZN', label: 'Amazon', aliases: ['AMAZON', 'AMAZON COM', 'AMAZON.COM'] },
             { ticker: 'META', label: 'Meta', aliases: ['META PLATFORMS', 'FACEBOOK'] },
             { ticker: 'TSLA', label: 'Tesla', aliases: ['TESLA', 'TESLA INC'] },
-            { ticker: 'GOOG/GOOGL', label: 'Alphabet', aliases: ['ALPHABET', 'GOOGLE'] },
+            { ticker: 'GOOG', label: 'Alphabet Class C', aliases: ['ALPHABET INC CL C', 'ALPHABET INC CLASS C', 'GOOGLE CLASS C'] },
+            { ticker: 'GOOGL', label: 'Alphabet Class A', aliases: ['ALPHABET INC CL A', 'ALPHABET INC CLASS A', 'GOOGLE CLASS A'] },
         ],
     },
     {
@@ -360,6 +463,83 @@ export const DEFAULT_RADAR_WATCHLISTS: RadarWatchlist[] = [
             { ticker: 'ASAN', label: 'Asana', aliases: ['ASANA'] },
         ],
     },
+    {
+        key: 'semiconductors',
+        label: 'Semiconductors',
+        description: 'Chip designers, foundries, semiconductor equipment, and analog/memory names.',
+        items: [
+            { ticker: 'NVDA', label: 'Nvidia', aliases: ['NVIDIA', 'NVIDIA CORP'] },
+            { ticker: 'AMD', label: 'Advanced Micro Devices', aliases: ['ADVANCED MICRO DEVICES', 'AMD'] },
+            { ticker: 'AVGO', label: 'Broadcom', aliases: ['BROADCOM', 'BROADCOM INC'] },
+            { ticker: 'INTC', label: 'Intel', aliases: ['INTEL', 'INTEL CORP'] },
+            { ticker: 'QCOM', label: 'Qualcomm', aliases: ['QUALCOMM'] },
+            { ticker: 'MU', label: 'Micron', aliases: ['MICRON', 'MICRON TECHNOLOGY'] },
+            { ticker: 'TXN', label: 'Texas Instruments', aliases: ['TEXAS INSTRUMENTS'] },
+            { ticker: 'AMAT', label: 'Applied Materials', aliases: ['APPLIED MATERIALS'] },
+            { ticker: 'LRCX', label: 'Lam Research', aliases: ['LAM RESEARCH'] },
+            { ticker: 'KLAC', label: 'KLA', aliases: ['KLA CORP', 'KLA TENCOR'] },
+            { ticker: 'ASML', label: 'ASML', aliases: ['ASML', 'ASML HOLDING'] },
+            { ticker: 'TSM', label: 'Taiwan Semiconductor', aliases: ['TAIWAN SEMICONDUCTOR', 'TAIWAN SEMICONDUCTOR MANUFACTURING'] },
+            { ticker: 'ARM', label: 'Arm Holdings', aliases: ['ARM HOLDINGS'] },
+            { ticker: 'MRVL', label: 'Marvell', aliases: ['MARVELL', 'MARVELL TECHNOLOGY'] },
+            { ticker: 'ON', label: 'ON Semiconductor', aliases: ['ON SEMICONDUCTOR', 'ONSEMI'] },
+            { ticker: 'ADI', label: 'Analog Devices', aliases: ['ANALOG DEVICES'] },
+            { ticker: 'MCHP', label: 'Microchip Technology', aliases: ['MICROCHIP TECHNOLOGY'] },
+        ],
+    },
+    {
+        key: 'ai-infra',
+        label: 'AI Infrastructure',
+        description: 'Public infrastructure and platform names commonly cited as AI beneficiaries.',
+        items: [
+            { ticker: 'ORCL', label: 'Oracle', aliases: ['ORACLE', 'ORACLE CORP'] },
+            { ticker: 'ANET', label: 'Arista Networks', aliases: ['ARISTA', 'ARISTA NETWORKS'] },
+            { ticker: 'VRT', label: 'Vertiv', aliases: ['VERTIV'] },
+            { ticker: 'DELL', label: 'Dell Technologies', aliases: ['DELL', 'DELL TECHNOLOGIES'] },
+            { ticker: 'SMCI', label: 'Super Micro Computer', aliases: ['SUPER MICRO', 'SUPER MICRO COMPUTER'] },
+            { ticker: 'HPE', label: 'Hewlett Packard Enterprise', aliases: ['HEWLETT PACKARD ENTERPRISE', 'HPE'] },
+            { ticker: 'IBM', label: 'IBM', aliases: ['IBM', 'INTERNATIONAL BUSINESS MACHINES'] },
+            { ticker: 'AVGO', label: 'Broadcom', aliases: ['BROADCOM', 'BROADCOM INC'] },
+            { ticker: 'PLTR', label: 'Palantir', aliases: ['PALANTIR', 'PALANTIR TECHNOLOGIES'] },
+        ],
+    },
+    {
+        key: 'utilities-power',
+        label: 'Utilities / Power',
+        description: 'Power producers and regulated utilities tied to AI/data-center load growth.',
+        items: [
+            { ticker: 'NEE', label: 'NextEra Energy', aliases: ['NEXTERA', 'NEXTERA ENERGY'] },
+            { ticker: 'CEG', label: 'Constellation Energy', aliases: ['CONSTELLATION ENERGY'] },
+            { ticker: 'VST', label: 'Vistra', aliases: ['VISTRA'] },
+            { ticker: 'NRG', label: 'NRG Energy', aliases: ['NRG ENERGY'] },
+            { ticker: 'SO', label: 'Southern Company', aliases: ['SOUTHERN CO', 'SOUTHERN COMPANY'] },
+            { ticker: 'DUK', label: 'Duke Energy', aliases: ['DUKE ENERGY'] },
+            { ticker: 'AEP', label: 'American Electric Power', aliases: ['AMERICAN ELECTRIC POWER'] },
+            { ticker: 'EXC', label: 'Exelon', aliases: ['EXELON'] },
+            { ticker: 'PEG', label: 'Public Service Enterprise', aliases: ['PUBLIC SERVICE ENTERPRISE', 'PSEG'] },
+            { ticker: 'SRE', label: 'Sempra', aliases: ['SEMPRA'] },
+            { ticker: 'PCG', label: 'PG&E', aliases: ['PG&E', 'PG E CORP'] },
+            { ticker: 'ETR', label: 'Entergy', aliases: ['ENTERGY'] },
+            { ticker: 'D', label: 'Dominion Energy', aliases: ['DOMINION ENERGY'] },
+            { ticker: 'XEL', label: 'Xcel Energy', aliases: ['XCEL ENERGY'] },
+            { ticker: 'AES', label: 'AES', aliases: ['AES CORP'] },
+        ],
+    },
+    {
+        key: 'data-centers',
+        label: 'Data Centers',
+        description: 'Data-center REITs, towers, power equipment, and buildout enablers.',
+        items: [
+            { ticker: 'EQIX', label: 'Equinix', aliases: ['EQUINIX'] },
+            { ticker: 'DLR', label: 'Digital Realty', aliases: ['DIGITAL REALTY'] },
+            { ticker: 'IRM', label: 'Iron Mountain', aliases: ['IRON MOUNTAIN'] },
+            { ticker: 'AMT', label: 'American Tower', aliases: ['AMERICAN TOWER'] },
+            { ticker: 'CCI', label: 'Crown Castle', aliases: ['CROWN CASTLE'] },
+            { ticker: 'VRT', label: 'Vertiv', aliases: ['VERTIV'] },
+            { ticker: 'ETN', label: 'Eaton', aliases: ['EATON'] },
+            { ticker: 'PWR', label: 'Quanta Services', aliases: ['QUANTA SERVICES'] },
+        ],
+    },
 ];
 
 export function normalizeIssuerName(value: string): string {
@@ -420,7 +600,7 @@ export function issuerMatchesItem(issuer: string, item: RadarWatchlistItem): boo
     const issuerNorm = normalizeIssuerName(issuer);
     const issuerCompact = compactIssuerName(issuer);
 
-    return issuerMatchesAliasProfiles(issuerNorm, issuerCompact, item);
+    return issuerMatchesPreparedItem(issuerNorm, issuerCompact, item);
 }
 
 export function matchIssuerToWatchlists(
@@ -435,7 +615,7 @@ export function matchIssuerToWatchlists(
 
     for (const watchlist of watchlists) {
         if (selected && !selected.has(watchlist.key)) continue;
-        const items = watchlist.items.filter((item) => issuerMatchesAliasProfiles(issuerNorm, issuerCompact, item));
+        const items = watchlist.items.filter((item) => issuerMatchesPreparedItem(issuerNorm, issuerCompact, item));
         if (items.length > 0) {
             matches.push({ category: watchlist, items });
         }
@@ -532,6 +712,7 @@ export function buildRadarComparison(params: {
     }
 
     const securityStates = new Map<string, FilerSecurityState>();
+    const sectorSecurityStates = new Map<string, SectorFilerState>();
     let watchedHoldingRows = 0;
 
     for (const row of holdings) {
@@ -550,6 +731,24 @@ export function buildRadarComparison(params: {
         if (matches.length === 0) continue;
 
         watchedHoldingRows++;
+        const sectorSecurityKey = `${row.cik}|${row.cusip || compactIssuerName(row.issuer)}`;
+        const sectorSecurityState = sectorSecurityStates.get(sectorSecurityKey) || {
+            cik: row.cik,
+            sector: getSector(row.issuer),
+            currentShares: 0,
+            previousShares: 0,
+            currentValue: 0,
+            previousValue: 0,
+        };
+        if (period === 'current') {
+            sectorSecurityState.currentShares += safeNumber(row.shares);
+            sectorSecurityState.currentValue += estimateActualValue(row.value, row.shares);
+        } else {
+            sectorSecurityState.previousShares += safeNumber(row.shares);
+            sectorSecurityState.previousValue += estimateActualValue(row.value, row.shares);
+        }
+        sectorSecurityStates.set(sectorSecurityKey, sectorSecurityState);
+
         for (const match of matches) {
             const securityKey = row.cusip || compactIssuerName(row.issuer);
             const stateKey = `${row.cik}|${match.category.key}|${securityKey}`;
@@ -566,7 +765,15 @@ export function buildRadarComparison(params: {
                 previousShares: 0,
                 currentValue: 0,
                 previousValue: 0,
+                matchedItems: new Map<string, { ticker: string; label: string }>(),
             };
+
+            for (const item of match.items) {
+                state.matchedItems.set(canonicalItemKey(match.category.key, item), {
+                    ticker: item.ticker,
+                    label: item.label,
+                });
+            }
 
             if (period === 'current') {
                 state.currentShares += safeNumber(row.shares);
@@ -650,21 +857,38 @@ export function buildRadarComparison(params: {
             previousShares: 0,
             currentValue: 0,
             previousValue: 0,
-            securityKeys: new Set<string>(),
-            initiatedCount: 0,
-            liquidatedCount: 0,
+            itemStates: new Map<string, FilerMoveDetailState>(),
         };
         categoryState.currentShares += state.currentShares;
         categoryState.previousShares += state.previousShares;
         categoryState.currentValue += state.currentValue;
         categoryState.previousValue += state.previousValue;
-        categoryState.securityKeys.add(state.securityKey);
-        if (action === 'initiated') categoryState.initiatedCount++;
-        if (action === 'liquidated') categoryState.liquidatedCount++;
+        for (const [itemKey, item] of state.matchedItems) {
+            const detail = categoryState.itemStates.get(itemKey) || {
+                itemKey,
+                ticker: item.ticker,
+                label: item.label,
+                currentShares: 0,
+                previousShares: 0,
+                currentValue: 0,
+                previousValue: 0,
+                issuerSamples: [],
+                cusips: new Set<string>(),
+            };
+            detail.currentShares += state.currentShares;
+            detail.previousShares += state.previousShares;
+            detail.currentValue += state.currentValue;
+            detail.previousValue += state.previousValue;
+            pushSample(detail.issuerSamples, state.issuer);
+            if (state.cusip) detail.cusips.add(state.cusip);
+            categoryState.itemStates.set(itemKey, detail);
+        }
         categoryByFilerMap.set(categoryKey, categoryState);
     }
 
     const categorySummaries = selectedWatchlists.map((watchlist) => {
+        let currentHolders = 0;
+        let previousHolders = 0;
         let exposedFilers = 0;
         let buyers = 0;
         let sellers = 0;
@@ -679,6 +903,8 @@ export function buildRadarComparison(params: {
             const action = classifyMovement(state.previousShares, state.currentShares);
             if (action === 'absent') continue;
             exposedFilers++;
+            if (state.currentShares > 0) currentHolders++;
+            if (state.previousShares > 0) previousHolders++;
             if (state.currentShares > state.previousShares) buyers++;
             if (state.currentShares < state.previousShares) sellers++;
             if (action === 'initiated') initiatedFilers++;
@@ -691,16 +917,25 @@ export function buildRadarComparison(params: {
         return {
             key: watchlist.key,
             label: watchlist.label,
+            currentHolders,
+            previousHolders,
             exposedFilers,
+            exposedPctOfComparable: pct(exposedFilers, comparableCiks.length),
             buyers,
             sellers,
             initiatedFilers,
             liquidatedFilers,
             unchangedFilers,
+            currentHolderPctOfComparable: pct(currentHolders, comparableCiks.length),
+            previousHolderPctOfComparable: pct(previousHolders, comparableCiks.length),
             buyerPctOfExposed: pct(buyers, exposedFilers),
             sellerPctOfExposed: pct(sellers, exposedFilers),
+            initiatedPctOfExposed: pct(initiatedFilers, exposedFilers),
+            liquidatedPctOfExposed: pct(liquidatedFilers, exposedFilers),
             buyerPctOfComparable: pct(buyers, comparableCiks.length),
             sellerPctOfComparable: pct(sellers, comparableCiks.length),
+            initiatedPctOfComparable: pct(initiatedFilers, comparableCiks.length),
+            liquidatedPctOfComparable: pct(liquidatedFilers, comparableCiks.length),
             currentValue,
             previousValue,
         };
@@ -713,23 +948,64 @@ export function buildRadarComparison(params: {
     });
 
     const topFilerMoves = Array.from(categoryByFilerMap.values())
-        .map((state) => ({
-            cik: state.cik,
-            fundName: state.fundName,
-            categoryKey: state.categoryKey,
-            categoryLabel: state.categoryLabel,
-            action: classifyMovement(state.previousShares, state.currentShares),
-            currentShares: state.currentShares,
-            previousShares: state.previousShares,
-            currentValue: state.currentValue,
-            previousValue: state.previousValue,
-            valueDelta: state.currentValue - state.previousValue,
-            securityCount: state.securityKeys.size,
-            initiatedCount: state.initiatedCount,
-            liquidatedCount: state.liquidatedCount,
-        }))
+        .map((state) => {
+            const details = Array.from(state.itemStates.values())
+                .map((detail) => ({
+                    itemKey: detail.itemKey,
+                    ticker: detail.ticker,
+                    label: detail.label,
+                    action: classifyMovement(detail.previousShares, detail.currentShares),
+                    currentShares: detail.currentShares,
+                    previousShares: detail.previousShares,
+                    currentValue: detail.currentValue,
+                    previousValue: detail.previousValue,
+                    issuerSamples: detail.issuerSamples,
+                    cusips: Array.from(detail.cusips).sort(),
+                }))
+                .filter((detail) => detail.action !== 'absent')
+                .sort((a, b) => Math.abs(b.currentValue - b.previousValue) - Math.abs(a.currentValue - a.previousValue));
+
+            return {
+                cik: state.cik,
+                fundName: state.fundName,
+                categoryKey: state.categoryKey,
+                categoryLabel: state.categoryLabel,
+                action: classifyMovement(state.previousShares, state.currentShares),
+                currentShares: state.currentShares,
+                previousShares: state.previousShares,
+                currentValue: state.currentValue,
+                previousValue: state.previousValue,
+                valueDelta: state.currentValue - state.previousValue,
+                securityCount: details.length,
+                initiatedCount: details.filter((detail) => detail.action === 'initiated').length,
+                liquidatedCount: details.filter((detail) => detail.action === 'liquidated').length,
+                details,
+            };
+        })
         .filter((move) => move.action !== 'absent' && move.action !== 'unchanged')
         .sort((a, b) => Math.abs(b.valueDelta) - Math.abs(a.valueDelta));
+
+    const sectorByFilerMap = new Map<string, SectorFilerState>();
+    for (const state of sectorSecurityStates.values()) {
+        const sectorKey = `${state.cik}|${state.sector}`;
+        const sectorState = sectorByFilerMap.get(sectorKey) || {
+            cik: state.cik,
+            sector: state.sector,
+            currentShares: 0,
+            previousShares: 0,
+            currentValue: 0,
+            previousValue: 0,
+        };
+        sectorState.currentShares += state.currentShares;
+        sectorState.previousShares += state.previousShares;
+        sectorState.currentValue += state.currentValue;
+        sectorState.previousValue += state.previousValue;
+        sectorByFilerMap.set(sectorKey, sectorState);
+    }
+
+    const sectorMovers = buildSectorMovers(Array.from(sectorByFilerMap.values()), comparableCiks.length);
+    const filerTypeSummaries = buildFilerTypeSummaries(Array.from(categoryByFilerMap.values()));
+    const privateCreditInstitutionSummaries = buildPrivateCreditInstitutionSummaries(Array.from(categoryByFilerMap.values()));
 
     return {
         movementBasis,
@@ -743,6 +1019,9 @@ export function buildRadarComparison(params: {
             watchedHoldingRows,
         },
         categorySummaries,
+        sectorMovers,
+        filerTypeSummaries,
+        privateCreditInstitutionSummaries,
         securityMovements,
         initiations: securityMovements
             .filter((movement) => movement.initiatedFilers > 0)
@@ -752,6 +1031,127 @@ export function buildRadarComparison(params: {
             .sort((a, b) => b.liquidatedFilers - a.liquidatedFilers || b.previousValue - a.previousValue),
         topFilerMoves,
     };
+}
+
+function buildSectorMovers(states: SectorFilerState[], comparableFilers: number): SectorMovementSummary[] {
+    const summaryMap = new Map<string, SectorMovementSummary>();
+    for (const state of states) {
+        const action = classifyMovement(state.previousShares, state.currentShares);
+        if (action === 'absent') continue;
+        const summary = summaryMap.get(state.sector) || {
+            sector: state.sector,
+            exposedFilers: 0,
+            currentHolders: 0,
+            previousHolders: 0,
+            buyers: 0,
+            sellers: 0,
+            initiatedFilers: 0,
+            liquidatedFilers: 0,
+            netBuyers: 0,
+            buyerPctOfComparable: 0,
+            sellerPctOfComparable: 0,
+            currentValue: 0,
+            previousValue: 0,
+        };
+        summary.exposedFilers++;
+        if (state.currentShares > 0) summary.currentHolders++;
+        if (state.previousShares > 0) summary.previousHolders++;
+        if (state.currentShares > state.previousShares) summary.buyers++;
+        if (state.currentShares < state.previousShares) summary.sellers++;
+        if (action === 'initiated') summary.initiatedFilers++;
+        if (action === 'liquidated') summary.liquidatedFilers++;
+        summary.currentValue += state.currentValue;
+        summary.previousValue += state.previousValue;
+        summary.netBuyers = summary.buyers - summary.sellers;
+        summary.buyerPctOfComparable = pct(summary.buyers, comparableFilers);
+        summary.sellerPctOfComparable = pct(summary.sellers, comparableFilers);
+        summaryMap.set(state.sector, summary);
+    }
+
+    return Array.from(summaryMap.values()).sort((a, b) =>
+        Math.abs(b.netBuyers) - Math.abs(a.netBuyers) ||
+        Math.abs((b.currentValue - b.previousValue)) - Math.abs((a.currentValue - a.previousValue))
+    );
+}
+
+function buildFilerTypeSummaries(states: FilerCategoryState[]): FilerTypeSummary[] {
+    const summaryMap = new Map<string, FilerTypeSummary>();
+    for (const state of states) {
+        const action = classifyMovement(state.previousShares, state.currentShares);
+        if (action === 'absent') continue;
+        const filerType = classifyFiler(state.cik, state.fundName).type;
+        const summaryKey = `${filerType}|${state.categoryKey}`;
+        const summary = summaryMap.get(summaryKey) || {
+            filerType,
+            categoryKey: state.categoryKey,
+            categoryLabel: state.categoryLabel,
+            exposedFilers: 0,
+            currentHolders: 0,
+            previousHolders: 0,
+            buyers: 0,
+            sellers: 0,
+            initiatedFilers: 0,
+            liquidatedFilers: 0,
+            netBuyers: 0,
+            currentValue: 0,
+            previousValue: 0,
+        };
+        summary.exposedFilers++;
+        if (state.currentShares > 0) summary.currentHolders++;
+        if (state.previousShares > 0) summary.previousHolders++;
+        if (state.currentShares > state.previousShares) summary.buyers++;
+        if (state.currentShares < state.previousShares) summary.sellers++;
+        if (action === 'initiated') summary.initiatedFilers++;
+        if (action === 'liquidated') summary.liquidatedFilers++;
+        summary.netBuyers = summary.buyers - summary.sellers;
+        summary.currentValue += state.currentValue;
+        summary.previousValue += state.previousValue;
+        summaryMap.set(summaryKey, summary);
+    }
+
+    return Array.from(summaryMap.values()).sort((a, b) =>
+        a.filerType.localeCompare(b.filerType) ||
+        Math.abs(b.netBuyers) - Math.abs(a.netBuyers) ||
+        a.categoryLabel.localeCompare(b.categoryLabel)
+    );
+}
+
+function buildPrivateCreditInstitutionSummaries(states: FilerCategoryState[]): PrivateCreditInstitutionSummary[] {
+    const summaries: PrivateCreditInstitutionSummary[] = [];
+
+    for (const state of states) {
+        if (state.categoryKey !== 'bdc') continue;
+        const classification = classifyFiler(state.cik, state.fundName);
+        if (classification.type !== 'Pension / Public Fund' && classification.type !== 'University / Endowment') continue;
+
+        const action = classifyMovement(state.previousShares, state.currentShares);
+        if (action === 'absent') continue;
+
+        const details = Array.from(state.itemStates.values()).map((detail) => ({
+            label: detail.label,
+            action: classifyMovement(detail.previousShares, detail.currentShares),
+            currentShares: detail.currentShares,
+            previousShares: detail.previousShares,
+        }));
+
+        summaries.push({
+            cik: state.cik,
+            fundName: state.fundName,
+            filerType: classification.type,
+            action,
+            currentValue: state.currentValue,
+            previousValue: state.previousValue,
+            valueDelta: state.currentValue - state.previousValue,
+            currentShares: state.currentShares,
+            previousShares: state.previousShares,
+            currentItems: uniqueStrings(details.filter((detail) => detail.currentShares > 0).map((detail) => detail.label)),
+            previousItems: uniqueStrings(details.filter((detail) => detail.previousShares > 0).map((detail) => detail.label)),
+            initiatedItems: uniqueStrings(details.filter((detail) => detail.action === 'initiated').map((detail) => detail.label)),
+            liquidatedItems: uniqueStrings(details.filter((detail) => detail.action === 'liquidated').map((detail) => detail.label)),
+        });
+    }
+
+    return summaries.sort((a, b) => Math.abs(b.valueDelta) - Math.abs(a.valueDelta) || b.currentValue - a.currentValue);
 }
 
 export function buildRadarAudit(params: {
@@ -834,14 +1234,19 @@ export function buildRadarAudit(params: {
                 previousValue: 0,
                 currentRawValue: 0,
                 previousRawValue: 0,
-                matchedItems: new Set<string>(),
+                matchedItems: new Map<string, { ticker: string; label: string }>(),
                 currentAccessionNumber: currentFiling.accessionNumber,
                 previousAccessionNumber: previousFiling.accessionNumber,
                 currentFilingDate: currentFiling.filingDate,
                 previousFilingDate: previousFiling.filingDate,
             };
 
-            for (const item of match.items) state.matchedItems.add(item.label);
+            for (const item of match.items) {
+                state.matchedItems.set(canonicalItemKey(match.category.key, item), {
+                    ticker: item.ticker,
+                    label: item.label,
+                });
+            }
 
             if (period === 'current') {
                 state.currentShares += safeNumber(row.shares);
@@ -869,7 +1274,7 @@ export function buildRadarAudit(params: {
                 fundName: state.fundName,
                 categoryKey: state.categoryKey,
                 categoryLabel: state.categoryLabel,
-                matchedItems: Array.from(state.matchedItems).sort(),
+                matchedItems: uniqueStrings(Array.from(state.matchedItems.values()).map((item) => item.label)),
                 securityKey: state.securityKey,
                 issuer: state.issuer,
                 cusip: state.cusip,
@@ -916,12 +1321,18 @@ export function buildEventLensSummary(
     const available = availableQuarters.includes(currentQuarter) && availableQuarters.includes(previousQuarter);
     const signals = comparison
         ? comparison.categorySummaries
-            .filter((summary) => summary.key === 'energy' || summary.key === 'software')
             .map((summary) => ({
                 categoryKey: summary.key,
                 label: summary.label,
+                currentHolders: summary.currentHolders,
+                previousHolders: summary.previousHolders,
+                holderDelta: summary.currentHolders - summary.previousHolders,
+                holderDeltaPctOfPrevious: pct(summary.currentHolders - summary.previousHolders, summary.previousHolders),
                 buyers: summary.buyers,
                 sellers: summary.sellers,
+                netBuyers: summary.buyers - summary.sellers,
+                initiatedFilers: summary.initiatedFilers,
+                liquidatedFilers: summary.liquidatedFilers,
                 buyerPctOfComparable: summary.buyerPctOfComparable,
                 sellerPctOfComparable: summary.sellerPctOfComparable,
                 exposedFilers: summary.exposedFilers,
@@ -968,6 +1379,27 @@ function getItemAliasProfiles(item: RadarWatchlistItem): AliasProfile[] {
 
     aliasProfileCache.set(item, profiles);
     return profiles;
+}
+
+function canonicalItemKey(categoryKey: string, item: RadarWatchlistItem): string {
+    return `${categoryKey}|${item.ticker.toUpperCase()}|${compactIssuerName(item.label)}`;
+}
+
+function issuerMatchesPreparedItem(issuerNorm: string, issuerCompact: string, item: RadarWatchlistItem): boolean {
+    const alphabetMatch = matchAlphabetShareClass(issuerNorm, item);
+    if (alphabetMatch !== null) return alphabetMatch;
+    return issuerMatchesAliasProfiles(issuerNorm, issuerCompact, item);
+}
+
+function matchAlphabetShareClass(issuerNorm: string, item: RadarWatchlistItem): boolean | null {
+    const ticker = item.ticker.toUpperCase();
+    if (ticker !== 'GOOG' && ticker !== 'GOOGL') return null;
+    if (!/\b(ALPHABET|GOOGLE)\b/.test(issuerNorm)) return false;
+
+    const hasClassA = /\b(CL|CLASS)\s+A\b/.test(issuerNorm);
+    const hasClassC = /\b(CL|CLASS)\s+C\b/.test(issuerNorm);
+    if (ticker === 'GOOGL') return hasClassA;
+    return hasClassC || (!hasClassA && !hasClassC);
 }
 
 function issuerMatchesAliasProfiles(issuerNorm: string, issuerCompact: string, item: RadarWatchlistItem): boolean {

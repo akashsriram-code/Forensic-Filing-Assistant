@@ -1,6 +1,5 @@
 import * as XLSX from 'xlsx';
 import {
-    type FilerSideMatch,
     type MatchedRawHoldingRow,
     type RadarAuditResult,
     type RadarComparison,
@@ -21,7 +20,6 @@ export interface RadarExportWorkbookInput {
     request: ResolvedRadarRequest;
     comparison: RadarComparison;
     audit: RadarAuditResult;
-    filerSideMatches: FilerSideMatch[];
     notes: string[];
     generatedAt: Date;
 }
@@ -43,31 +41,49 @@ export function buildRadarAuditWorkbook(input: RadarExportWorkbookInput): Buffer
     appendJsonSheet(workbook, 'Category Trends', input.comparison.categorySummaries.map((summary) => ({
         category_key: summary.key,
         category: summary.label,
+        current_holders: summary.currentHolders,
+        previous_holders: summary.previousHolders,
         exposed_filers: summary.exposedFilers,
+        exposed_pct_of_comparable: summary.exposedPctOfComparable,
         buyers: summary.buyers,
         sellers: summary.sellers,
         initiated_filers: summary.initiatedFilers,
         liquidated_filers: summary.liquidatedFilers,
         unchanged_filers: summary.unchangedFilers,
+        current_holder_pct_of_comparable: summary.currentHolderPctOfComparable,
+        previous_holder_pct_of_comparable: summary.previousHolderPctOfComparable,
         buyer_pct_of_exposed: summary.buyerPctOfExposed,
         seller_pct_of_exposed: summary.sellerPctOfExposed,
+        initiated_pct_of_exposed: summary.initiatedPctOfExposed,
+        liquidated_pct_of_exposed: summary.liquidatedPctOfExposed,
         buyer_pct_of_comparable: summary.buyerPctOfComparable,
         seller_pct_of_comparable: summary.sellerPctOfComparable,
+        initiated_pct_of_comparable: summary.initiatedPctOfComparable,
+        liquidated_pct_of_comparable: summary.liquidatedPctOfComparable,
         current_estimated_value: summary.currentValue,
         previous_estimated_value: summary.previousValue,
     })), [
         { key: 'category_key', label: 'Category Key', width: 18 },
         { key: 'category', label: 'Category', width: 24 },
+        { key: 'current_holders', label: 'Current Holders', width: 17 },
+        { key: 'previous_holders', label: 'Previous Holders', width: 17 },
         { key: 'exposed_filers', label: 'Exposed Filers', width: 16 },
+        { key: 'exposed_pct_of_comparable', label: 'Exposed % Of Comparable', width: 24 },
         { key: 'buyers', label: 'Buyers', width: 12 },
         { key: 'sellers', label: 'Sellers', width: 12 },
         { key: 'initiated_filers', label: 'Initiated Filers', width: 18 },
         { key: 'liquidated_filers', label: 'Liquidated Filers', width: 18 },
         { key: 'unchanged_filers', label: 'Unchanged Filers', width: 18 },
+        { key: 'current_holder_pct_of_comparable', label: 'Current Holder % Of Comparable', width: 30 },
+        { key: 'previous_holder_pct_of_comparable', label: 'Previous Holder % Of Comparable', width: 30 },
         { key: 'buyer_pct_of_exposed', label: 'Buyer % Of Exposed', width: 20 },
         { key: 'seller_pct_of_exposed', label: 'Seller % Of Exposed', width: 20 },
+        { key: 'initiated_pct_of_exposed', label: 'Initiated % Of Exposed', width: 23 },
+        { key: 'liquidated_pct_of_exposed', label: 'Liquidated % Of Exposed', width: 23 },
         { key: 'buyer_pct_of_comparable', label: 'Buyer % Of Comparable', width: 22 },
         { key: 'seller_pct_of_comparable', label: 'Seller % Of Comparable', width: 22 },
+        { key: 'initiated_pct_of_comparable', label: 'Initiated % Of Comparable', width: 26 },
+        { key: 'liquidated_pct_of_comparable', label: 'Liquidated % Of Comparable', width: 26 },
         { key: 'current_estimated_value', label: 'Current Estimated Value', width: 24 },
         { key: 'previous_estimated_value', label: 'Previous Estimated Value', width: 24 },
     ]);
@@ -86,6 +102,130 @@ export function buildRadarAuditWorkbook(input: RadarExportWorkbookInput): Buffer
         { key: 'net_buyers', label: 'Net Buyers', width: 14 },
         { key: 'current_estimated_value', label: 'Current Estimated Value', width: 24 },
         { key: 'previous_estimated_value', label: 'Previous Estimated Value', width: 24 },
+    ]);
+
+    appendJsonSheet(workbook, 'Sector Movers', input.comparison.sectorMovers.map((summary) => ({
+        sector: summary.sector,
+        exposed_filers: summary.exposedFilers,
+        current_holders: summary.currentHolders,
+        previous_holders: summary.previousHolders,
+        buyers: summary.buyers,
+        sellers: summary.sellers,
+        initiated_filers: summary.initiatedFilers,
+        liquidated_filers: summary.liquidatedFilers,
+        net_buyers: summary.netBuyers,
+        buyer_pct_of_comparable: summary.buyerPctOfComparable,
+        seller_pct_of_comparable: summary.sellerPctOfComparable,
+        current_estimated_value: summary.currentValue,
+        previous_estimated_value: summary.previousValue,
+    })), [
+        { key: 'sector', label: 'Sector', width: 26 },
+        { key: 'exposed_filers', label: 'Exposed Filers', width: 16 },
+        { key: 'current_holders', label: 'Current Holders', width: 17 },
+        { key: 'previous_holders', label: 'Previous Holders', width: 17 },
+        { key: 'buyers', label: 'Buyers', width: 12 },
+        { key: 'sellers', label: 'Sellers', width: 12 },
+        { key: 'initiated_filers', label: 'Initiated Filers', width: 18 },
+        { key: 'liquidated_filers', label: 'Liquidated Filers', width: 18 },
+        { key: 'net_buyers', label: 'Net Buyers', width: 14 },
+        { key: 'buyer_pct_of_comparable', label: 'Buyer % Of Comparable', width: 22 },
+        { key: 'seller_pct_of_comparable', label: 'Seller % Of Comparable', width: 22 },
+        { key: 'current_estimated_value', label: 'Current Estimated Value', width: 24 },
+        { key: 'previous_estimated_value', label: 'Previous Estimated Value', width: 24 },
+    ]);
+
+    appendJsonSheet(workbook, 'Filer Type Trends', input.comparison.filerTypeSummaries.map((summary) => ({
+        filer_type: summary.filerType,
+        category_key: summary.categoryKey,
+        category: summary.categoryLabel,
+        exposed_filers: summary.exposedFilers,
+        current_holders: summary.currentHolders,
+        previous_holders: summary.previousHolders,
+        buyers: summary.buyers,
+        sellers: summary.sellers,
+        initiated_filers: summary.initiatedFilers,
+        liquidated_filers: summary.liquidatedFilers,
+        net_buyers: summary.netBuyers,
+        current_estimated_value: summary.currentValue,
+        previous_estimated_value: summary.previousValue,
+    })), [
+        { key: 'filer_type', label: 'Filer Type', width: 26 },
+        { key: 'category_key', label: 'Category Key', width: 18 },
+        { key: 'category', label: 'Category', width: 24 },
+        { key: 'exposed_filers', label: 'Exposed Filers', width: 16 },
+        { key: 'current_holders', label: 'Current Holders', width: 17 },
+        { key: 'previous_holders', label: 'Previous Holders', width: 17 },
+        { key: 'buyers', label: 'Buyers', width: 12 },
+        { key: 'sellers', label: 'Sellers', width: 12 },
+        { key: 'initiated_filers', label: 'Initiated Filers', width: 18 },
+        { key: 'liquidated_filers', label: 'Liquidated Filers', width: 18 },
+        { key: 'net_buyers', label: 'Net Buyers', width: 14 },
+        { key: 'current_estimated_value', label: 'Current Estimated Value', width: 24 },
+        { key: 'previous_estimated_value', label: 'Previous Estimated Value', width: 24 },
+    ]);
+
+    appendJsonSheet(workbook, 'Private Credit Institutions', input.comparison.privateCreditInstitutionSummaries.map((summary) => ({
+        cik: summary.cik,
+        fund_name: summary.fundName,
+        filer_type: summary.filerType,
+        action: summary.action,
+        current_estimated_value: summary.currentValue,
+        previous_estimated_value: summary.previousValue,
+        estimated_value_delta: summary.valueDelta,
+        current_shares: summary.currentShares,
+        previous_shares: summary.previousShares,
+        current_items: summary.currentItems.join('; '),
+        previous_items: summary.previousItems.join('; '),
+        initiated_items: summary.initiatedItems.join('; '),
+        liquidated_items: summary.liquidatedItems.join('; '),
+    })), [
+        { key: 'cik', label: 'CIK', width: 14 },
+        { key: 'fund_name', label: 'Fund Name', width: 36 },
+        { key: 'filer_type', label: 'Filer Type', width: 26 },
+        { key: 'action', label: 'Action', width: 14 },
+        { key: 'current_estimated_value', label: 'Current Estimated Value', width: 24 },
+        { key: 'previous_estimated_value', label: 'Previous Estimated Value', width: 24 },
+        { key: 'estimated_value_delta', label: 'Estimated Value Delta', width: 24 },
+        { key: 'current_shares', label: 'Current Shares', width: 18 },
+        { key: 'previous_shares', label: 'Previous Shares', width: 18 },
+        { key: 'current_items', label: 'Current Items', width: 40 },
+        { key: 'previous_items', label: 'Previous Items', width: 40 },
+        { key: 'initiated_items', label: 'Initiated Items', width: 40 },
+        { key: 'liquidated_items', label: 'Liquidated Items', width: 40 },
+    ]);
+
+    appendJsonSheet(workbook, 'Top Filer Move Details', input.comparison.topFilerMoves.flatMap((move) =>
+        move.details.map((detail) => ({
+            cik: move.cik,
+            fund_name: move.fundName,
+            category_key: move.categoryKey,
+            category: move.categoryLabel,
+            item_ticker: detail.ticker,
+            item_label: detail.label,
+            item_action: detail.action,
+            current_shares: detail.currentShares,
+            previous_shares: detail.previousShares,
+            current_estimated_value: detail.currentValue,
+            previous_estimated_value: detail.previousValue,
+            estimated_value_delta: detail.currentValue - detail.previousValue,
+            issuer_samples: detail.issuerSamples.join('; '),
+            cusips: detail.cusips.join('; '),
+        }))
+    ), [
+        { key: 'cik', label: 'CIK', width: 14 },
+        { key: 'fund_name', label: 'Fund Name', width: 36 },
+        { key: 'category_key', label: 'Category Key', width: 18 },
+        { key: 'category', label: 'Category', width: 24 },
+        { key: 'item_ticker', label: 'Item Ticker', width: 16 },
+        { key: 'item_label', label: 'Item Label', width: 28 },
+        { key: 'item_action', label: 'Item Action', width: 14 },
+        { key: 'current_shares', label: 'Current Shares', width: 18 },
+        { key: 'previous_shares', label: 'Previous Shares', width: 18 },
+        { key: 'current_estimated_value', label: 'Current Estimated Value', width: 24 },
+        { key: 'previous_estimated_value', label: 'Previous Estimated Value', width: 24 },
+        { key: 'estimated_value_delta', label: 'Estimated Value Delta', width: 24 },
+        { key: 'issuer_samples', label: 'Issuer Samples', width: 44 },
+        { key: 'cusips', label: 'CUSIPs', width: 28 },
     ]);
 
     appendJsonSheet(workbook, 'Filer Security Audit', input.audit.filerSecurityAuditRows.map((row) => ({
@@ -141,24 +281,6 @@ export function buildRadarAuditWorkbook(input: RadarExportWorkbookInput): Buffer
     appendRawHoldingsSheet(workbook, 'Raw Current Holdings', input.audit.rawCurrentHoldings);
     appendRawHoldingsSheet(workbook, 'Raw Previous Holdings', input.audit.rawPreviousHoldings);
 
-    appendJsonSheet(workbook, 'Filer Side Matches', input.filerSideMatches.map((match) => ({
-        cik: match.cik,
-        fund_name: match.fundName,
-        matched_categories: match.matchedCategories.join('; '),
-        matched_items: match.matchedItems.join('; '),
-        latest_filing_date: match.latestFilingDate,
-        has_current_quarter: match.hasCurrentQuarter,
-        has_previous_quarter: match.hasPreviousQuarter,
-    })), [
-        { key: 'cik', label: 'CIK', width: 14 },
-        { key: 'fund_name', label: 'Fund Name', width: 36 },
-        { key: 'matched_categories', label: 'Matched Categories', width: 34 },
-        { key: 'matched_items', label: 'Matched Items', width: 44 },
-        { key: 'latest_filing_date', label: 'Latest Filing Date', width: 20 },
-        { key: 'has_current_quarter', label: 'Has Current Quarter', width: 20 },
-        { key: 'has_previous_quarter', label: 'Has Previous Quarter', width: 20 },
-    ]);
-
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
 
@@ -186,6 +308,18 @@ function buildReadMeRows(input: RadarExportWorkbookInput): SheetRow[] {
         { section: 'Export', field: 'Selected Categories', value: selectedCategoryLabels.join('; ') },
         { section: 'Methodology', field: 'Movement Basis', value: request.movementBasis },
         { section: 'Methodology', field: 'Comparable Filers', value: 'Only filers with latest filings in both selected quarters are compared.' },
+        { section: 'Methodology', field: 'Exposed Filers', value: 'A comparable filer that held at least one watched security in the category in either compared quarter.' },
+        { section: 'Methodology', field: 'Current Holders', value: 'Comparable filers with a positive category share count in the current quarter.' },
+        { section: 'Methodology', field: 'Previous Holders', value: 'Comparable filers with a positive category share count in the previous quarter.' },
+        { section: 'Methodology', field: 'Buyers', value: 'Comparable filers whose aggregate watched shares in the category increased. Initiations are included.' },
+        { section: 'Methodology', field: 'Sellers', value: 'Comparable filers whose aggregate watched shares in the category decreased. Liquidations are included.' },
+        { section: 'Methodology', field: 'Initiated', value: 'Previous shares were zero and current shares are positive. This is a subset of buyers.' },
+        { section: 'Methodology', field: 'Liquidated', value: 'Previous shares were positive and current shares are zero. This is a subset of sellers.' },
+        { section: 'Methodology', field: 'Net Buyers', value: 'Buyer count minus seller count.' },
+        { section: 'Methodology', field: 'Raw 13F Value', value: 'The reported value as ingested from the source table.' },
+        { section: 'Methodology', field: 'Estimated Value', value: 'Dashboard-normalized holding value; when source value appears to be Form 13F thousands, it is multiplied by 1,000.' },
+        { section: 'Methodology', field: 'Watched Universe', value: 'Sector movers are computed from matched watched holdings, not the full 13F market universe.' },
+        { section: 'Methodology', field: 'Filer Type', value: 'First-pass deterministic classification from local CIK overrides and filer-name keyword rules.' },
         { section: 'Methodology', field: 'Timing Caveat', value: 'Form 13F reports quarter-end holdings and does not reveal exact trade dates.' },
         { section: 'Methodology', field: 'Options', value: 'Put/call rows are excluded when the holdings table provides a put/call column.' },
         { section: 'Methodology', field: 'Source Validation', value: 'The workbook uses ingested Turso holdings and provides SEC source links for manual spot-checking.' },

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertTriangle,
     BarChart3,
+    BookOpen,
     Database,
     Download,
     Filter,
@@ -20,9 +21,12 @@ import {
     type CategorySummary,
     type EventLensSummary,
     type FilerMove,
+    type FilerTypeSummary,
+    type PrivateCreditInstitutionSummary,
     type RadarApiResponse,
     type RadarWatchlist,
     type SecurityMovement,
+    type SectorMovementSummary,
 } from '@/lib/thirteen-f-radar-core';
 
 interface ThirteenFRadarProps {
@@ -103,6 +107,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
     const [watchlists, setWatchlists] = useState<RadarWatchlist[]>(DEFAULT_RADAR_WATCHLISTS);
     const [editorText, setEditorText] = useState<Record<string, string>>(() => buildWatchlistText(DEFAULT_RADAR_WATCHLISTS));
     const [editorOpen, setEditorOpen] = useState(false);
+    const [methodologyOpen, setMethodologyOpen] = useState(false);
     const [selectedCategories, setSelectedCategories] = useState<string[]>(
         DEFAULT_RADAR_WATCHLISTS.map((watchlist) => watchlist.key)
     );
@@ -111,8 +116,6 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
     const panelClass = isDark ? 'border-zinc-800 bg-zinc-900/45' : 'border-gray-200 bg-white';
     const softPanelClass = isDark ? 'border-zinc-800 bg-zinc-950/35' : 'border-gray-200 bg-gray-50/70';
     const mutedText = isDark ? 'text-zinc-400' : 'text-gray-500';
-    const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
-    const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
     const inputClass = isDark
         ? 'bg-black/20 border-zinc-800 text-white focus:border-zinc-500'
         : 'bg-white border-gray-200 text-gray-900 focus:border-gray-400';
@@ -208,6 +211,14 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
     }, [loadRadar]);
 
     const selectedCategorySet = useMemo(() => new Set(selectedCategories), [selectedCategories]);
+    const biggestSectorBuying = useMemo(
+        () => data ? findTopSectorMover(data.sectorMovers, 'buy') : null,
+        [data]
+    );
+    const biggestSectorSelling = useMemo(
+        () => data ? findTopSectorMover(data.sectorMovers, 'sell') : null,
+        [data]
+    );
 
     const toggleCategory = (key: string) => {
         setSelectedCategories((prev) => {
@@ -278,6 +289,13 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                         >
                             {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                             {exporting ? 'Exporting...' : 'Export Audit Workbook'}
+                        </button>
+                        <button
+                            onClick={() => setMethodologyOpen((open) => !open)}
+                            className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium ${isDark ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                        >
+                            <BookOpen className="h-4 w-4" />
+                            Methodology
                         </button>
                         <button
                             onClick={() => setEditorOpen((open) => !open)}
@@ -358,6 +376,15 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                         </div>
                     </div>
                 )}
+
+                {methodologyOpen && (
+                    <MethodologyPanel
+                        theme={theme}
+                        softPanelClass={softPanelClass}
+                        mutedText={mutedText}
+                        onClose={() => setMethodologyOpen(false)}
+                    />
+                )}
             </section>
 
             {error && (
@@ -390,15 +417,19 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                         />
                         <MetricCard
                             theme={theme}
-                            label="Software Sellers"
-                            value={formatPct(findCategory(data.categorySummaries, 'software')?.sellerPctOfComparable || 0)}
-                            sub={`${findCategory(data.categorySummaries, 'software')?.sellers || 0} filers`}
+                            label="Biggest Sector Buying"
+                            value={biggestSectorBuying?.sector || 'N/A'}
+                            sub={biggestSectorBuying
+                                ? `${formatNumber(biggestSectorBuying.buyers)} buyers (${formatPct(biggestSectorBuying.buyerPctOfComparable)} comparable), net ${formatSignedNumber(biggestSectorBuying.netBuyers)}`
+                                : 'Watched-universe sector movers'}
                         />
                         <MetricCard
                             theme={theme}
-                            label="Energy Buyers"
-                            value={formatPct(findCategory(data.categorySummaries, 'energy')?.buyerPctOfComparable || 0)}
-                            sub={`${findCategory(data.categorySummaries, 'energy')?.buyers || 0} filers`}
+                            label="Biggest Sector Selling"
+                            value={biggestSectorSelling?.sector || 'N/A'}
+                            sub={biggestSectorSelling
+                                ? `${formatNumber(biggestSectorSelling.sellers)} sellers (${formatPct(biggestSectorSelling.sellerPctOfComparable)} comparable), net ${formatSignedNumber(biggestSectorSelling.netBuyers)}`
+                                : 'Watched-universe sector movers'}
                         />
                     </section>
 
@@ -459,47 +490,23 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                         <FilerMovesTable theme={theme} moves={data.topFilerMoves} />
                     </section>
 
-                    <section className={`rounded-xl border ${panelClass}`}>
-                        <div className={`border-b px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-                            <h3 className="text-sm font-bold">Filer-Side Matches</h3>
-                        </div>
-                        {data.filerSideMatches.length > 0 ? (
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-left text-sm">
-                                    <thead className={`text-xs uppercase ${tableHead}`}>
-                                        <tr>
-                                            <th className="px-5 py-3">Filer</th>
-                                            <th className="px-5 py-3">Matched</th>
-                                            <th className="px-5 py-3 text-right">Current</th>
-                                            <th className="px-5 py-3 text-right">Previous</th>
-                                            <th className="px-5 py-3 text-right">Latest Filing</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className={`divide-y ${tableDivide}`}>
-                                        {data.filerSideMatches.map((match) => (
-                                            <tr key={match.cik}>
-                                                <td className="px-5 py-3">
-                                                    <div className="font-medium">{match.fundName}</div>
-                                                    <div className="font-mono text-[11px] opacity-50">CIK {match.cik}</div>
-                                                </td>
-                                                <td className="px-5 py-3 text-xs">
-                                                    <div>{match.matchedItems.join(', ')}</div>
-                                                    <div className="opacity-50">{match.matchedCategories.join(', ')}</div>
-                                                </td>
-                                                <td className="px-5 py-3 text-right text-xs">{match.hasCurrentQuarter ? 'Yes' : 'No'}</td>
-                                                <td className="px-5 py-3 text-right text-xs">{match.hasPreviousQuarter ? 'Yes' : 'No'}</td>
-                                                <td className="px-5 py-3 text-right font-mono text-xs opacity-70">{match.latestFilingDate || 'N/A'}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                    <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+                        <section className={`rounded-xl border ${panelClass}`}>
+                            <div className={`border-b px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                                <h3 className="text-sm font-bold">Filer Type Trends</h3>
+                                <div className={`mt-1 text-xs ${mutedText}`}>First-pass CIK/name classification; use as a reporting lead, not final taxonomy.</div>
                             </div>
-                        ) : (
-                            <div className={`px-5 py-8 text-center text-sm ${mutedText}`}>
-                                No watched-company 13F filers found.
+                            <FilerTypeTrendsTable theme={theme} summaries={data.filerTypeSummaries} />
+                        </section>
+
+                        <section className={`rounded-xl border ${panelClass}`}>
+                            <div className={`border-b px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                                <h3 className="text-sm font-bold">Private Credit / Blue Owl Institutions</h3>
+                                <div className={`mt-1 text-xs ${mutedText}`}>Pension, public-fund, and endowment filers with BDC/private-credit exposure.</div>
                             </div>
-                        )}
-                    </section>
+                            <PrivateCreditTable theme={theme} summaries={data.privateCreditInstitutionSummaries} />
+                        </section>
+                    </div>
                 </>
             )}
         </div>
@@ -571,22 +578,19 @@ function EventLensCard({ theme, lens }: { theme: 'light' | 'dark'; lens: EventLe
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {lens.signals.length > 0 ? lens.signals.map((signal) => (
                     <div key={signal.categoryKey} className={`rounded-lg border p-3 ${isDark ? 'border-zinc-800 bg-zinc-950/40' : 'border-gray-200 bg-gray-50'}`}>
-                        <div className="text-xs font-semibold uppercase text-gray-500">{signal.label}</div>
-                        <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                            <div>
-                                <div className="flex items-center gap-1 text-emerald-500">
-                                    <TrendingUp className="h-3.5 w-3.5" />
-                                    Buyers
-                                </div>
-                                <div className="font-mono text-lg font-bold">{formatPct(signal.buyerPctOfComparable)}</div>
+                        <div className="flex items-center justify-between gap-3">
+                            <div className="text-xs font-semibold uppercase text-gray-500">{signal.label}</div>
+                            <div className={`font-mono text-xs ${signal.netBuyers >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                net {formatSignedNumber(signal.netBuyers)}
                             </div>
-                            <div>
-                                <div className="flex items-center gap-1 text-red-500">
-                                    <TrendingDown className="h-3.5 w-3.5" />
-                                    Sellers
-                                </div>
-                                <div className="font-mono text-lg font-bold">{formatPct(signal.sellerPctOfComparable)}</div>
-                            </div>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                            <MiniStat label="Current Holders" value={`${formatNumber(signal.currentHolders)} (${formatSignedNumber(signal.holderDelta)}; ${formatPct(signal.holderDeltaPctOfPrevious)})`} />
+                            <MiniStat label="Previous Holders" value={formatNumber(signal.previousHolders)} />
+                            <MiniStat label="Buyers" value={formatCountPct(signal.buyers, signal.buyerPctOfComparable)} tone="buy" />
+                            <MiniStat label="Sellers" value={formatCountPct(signal.sellers, signal.sellerPctOfComparable)} tone="sell" />
+                            <MiniStat label="Initiated" value={formatNumber(signal.initiatedFilers)} />
+                            <MiniStat label="Liquidated" value={formatNumber(signal.liquidatedFilers)} />
                         </div>
                     </div>
                 )) : (
@@ -607,26 +611,41 @@ function ConsensusCard({ theme, summary }: { theme: 'light' | 'dark'; summary: C
                 <div>
                     <div className="text-sm font-bold">{summary.label}</div>
                     <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                        {summary.exposedFilers} exposed filers
+                        {formatCountPct(summary.exposedFilers, summary.exposedPctOfComparable)} exposed filers; held in either compared quarter
                     </div>
                 </div>
                 <Database className="h-4 w-4 text-gray-400" />
             </div>
             <div className="mt-4 grid grid-cols-2 gap-3">
-                <SignalBlock label="Buyers" value={formatPct(summary.buyerPctOfComparable)} count={summary.buyers} tone="buy" />
-                <SignalBlock label="Sellers" value={formatPct(summary.sellerPctOfComparable)} count={summary.sellers} tone="sell" />
+                <SignalBlock
+                    label="Buyers"
+                    value={formatCountPct(summary.buyers, summary.buyerPctOfComparable)}
+                    sub={`${formatPct(summary.buyerPctOfExposed)} of exposed`}
+                    tone="buy"
+                />
+                <SignalBlock
+                    label="Sellers"
+                    value={formatCountPct(summary.sellers, summary.sellerPctOfComparable)}
+                    sub={`${formatPct(summary.sellerPctOfExposed)} of exposed`}
+                    tone="sell"
+                />
             </div>
-            <div className={`mt-4 grid grid-cols-2 gap-2 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                <div>Initiated: <span className="font-mono">{summary.initiatedFilers}</span></div>
-                <div>Liquidated: <span className="font-mono">{summary.liquidatedFilers}</span></div>
-                <div>Buy/exposed: <span className="font-mono">{formatPct(summary.buyerPctOfExposed)}</span></div>
-                <div>Sell/exposed: <span className="font-mono">{formatPct(summary.sellerPctOfExposed)}</span></div>
+            <div className={`mt-4 grid grid-cols-2 gap-x-3 gap-y-2 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                <MetricLine label="Current holders" value={formatCountPct(summary.currentHolders, summary.currentHolderPctOfComparable)} />
+                <MetricLine label="Prior holders" value={formatCountPct(summary.previousHolders, summary.previousHolderPctOfComparable)} />
+                <MetricLine label="Initiated" value={`${formatNumber(summary.initiatedFilers)} (${formatPct(summary.initiatedPctOfExposed)} exposed)`} />
+                <MetricLine label="Liquidated" value={`${formatNumber(summary.liquidatedFilers)} (${formatPct(summary.liquidatedPctOfExposed)} exposed)`} />
+                <MetricLine label="Unchanged" value={formatNumber(summary.unchangedFilers)} />
+                <MetricLine label="Net buyers" value={formatSignedNumber(summary.buyers - summary.sellers)} />
+            </div>
+            <div className={`mt-3 text-[11px] leading-relaxed ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                Initiated is a subset of buyers; liquidated is a subset of sellers. Comparable means filers with both quarter filings.
             </div>
         </div>
     );
 }
 
-function SignalBlock({ label, value, count, tone }: { label: string; value: string; count: number; tone: 'buy' | 'sell' }) {
+function SignalBlock({ label, value, sub, tone }: { label: string; value: string; sub: string; tone: 'buy' | 'sell' }) {
     const toneClass = tone === 'buy' ? 'text-emerald-500' : 'text-red-500';
     return (
         <div>
@@ -634,8 +653,27 @@ function SignalBlock({ label, value, count, tone }: { label: string; value: stri
                 {tone === 'buy' ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
                 {label}
             </div>
-            <div className="mt-1 font-mono text-xl font-bold">{value}</div>
-            <div className="text-xs text-gray-500">{count} filers</div>
+            <div className="mt-1 font-mono text-lg font-bold">{value}</div>
+            <div className="text-xs text-gray-500">{sub}</div>
+        </div>
+    );
+}
+
+function MetricLine({ label, value }: { label: string; value: string }) {
+    return (
+        <div className="flex items-center justify-between gap-2">
+            <span>{label}</span>
+            <span className="font-mono">{value}</span>
+        </div>
+    );
+}
+
+function MiniStat({ label, value, tone }: { label: string; value: string; tone?: 'buy' | 'sell' }) {
+    const toneClass = tone === 'buy' ? 'text-emerald-500' : tone === 'sell' ? 'text-red-500' : 'text-inherit';
+    return (
+        <div>
+            <div className="text-[11px] uppercase text-gray-500">{label}</div>
+            <div className={`font-mono text-sm font-semibold ${toneClass}`}>{value}</div>
         </div>
     );
 }
@@ -724,6 +762,7 @@ function FilerMovesTable({ theme, moves }: { theme: 'light' | 'dark'; moves: Fil
                         <th className="px-5 py-3 text-right">Value Delta</th>
                         <th className="px-5 py-3 text-right">New</th>
                         <th className="px-5 py-3 text-right">Gone</th>
+                        <th className="px-5 py-3">Drivers</th>
                     </tr>
                 </thead>
                 <tbody className={`divide-y ${tableDivide}`}>
@@ -744,6 +783,9 @@ function FilerMovesTable({ theme, moves }: { theme: 'light' | 'dark'; moves: Fil
                             </td>
                             <td className="px-5 py-3 text-right font-mono text-xs">{move.initiatedCount}</td>
                             <td className="px-5 py-3 text-right font-mono text-xs">{move.liquidatedCount}</td>
+                            <td className="max-w-80 px-5 py-3 text-xs opacity-75">
+                                {move.details.slice(0, 5).map((detail) => `${detail.label}: ${detail.action}`).join(', ') || 'N/A'}
+                            </td>
                         </tr>
                     ))}
                 </tbody>
@@ -752,8 +794,171 @@ function FilerMovesTable({ theme, moves }: { theme: 'light' | 'dark'; moves: Fil
     );
 }
 
-function findCategory(summaries: CategorySummary[], key: string) {
-    return summaries.find((summary) => summary.key === key);
+function FilerTypeTrendsTable({ theme, summaries }: { theme: 'light' | 'dark'; summaries: FilerTypeSummary[] }) {
+    const isDark = theme === 'dark';
+    const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
+    const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
+
+    if (summaries.length === 0) {
+        return (
+            <div className={`px-5 py-8 text-center text-sm ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                No filer-type trends found for the selected watchlists.
+            </div>
+        );
+    }
+
+    return (
+        <div className="max-h-[520px] overflow-auto">
+            <table className="w-full text-left text-sm">
+                <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
+                    <tr>
+                        <th className="px-5 py-3">Filer Type</th>
+                        <th className="px-5 py-3">Category</th>
+                        <th className="px-5 py-3 text-right">Exposed</th>
+                        <th className="px-5 py-3 text-right">Buyers</th>
+                        <th className="px-5 py-3 text-right">Sellers</th>
+                        <th className="px-5 py-3 text-right">Net</th>
+                        <th className="px-5 py-3 text-right">New</th>
+                        <th className="px-5 py-3 text-right">Gone</th>
+                    </tr>
+                </thead>
+                <tbody className={`divide-y ${tableDivide}`}>
+                    {summaries.slice(0, 60).map((summary) => (
+                        <tr key={`${summary.filerType}-${summary.categoryKey}`}>
+                            <td className="px-5 py-3 font-medium">{summary.filerType}</td>
+                            <td className="px-5 py-3 text-xs">{summary.categoryLabel}</td>
+                            <td className="px-5 py-3 text-right font-mono text-xs">{formatNumber(summary.exposedFilers)}</td>
+                            <td className="px-5 py-3 text-right font-mono text-xs text-emerald-500">{formatNumber(summary.buyers)}</td>
+                            <td className="px-5 py-3 text-right font-mono text-xs text-red-500">{formatNumber(summary.sellers)}</td>
+                            <td className={`px-5 py-3 text-right font-mono text-xs ${summary.netBuyers >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                {formatSignedNumber(summary.netBuyers)}
+                            </td>
+                            <td className="px-5 py-3 text-right font-mono text-xs">{formatNumber(summary.initiatedFilers)}</td>
+                            <td className="px-5 py-3 text-right font-mono text-xs">{formatNumber(summary.liquidatedFilers)}</td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+}
+
+function PrivateCreditTable({ theme, summaries }: { theme: 'light' | 'dark'; summaries: PrivateCreditInstitutionSummary[] }) {
+    const isDark = theme === 'dark';
+    const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
+    const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
+
+    if (summaries.length === 0) {
+        return (
+            <div className={`px-5 py-8 text-center text-sm ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                No pension, public-fund, or endowment private-credit matches in this comparison.
+            </div>
+        );
+    }
+
+    return (
+        <div className="max-h-[520px] overflow-auto">
+            <table className="w-full text-left text-sm">
+                <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
+                    <tr>
+                        <th className="px-5 py-3">Filer</th>
+                        <th className="px-5 py-3">Type</th>
+                        <th className="px-5 py-3">Action</th>
+                        <th className="px-5 py-3 text-right">Value Delta</th>
+                        <th className="px-5 py-3">Current Items</th>
+                        <th className="px-5 py-3">New / Gone</th>
+                    </tr>
+                </thead>
+                <tbody className={`divide-y ${tableDivide}`}>
+                    {summaries.slice(0, 60).map((summary) => (
+                        <tr key={`${summary.cik}-${summary.action}-${summary.currentItems.join('|')}`}>
+                            <td className="px-5 py-3">
+                                <div className="font-medium">{summary.fundName}</div>
+                                <div className="font-mono text-[11px] opacity-50">CIK {summary.cik}</div>
+                            </td>
+                            <td className="px-5 py-3 text-xs">{summary.filerType}</td>
+                            <td className="px-5 py-3">
+                                <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${actionClass(summary.action, isDark)}`}>
+                                    {summary.action}
+                                </span>
+                            </td>
+                            <td className={`px-5 py-3 text-right font-mono text-xs ${summary.valueDelta >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                {formatSignedMoney(summary.valueDelta)}
+                            </td>
+                            <td className="max-w-64 px-5 py-3 text-xs opacity-75">{summary.currentItems.join(', ') || 'None'}</td>
+                            <td className="max-w-64 px-5 py-3 text-xs opacity-75">
+                                {[summary.initiatedItems.length ? `New: ${summary.initiatedItems.join(', ')}` : '', summary.liquidatedItems.length ? `Gone: ${summary.liquidatedItems.join(', ')}` : '']
+                                    .filter(Boolean)
+                                    .join(' | ') || 'No item-level new/gone'}
+                            </td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+}
+
+function MethodologyPanel({
+    theme,
+    softPanelClass,
+    mutedText,
+    onClose,
+}: {
+    theme: 'light' | 'dark';
+    softPanelClass: string;
+    mutedText: string;
+    onClose: () => void;
+}) {
+    const isDark = theme === 'dark';
+    const terms = [
+        ['Comparable filers', 'Filers with latest filings in both selected quarters.'],
+        ['Exposed filers', 'Comparable filers that held a watched category in either compared quarter.'],
+        ['Buyers / sellers', 'Aggregate watched shares rose or fell for that filer and category.'],
+        ['Initiated / liquidated', 'Zero-to-positive and positive-to-zero positions; subsets of buyers and sellers.'],
+        ['Current / previous holders', 'Filers with positive category shares in the current or previous quarter.'],
+        ['Net buyers', 'Buyer count minus seller count.'],
+        ['Raw 13F value', 'The ingested source value from the holdings table.'],
+        ['Estimated value', 'Dashboard-normalized value; likely 13F-thousands values are multiplied by 1,000.'],
+        ['Sector movers', 'Computed from matched watched holdings, so they are watched-universe movers.'],
+        ['Timing', '13F filings show quarter-end holdings, not exact trade timing.'],
+        ['Filer type', 'A first-pass local classification from CIK overrides and filer-name keyword rules.'],
+    ];
+
+    return (
+        <div className={`mt-5 rounded-xl border p-4 ${softPanelClass}`}>
+            <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                    <div className="text-sm font-semibold">Methodology & Terms</div>
+                    <div className={`mt-1 text-xs ${mutedText}`}>These definitions are also included in the audit workbook Read Me sheet.</div>
+                </div>
+                <button
+                    onClick={onClose}
+                    className={`rounded-md p-2 ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'}`}
+                >
+                    <X className="h-4 w-4" />
+                </button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+                {terms.map(([term, definition]) => (
+                    <div key={term} className={`rounded-lg border p-3 ${isDark ? 'border-zinc-800 bg-zinc-950/30' : 'border-gray-200 bg-white'}`}>
+                        <div className="text-xs font-semibold uppercase text-gray-500">{term}</div>
+                        <div className={`mt-1 text-sm ${mutedText}`}>{definition}</div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function findTopSectorMover(movers: SectorMovementSummary[], direction: 'buy' | 'sell') {
+    return [...movers]
+        .filter((summary) => direction === 'buy' ? summary.buyers > 0 : summary.sellers > 0)
+        .sort((a, b) => {
+            const primary = direction === 'buy' ? b.buyers - a.buyers : b.sellers - a.sellers;
+            if (primary !== 0) return primary;
+            return Math.abs(b.netBuyers) - Math.abs(a.netBuyers);
+        })[0] || null;
 }
 
 function formatNumber(value: number) {
@@ -762,6 +967,15 @@ function formatNumber(value: number) {
 
 function formatPct(value: number) {
     return `${(value || 0).toFixed(1)}%`;
+}
+
+function formatCountPct(count: number, pctValue: number) {
+    return `${formatNumber(count)} (${formatPct(pctValue)})`;
+}
+
+function formatSignedNumber(value: number) {
+    const safeValue = value || 0;
+    return `${safeValue >= 0 ? '+' : ''}${formatNumber(safeValue)}`;
 }
 
 function formatSignedMoney(value: number) {

@@ -5,7 +5,6 @@ import {
     buildRadarNotes,
     createRadarClientFromEnv,
     loadRadarComparison,
-    queryFilerSideMatches,
     readRadarRequestBody,
     resolveRadarRequest,
 } from '@/lib/thirteen-f-radar-data';
@@ -20,13 +19,6 @@ export async function POST(req: Request) {
         const request = await resolveRadarRequest(turso, body);
         const { comparison: mainComparison } = await loadRadarComparison(turso, request);
         const eventLens = await buildEventLens({ turso, request, mainComparison });
-        const filerSideMatches = await queryFilerSideMatches({
-            turso,
-            currentQuarter: request.currentQuarter,
-            previousQuarter: request.previousQuarter,
-            watchlists: request.watchlists,
-            selectedCategories: request.selectedCategories,
-        });
 
         return NextResponse.json({
             ...mainComparison,
@@ -37,7 +29,6 @@ export async function POST(req: Request) {
             availableQuarters: request.availableQuarters,
             watchlists: request.watchlists,
             eventLens,
-            filerSideMatches,
             notes: buildRadarNotes(request.dbShape),
         });
     } catch (error) {

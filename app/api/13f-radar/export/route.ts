@@ -5,7 +5,6 @@ import {
     buildRadarNotes,
     createRadarClientFromEnv,
     loadRadarComparison,
-    queryFilerSideMatches,
     readRadarRequestBody,
     resolveRadarRequest,
 } from '@/lib/thirteen-f-radar-data';
@@ -29,18 +28,10 @@ export async function POST(req: Request) {
             watchlists: request.watchlists,
             selectedCategories: request.selectedCategories,
         });
-        const filerSideMatches = await queryFilerSideMatches({
-            turso,
-            currentQuarter: request.currentQuarter,
-            previousQuarter: request.previousQuarter,
-            watchlists: request.watchlists,
-            selectedCategories: request.selectedCategories,
-        });
         const workbook = buildRadarAuditWorkbook({
             request,
             comparison,
             audit,
-            filerSideMatches,
             notes: buildRadarNotes(request.dbShape),
             generatedAt: new Date(),
         });

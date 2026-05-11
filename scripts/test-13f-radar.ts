@@ -13,6 +13,8 @@ import {
     type RadarHoldingRow,
     type RadarWatchlist,
 } from '../lib/thirteen-f-radar-core';
+import { classifyFiler } from '../lib/filer-classification';
+import { getSector } from '../lib/sectors';
 import { buildRadarAuditWorkbook, buildRadarExportFilename } from '../lib/thirteen-f-radar-export';
 import { type ResolvedRadarRequest } from '../lib/thirteen-f-radar-data';
 
@@ -49,6 +51,28 @@ async function run() {
         .find((watchlist) => watchlist.key === 'palantir')!
         .items[0];
     assert.equal(issuerMatchesItem('PALANTIR TECHNOLOGIES INC', palantir), true);
+    const taiwanSemi = DEFAULT_RADAR_WATCHLISTS
+        .find((watchlist) => watchlist.key === 'semiconductors')!
+        .items.find((item) => item.ticker === 'TSM')!;
+    assert.equal(issuerMatchesItem('TAIWAN SEMICONDUCTOR MFG CO LTD', taiwanSemi), true);
+    const alphabetClassC = DEFAULT_RADAR_WATCHLISTS
+        .find((watchlist) => watchlist.key === 'mag7')!
+        .items.find((item) => item.ticker === 'GOOG')!;
+    const alphabetClassA = DEFAULT_RADAR_WATCHLISTS
+        .find((watchlist) => watchlist.key === 'mag7')!
+        .items.find((item) => item.ticker === 'GOOGL')!;
+    assert.equal(issuerMatchesItem('ALPHABET INC CL C CAP STK', alphabetClassC), true);
+    assert.equal(issuerMatchesItem('ALPHABET INC CL A CAP STK', alphabetClassC), false);
+    assert.equal(issuerMatchesItem('ALPHABET INC CL A CAP STK', alphabetClassA), true);
+    assert.equal(issuerMatchesItem('ALPHABET INC', alphabetClassC), true);
+    assert.equal(issuerMatchesItem('ALPHABET INC', alphabetClassA), false);
+
+    assert.equal(getSector('NVIDIA CORP'), 'Information Technology');
+    assert.equal(getSector('CONSTELLATION ENERGY CORP'), 'Utilities');
+    assert.equal(classifyFiler('0001350694', 'Example Teachers Retirement System').type, 'Hedge Fund');
+    assert.equal(classifyFiler('999', 'Teachers Retirement System of Example').type, 'Pension / Public Fund');
+    assert.equal(classifyFiler('998', 'Regents of Example University').type, 'University / Endowment');
+    assert.equal(classifyFiler('997', 'Mystery Holdings').type, 'Other');
 
     const latest = selectLatestFilings(filings, '2025-Q4').find((row) => row.cik === 'A');
     assert.equal(latest?.accessionNumber, 'A-curr');
@@ -67,17 +91,43 @@ async function run() {
     const software = comparison.categorySummaries.find((summary) => summary.key === 'software');
     assert.ok(software);
     assert.equal(software.exposedFilers, 3);
+    assert.equal(software.exposedPctOfComparable, 75);
+    assert.equal(software.currentHolders, 2);
+    assert.equal(software.previousHolders, 2);
     assert.equal(software.buyers, 1);
     assert.equal(software.sellers, 2);
     assert.equal(software.initiatedFilers, 1);
     assert.equal(software.liquidatedFilers, 1);
+    assert.equal(software.currentHolderPctOfComparable, 50);
+    assert.equal(software.previousHolderPctOfComparable, 50);
+    assert.equal(software.buyerPctOfExposed, 33.3);
     assert.equal(software.sellerPctOfExposed, 66.7);
+    assert.equal(software.initiatedPctOfExposed, 33.3);
+    assert.equal(software.liquidatedPctOfExposed, 33.3);
+    assert.equal(software.initiatedPctOfComparable, 25);
+    assert.equal(software.liquidatedPctOfComparable, 25);
     assert.equal(software.sellerPctOfComparable, 50);
 
     const energy = comparison.categorySummaries.find((summary) => summary.key === 'energy');
     assert.ok(energy);
     assert.equal(energy.buyers, 2);
     assert.equal(energy.buyerPctOfComparable, 50);
+    assert.equal(energy.currentHolders, 2);
+    assert.equal(energy.previousHolders, 1);
+
+    const energySector = comparison.sectorMovers.find((summary) => summary.sector === 'Energy');
+    assert.ok(energySector);
+    assert.equal(energySector.buyers, 2);
+    assert.equal(energySector.netBuyers, 2);
+    const technologySector = comparison.sectorMovers.find((summary) => summary.sector === 'Information Technology');
+    assert.ok(technologySector);
+    assert.equal(technologySector.sellers, 2);
+
+    const adviserSoftware = comparison.filerTypeSummaries.find(
+        (summary) => summary.filerType === 'Asset Manager' && summary.categoryKey === 'software'
+    );
+    assert.ok(adviserSoftware);
+    assert.equal(adviserSoftware.sellers, 1);
 
     const salesforceInitiation = comparison.initiations.find((movement) => movement.issuer === 'SALESFORCE INC');
     assert.equal(salesforceInitiation?.initiatedFilers, 1);
@@ -109,6 +159,56 @@ async function run() {
         selectedCategories: ['empty'],
     });
     assert.equal(empty.categorySummaries[0].exposedFilers, 0);
+
+    const dedupeComparison = buildRadarComparison({
+        currentQuarter: '2025-Q4',
+        previousQuarter: '2025-Q3',
+        filings: [
+            filing('M', 'Sculptor Capital Management', 'M-prev', '2025-08-14', '2025-Q3'),
+            filing('M', 'Sculptor Capital Management', 'M-curr', '2026-02-13', '2025-Q4'),
+        ],
+        holdings: [
+            holding('M', 'Sculptor Capital Management', 'M-curr', '2026-02-13', '2025-Q4', 'MICROSTRATEGY INC CL A', '594972408', 1000, 10),
+            holding('M', 'Sculptor Capital Management', 'M-curr', '2026-02-13', '2025-Q4', 'STRATEGY INC', '594972999', 2000, 20),
+        ],
+        watchlists: DEFAULT_RADAR_WATCHLISTS,
+        selectedCategories: ['strategy'],
+    });
+    const strategyMove = dedupeComparison.topFilerMoves.find((move) => move.categoryKey === 'strategy');
+    assert.ok(strategyMove);
+    assert.equal(strategyMove.securityCount, 1);
+    assert.equal(strategyMove.initiatedCount, 1);
+    assert.equal(strategyMove.details[0].label, 'Strategy');
+
+    const privateCreditComparison = buildRadarComparison({
+        currentQuarter: '2025-Q4',
+        previousQuarter: '2025-Q3',
+        filings: [
+            filing('P', 'Teachers Retirement System of Blue State', 'P-prev', '2025-08-14', '2025-Q3'),
+            filing('P', 'Teachers Retirement System of Blue State', 'P-curr', '2026-02-13', '2025-Q4'),
+            filing('U', 'Regents of Example University', 'U-prev', '2025-08-14', '2025-Q3'),
+            filing('U', 'Regents of Example University', 'U-curr', '2026-02-13', '2025-Q4'),
+        ],
+        holdings: [
+            holding('P', 'Teachers Retirement System of Blue State', 'P-curr', '2026-02-13', '2025-Q4', 'BLUE OWL CAPITAL CORP', '09581B103', 5000, 50),
+            holding('U', 'Regents of Example University', 'U-prev', '2025-08-14', '2025-Q3', 'ARES CAPITAL CORP', '04010L103', 3000, 30),
+        ],
+        watchlists: DEFAULT_RADAR_WATCHLISTS,
+        selectedCategories: ['bdc'],
+    });
+    assert.equal(privateCreditComparison.privateCreditInstitutionSummaries.length, 2);
+    assert.equal(
+        privateCreditComparison.privateCreditInstitutionSummaries.some((summary) =>
+            summary.filerType === 'Pension / Public Fund' && summary.initiatedItems.includes('Blue Owl Capital Corp')
+        ),
+        true
+    );
+    assert.equal(
+        privateCreditComparison.privateCreditInstitutionSummaries.some((summary) =>
+            summary.filerType === 'University / Endowment' && summary.liquidatedItems.includes('Ares Capital')
+        ),
+        true
+    );
 
     const auditFilings = [
         ...filings,
@@ -168,7 +268,6 @@ async function run() {
         request,
         comparison,
         audit,
-        filerSideMatches: [],
         notes: ['Test note'],
         generatedAt: new Date('2026-05-11T12:00:00.000Z'),
     });
@@ -178,11 +277,15 @@ async function run() {
         'Coverage',
         'Category Trends',
         'Security Movements',
+        'Sector Movers',
+        'Filer Type Trends',
+        'Private Credit Institutions',
+        'Top Filer Move Details',
         'Filer Security Audit',
         'Raw Current Holdings',
         'Raw Previous Holdings',
-        'Filer Side Matches',
     ]);
+    assert.equal(workbook.SheetNames.includes('Filer Side Matches'), false);
     assert.equal(buildRadarExportFilename('2025-Q4', '2025-Q3'), '13f-radar-audit-2025-Q4-vs-2025-Q3.xlsx');
 
     const exportRouteModule = await import('../app/api/13f-radar/export/route');
