@@ -5,6 +5,7 @@ import {
     AlertTriangle,
     BarChart3,
     Database,
+    Download,
     Filter,
     Loader2,
     RefreshCw,
@@ -71,10 +72,31 @@ const parseRadarResponse = async (res: Response): Promise<RadarApiResponse> => {
     return parsed as RadarApiResponse;
 };
 
+const parseRadarErrorResponse = async (res: Response, fallback: string): Promise<string> => {
+    const text = await res.text();
+    if (text.trim().startsWith('{')) {
+        try {
+            const parsed = JSON.parse(text) as { error?: unknown };
+            if (typeof parsed.error === 'string' && parsed.error.trim()) return parsed.error;
+        } catch {
+            return `${fallback}: malformed error response (${res.status})`;
+        }
+    }
+
+    return text.trim().slice(0, 220) || `${fallback}: HTTP ${res.status}`;
+};
+
+const getDownloadFilename = (res: Response, fallback: string): string => {
+    const contentDisposition = res.headers.get('content-disposition') || '';
+    const filenameMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+    return filenameMatch?.[1] || fallback;
+};
+
 export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
     const isDark = theme === 'dark';
     const [data, setData] = useState<RadarApiResponse | null>(null);
     const [loading, setLoading] = useState(false);
+    const [exporting, setExporting] = useState(false);
     const [error, setError] = useState('');
     const [currentQuarter, setCurrentQuarter] = useState('');
     const [previousQuarter, setPreviousQuarter] = useState('');
@@ -97,6 +119,26 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
 
     const availableQuarters = data?.availableQuarters || [];
 
+    const buildRequestPayload = useCallback((override?: {
+        currentQuarter?: string;
+        previousQuarter?: string;
+        watchlists?: RadarWatchlist[];
+        selectedCategories?: string[];
+    }) => {
+        const requestCurrent = override?.currentQuarter ?? (currentQuarter || undefined);
+        const requestPrevious = override?.previousQuarter ?? (previousQuarter || undefined);
+        const requestWatchlists = override?.watchlists ?? watchlists;
+        const requestCategories = override?.selectedCategories ?? selectedCategories;
+
+        return {
+            currentQuarter: requestCurrent,
+            previousQuarter: requestPrevious,
+            categories: requestCategories,
+            watchlists: requestWatchlists,
+            movementBasis: 'filer-count',
+        };
+    }, [currentQuarter, previousQuarter, selectedCategories, watchlists]);
+
     const loadRadar = useCallback(async (override?: {
         currentQuarter?: string;
         previousQuarter?: string;
@@ -106,22 +148,13 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
         setLoading(true);
         setError('');
 
-        const requestCurrent = override?.currentQuarter ?? (currentQuarter || undefined);
-        const requestPrevious = override?.previousQuarter ?? (previousQuarter || undefined);
-        const requestWatchlists = override?.watchlists ?? watchlists;
-        const requestCategories = override?.selectedCategories ?? selectedCategories;
+        const payload = buildRequestPayload(override);
 
         try {
             const res = await fetch('/api/13f-radar', {
                 method: 'POST',
                 headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    currentQuarter: requestCurrent,
-                    previousQuarter: requestPrevious,
-                    categories: requestCategories,
-                    watchlists: requestWatchlists,
-                    movementBasis: 'filer-count',
-                }),
+                body: JSON.stringify(payload),
             });
             const radar = await parseRadarResponse(res);
             setData(radar);
@@ -134,7 +167,39 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
         } finally {
             setLoading(false);
         }
-    }, [currentQuarter, previousQuarter, selectedCategories, watchlists]);
+    }, [buildRequestPayload]);
+
+    const exportAuditWorkbook = useCallback(async () => {
+        setExporting(true);
+        setError('');
+
+        try {
+            const res = await fetch('/api/13f-radar/export', {
+                method: 'POST',
+                headers: { 'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Type': 'application/json' },
+                body: JSON.stringify(buildRequestPayload()),
+            });
+
+            if (!res.ok) {
+                throw new Error(await parseRadarErrorResponse(res, '13F Radar export failed'));
+            }
+
+            const blob = await res.blob();
+            const fallbackFilename = `13f-radar-audit-${currentQuarter || data?.coverage.currentQuarter || 'current'}-vs-${previousQuarter || data?.coverage.previousQuarter || 'previous'}.xlsx`;
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = getDownloadFilename(res, fallbackFilename);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : '13F Radar export failed');
+        } finally {
+            setExporting(false);
+        }
+    }, [buildRequestPayload, currentQuarter, data?.coverage.currentQuarter, data?.coverage.previousQuarter, previousQuarter]);
 
     useEffect(() => {
         if (initialLoadRef.current) return;
@@ -205,6 +270,14 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                         >
                             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                             Run
+                        </button>
+                        <button
+                            onClick={exportAuditWorkbook}
+                            disabled={exporting}
+                            className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium disabled:opacity-50 ${isDark ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                        >
+                            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                            {exporting ? 'Exporting...' : 'Export Audit Workbook'}
                         </button>
                         <button
                             onClick={() => setEditorOpen((open) => !open)}

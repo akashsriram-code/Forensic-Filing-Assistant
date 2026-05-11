@@ -154,9 +154,53 @@ interface AliasProfile {
 
 const aliasProfileCache = new WeakMap<RadarWatchlistItem, AliasProfile[]>();
 
-interface MatchResult {
+export interface MatchResult {
     category: RadarWatchlist;
     items: RadarWatchlistItem[];
+}
+
+export interface FilerSecurityAuditRow {
+    cik: string;
+    fundName: string;
+    categoryKey: string;
+    categoryLabel: string;
+    matchedItems: string[];
+    securityKey: string;
+    issuer: string;
+    cusip: string | null;
+    action: MovementAction;
+    previousAccessionNumber: string;
+    currentAccessionNumber: string;
+    previousFilingDate: string;
+    currentFilingDate: string;
+    previousShares: number;
+    currentShares: number;
+    previousRawValue: number;
+    currentRawValue: number;
+    previousEstimatedValue: number;
+    currentEstimatedValue: number;
+    valueDelta: number;
+    previousSecFolderUrl: string | null;
+    currentSecFolderUrl: string | null;
+    previousSubmissionTextUrl: string | null;
+    currentSubmissionTextUrl: string | null;
+}
+
+export interface MatchedRawHoldingRow extends RadarHoldingRow {
+    period: 'current' | 'previous';
+    rawReportedValue: number;
+    estimatedValue: number;
+    matchedCategoryKeys: string[];
+    matchedCategories: string[];
+    matchedItems: string[];
+    secFolderUrl: string | null;
+    submissionTextUrl: string | null;
+}
+
+export interface RadarAuditResult {
+    filerSecurityAuditRows: FilerSecurityAuditRow[];
+    rawCurrentHoldings: MatchedRawHoldingRow[];
+    rawPreviousHoldings: MatchedRawHoldingRow[];
 }
 
 interface FilerSecurityState {
@@ -171,6 +215,16 @@ interface FilerSecurityState {
     previousShares: number;
     currentValue: number;
     previousValue: number;
+}
+
+interface FilerSecurityAuditState extends FilerSecurityState {
+    matchedItems: Set<string>;
+    currentRawValue: number;
+    previousRawValue: number;
+    currentAccessionNumber: string;
+    previousAccessionNumber: string;
+    currentFilingDate: string;
+    previousFilingDate: string;
 }
 
 interface FilerCategoryState {
@@ -700,6 +754,157 @@ export function buildRadarComparison(params: {
     };
 }
 
+export function buildRadarAudit(params: {
+    currentQuarter: string;
+    previousQuarter: string;
+    filings: RadarFilingRow[];
+    holdings: RadarHoldingRow[];
+    watchlists: RadarWatchlist[];
+    selectedCategories?: string[];
+}): RadarAuditResult {
+    const { currentQuarter, previousQuarter, filings, holdings, watchlists, selectedCategories } = params;
+    const selectedWatchlists = watchlists.filter((watchlist) =>
+        !selectedCategories || selectedCategories.length === 0 || selectedCategories.includes(watchlist.key)
+    );
+
+    const currentFilings = selectLatestFilings(filings, currentQuarter);
+    const previousFilings = selectLatestFilings(filings, previousQuarter);
+    const currentByCik = new Map(currentFilings.map((filing) => [filing.cik, filing]));
+    const previousByCik = new Map(previousFilings.map((filing) => [filing.cik, filing]));
+    const comparableSet = new Set(Array.from(currentByCik.keys()).filter((cik) => previousByCik.has(cik)));
+    const states = new Map<string, FilerSecurityAuditState>();
+    const rawCurrentHoldings: MatchedRawHoldingRow[] = [];
+    const rawPreviousHoldings: MatchedRawHoldingRow[] = [];
+
+    for (const row of holdings) {
+        if (!comparableSet.has(row.cik)) continue;
+
+        const currentFiling = currentByCik.get(row.cik);
+        const previousFiling = previousByCik.get(row.cik);
+        if (!currentFiling || !previousFiling) continue;
+
+        const period =
+            row.quarter === currentQuarter && currentFiling.accessionNumber === row.accessionNumber
+                ? 'current'
+                : row.quarter === previousQuarter && previousFiling.accessionNumber === row.accessionNumber
+                    ? 'previous'
+                    : null;
+
+        if (!period) continue;
+
+        const matches = matchIssuerToWatchlists(row.issuer, selectedWatchlists, selectedCategories);
+        if (matches.length === 0) continue;
+
+        const matchedCategoryKeys = uniqueStrings(matches.map((match) => match.category.key));
+        const matchedCategories = uniqueStrings(matches.map((match) => match.category.label));
+        const matchedItems = uniqueStrings(matches.flatMap((match) => match.items.map((item) => item.label)));
+        const rawHolding: MatchedRawHoldingRow = {
+            ...row,
+            period,
+            rawReportedValue: row.value,
+            estimatedValue: estimateActualValue(row.value, row.shares),
+            matchedCategoryKeys,
+            matchedCategories,
+            matchedItems,
+            secFolderUrl: buildSecAccessionFolderUrl(row.cik, row.accessionNumber),
+            submissionTextUrl: buildSecSubmissionTextUrl(row.cik, row.accessionNumber),
+        };
+
+        if (period === 'current') {
+            rawCurrentHoldings.push(rawHolding);
+        } else {
+            rawPreviousHoldings.push(rawHolding);
+        }
+
+        for (const match of matches) {
+            const securityKey = row.cusip || compactIssuerName(row.issuer);
+            const stateKey = `${row.cik}|${match.category.key}|${securityKey}`;
+            const existing = states.get(stateKey);
+            const state: FilerSecurityAuditState = existing || {
+                cik: row.cik,
+                fundName: currentFiling.fundName || previousFiling.fundName || row.fundName || row.cik,
+                categoryKey: match.category.key,
+                categoryLabel: match.category.label,
+                securityKey,
+                issuer: row.issuer,
+                cusip: row.cusip,
+                currentShares: 0,
+                previousShares: 0,
+                currentValue: 0,
+                previousValue: 0,
+                currentRawValue: 0,
+                previousRawValue: 0,
+                matchedItems: new Set<string>(),
+                currentAccessionNumber: currentFiling.accessionNumber,
+                previousAccessionNumber: previousFiling.accessionNumber,
+                currentFilingDate: currentFiling.filingDate,
+                previousFilingDate: previousFiling.filingDate,
+            };
+
+            for (const item of match.items) state.matchedItems.add(item.label);
+
+            if (period === 'current') {
+                state.currentShares += safeNumber(row.shares);
+                state.currentRawValue += safeNumber(row.value);
+                state.currentValue += estimateActualValue(row.value, row.shares);
+                state.issuer = row.issuer || state.issuer;
+                state.cusip = row.cusip || state.cusip;
+            } else {
+                state.previousShares += safeNumber(row.shares);
+                state.previousRawValue += safeNumber(row.value);
+                state.previousValue += estimateActualValue(row.value, row.shares);
+                if (!state.issuer || state.issuer === 'Unknown') state.issuer = row.issuer;
+                if (!state.cusip) state.cusip = row.cusip;
+            }
+
+            states.set(stateKey, state);
+        }
+    }
+
+    const filerSecurityAuditRows = Array.from(states.values())
+        .map((state) => {
+            const action = classifyMovement(state.previousShares, state.currentShares);
+            return {
+                cik: state.cik,
+                fundName: state.fundName,
+                categoryKey: state.categoryKey,
+                categoryLabel: state.categoryLabel,
+                matchedItems: Array.from(state.matchedItems).sort(),
+                securityKey: state.securityKey,
+                issuer: state.issuer,
+                cusip: state.cusip,
+                action,
+                previousAccessionNumber: state.previousAccessionNumber,
+                currentAccessionNumber: state.currentAccessionNumber,
+                previousFilingDate: state.previousFilingDate,
+                currentFilingDate: state.currentFilingDate,
+                previousShares: state.previousShares,
+                currentShares: state.currentShares,
+                previousRawValue: state.previousRawValue,
+                currentRawValue: state.currentRawValue,
+                previousEstimatedValue: state.previousValue,
+                currentEstimatedValue: state.currentValue,
+                valueDelta: state.currentValue - state.previousValue,
+                previousSecFolderUrl: buildSecAccessionFolderUrl(state.cik, state.previousAccessionNumber),
+                currentSecFolderUrl: buildSecAccessionFolderUrl(state.cik, state.currentAccessionNumber),
+                previousSubmissionTextUrl: buildSecSubmissionTextUrl(state.cik, state.previousAccessionNumber),
+                currentSubmissionTextUrl: buildSecSubmissionTextUrl(state.cik, state.currentAccessionNumber),
+            };
+        })
+        .filter((row) => row.action !== 'absent')
+        .sort((a, b) =>
+            a.categoryLabel.localeCompare(b.categoryLabel) ||
+            a.issuer.localeCompare(b.issuer) ||
+            a.fundName.localeCompare(b.fundName)
+        );
+
+    return {
+        filerSecurityAuditRows,
+        rawCurrentHoldings: sortRawHoldings(rawCurrentHoldings),
+        rawPreviousHoldings: sortRawHoldings(rawPreviousHoldings),
+    };
+}
+
 export function buildEventLensSummary(
     key: EventLensSummary['key'],
     availableQuarters: string[],
@@ -779,7 +984,7 @@ function safeNumber(value: number): number {
     return Number.isFinite(value) ? value : 0;
 }
 
-function estimateActualValue(value: number, shares: number): number {
+export function estimateActualValue(value: number, shares: number): number {
     const safeValue = safeNumber(value);
     const safeShares = safeNumber(shares);
     if (safeValue <= 0) return 0;
@@ -797,4 +1002,34 @@ function pct(numerator: number, denominator: number): number {
 function pushSample(samples: string[], value: string) {
     if (samples.length >= 5) return;
     if (!samples.includes(value)) samples.push(value);
+}
+
+export function buildSecAccessionFolderUrl(cik: string, accessionNumber: string): string | null {
+    const cikPath = normalizeCikPath(cik);
+    const accessionNoDash = accessionNumber.replace(/-/g, '');
+    if (!cikPath || !accessionNoDash) return null;
+    return `https://www.sec.gov/Archives/edgar/data/${cikPath}/${accessionNoDash}/`;
+}
+
+export function buildSecSubmissionTextUrl(cik: string, accessionNumber: string): string | null {
+    const folderUrl = buildSecAccessionFolderUrl(cik, accessionNumber);
+    if (!folderUrl || !accessionNumber) return null;
+    return `${folderUrl}${accessionNumber}.txt`;
+}
+
+function normalizeCikPath(cik: string): string | null {
+    const digits = cik.replace(/\D/g, '').replace(/^0+/, '');
+    return digits || null;
+}
+
+function uniqueStrings(values: string[]): string[] {
+    return Array.from(new Set(values.filter(Boolean))).sort();
+}
+
+function sortRawHoldings(rows: MatchedRawHoldingRow[]): MatchedRawHoldingRow[] {
+    return rows.sort((a, b) =>
+        a.matchedCategories.join(',').localeCompare(b.matchedCategories.join(',')) ||
+        a.issuer.localeCompare(b.issuer) ||
+        a.fundName.localeCompare(b.fundName)
+    );
 }
