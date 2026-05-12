@@ -17,9 +17,9 @@ export const maxDuration = 60;
 export async function POST(req: Request) {
     try {
         const body = await readRadarRequestBody(req);
-        const turso = createRadarClientFromEnv();
-        const request = await resolveRadarRequest(turso, body);
-        const { comparison, filings, holdings } = await loadRadarComparison(turso, request);
+        const db = createRadarClientFromEnv();
+        const request = await resolveRadarRequest(db, body);
+        const { comparison, filings, holdings } = await loadRadarComparison(db, request);
         const audit = buildRadarAudit({
             currentQuarter: request.currentQuarter,
             previousQuarter: request.previousQuarter,

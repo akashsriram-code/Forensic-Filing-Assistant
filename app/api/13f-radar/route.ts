@@ -15,10 +15,10 @@ export const maxDuration = 300;
 export async function POST(req: Request) {
     try {
         const body = await readRadarRequestBody(req);
-        const turso = createRadarClientFromEnv();
-        const request = await resolveRadarRequest(turso, body);
-        const { comparison: mainComparison } = await loadRadarComparison(turso, request);
-        const eventLens = await buildEventLens({ turso, request, mainComparison });
+        const db = createRadarClientFromEnv();
+        const request = await resolveRadarRequest(db, body);
+        const { comparison: mainComparison } = await loadRadarComparison(db, request);
+        const eventLens = await buildEventLens({ db, request, mainComparison });
 
         return NextResponse.json({
             ...mainComparison,

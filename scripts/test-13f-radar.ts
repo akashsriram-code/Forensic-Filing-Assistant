@@ -17,7 +17,13 @@ import {
 import { classifyFiler } from '../lib/filer-classification';
 import { getSector } from '../lib/sectors';
 import { buildRadarAuditWorkbook, buildRadarExportFilename } from '../lib/thirteen-f-radar-export';
-import { type ResolvedRadarRequest } from '../lib/thirteen-f-radar-data';
+import { resolveRadarDbProviderFromEnv, type ResolvedRadarRequest } from '../lib/thirteen-f-radar-data';
+import {
+    buildPostgresSecurityKey,
+    normalizePostgresIssuer,
+    postgresValuePlaceholders,
+    toPostgresSql,
+} from '../lib/thirteen-f-radar-postgres';
 
 const filings: RadarFilingRow[] = [
     filing('A', 'Alpha Capital', 'A-prev', '2025-08-15', '2025-Q3'),
@@ -50,6 +56,47 @@ async function run() {
     assert.equal(normalizeCik('0001001011'), '1001011');
     assert.equal(normalizeCik('1001011'), '1001011');
     assert.equal(normalizeCik('A'), 'A');
+    assert.equal(normalizePostgresIssuer('  Salesforce   Inc  '), 'SALESFORCE INC');
+    assert.equal(buildPostgresSecurityKey('Salesforce Inc', '79466l302'), '79466L302|SALESFORCE INC');
+    assert.equal(buildPostgresSecurityKey('Salesforce Inc', null), 'NO_CUSIP|SALESFORCE INC');
+    assert.equal(toPostgresSql('a = ? AND b IN (?, ?)'), 'a = $1 AND b IN ($2, $3)');
+    assert.equal(postgresValuePlaceholders(2, 3), '($1, $2, $3), ($4, $5, $6)');
+    withTemporaryEnv({
+        TURSO_DATABASE_URL: undefined,
+        TURSO_AUTH_TOKEN: undefined,
+        DATABASE_URL: undefined,
+        POSTGRES_URL: undefined,
+        THIRTEEN_F_DB_PROVIDER: undefined,
+    }, () => {
+        assert.equal(resolveRadarDbProviderFromEnv(), 'turso');
+    });
+    withTemporaryEnv({
+        TURSO_DATABASE_URL: undefined,
+        TURSO_AUTH_TOKEN: undefined,
+        DATABASE_URL: 'postgres://example',
+        POSTGRES_URL: undefined,
+        THIRTEEN_F_DB_PROVIDER: undefined,
+    }, () => {
+        assert.equal(resolveRadarDbProviderFromEnv(), 'postgres');
+    });
+    withTemporaryEnv({
+        TURSO_DATABASE_URL: 'libsql://example',
+        TURSO_AUTH_TOKEN: 'token',
+        DATABASE_URL: 'postgres://example',
+        POSTGRES_URL: undefined,
+        THIRTEEN_F_DB_PROVIDER: undefined,
+    }, () => {
+        assert.equal(resolveRadarDbProviderFromEnv(), 'turso');
+    });
+    withTemporaryEnv({
+        TURSO_DATABASE_URL: 'libsql://example',
+        TURSO_AUTH_TOKEN: 'token',
+        DATABASE_URL: undefined,
+        POSTGRES_URL: undefined,
+        THIRTEEN_F_DB_PROVIDER: 'postgres',
+    }, () => {
+        assert.equal(resolveRadarDbProviderFromEnv(), 'postgres');
+    });
 
     const palantir = DEFAULT_RADAR_WATCHLISTS
         .find((watchlist) => watchlist.key === 'palantir')!
@@ -322,9 +369,15 @@ async function run() {
     ).default.POST;
     const previousUrl = process.env.TURSO_DATABASE_URL;
     const previousToken = process.env.TURSO_AUTH_TOKEN;
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    const previousPostgresUrl = process.env.POSTGRES_URL;
+    const previousProvider = process.env.THIRTEEN_F_DB_PROVIDER;
     const previousConsoleError = console.error;
     delete process.env.TURSO_DATABASE_URL;
     delete process.env.TURSO_AUTH_TOKEN;
+    delete process.env.DATABASE_URL;
+    delete process.env.POSTGRES_URL;
+    delete process.env.THIRTEEN_F_DB_PROVIDER;
     console.error = () => undefined;
     try {
         const response = await exportPost(new Request('http://localhost/api/13f-radar/export', {
@@ -347,6 +400,21 @@ async function run() {
             delete process.env.TURSO_AUTH_TOKEN;
         } else {
             process.env.TURSO_AUTH_TOKEN = previousToken;
+        }
+        if (previousDatabaseUrl === undefined) {
+            delete process.env.DATABASE_URL;
+        } else {
+            process.env.DATABASE_URL = previousDatabaseUrl;
+        }
+        if (previousPostgresUrl === undefined) {
+            delete process.env.POSTGRES_URL;
+        } else {
+            process.env.POSTGRES_URL = previousPostgresUrl;
+        }
+        if (previousProvider === undefined) {
+            delete process.env.THIRTEEN_F_DB_PROVIDER;
+        } else {
+            process.env.THIRTEEN_F_DB_PROVIDER = previousProvider;
         }
     }
 
@@ -375,6 +443,30 @@ function holding(
     shares: number
 ): RadarHoldingRow {
     return { cik, fundName, accessionNumber, filingDate, quarter, issuer, cusip, value, shares };
+}
+
+function withTemporaryEnv(values: Record<string, string | undefined>, fn: () => void) {
+    const previous = new Map<string, string | undefined>();
+    for (const [key, value] of Object.entries(values)) {
+        previous.set(key, process.env[key]);
+        if (value === undefined) {
+            delete process.env[key];
+        } else {
+            process.env[key] = value;
+        }
+    }
+
+    try {
+        fn();
+    } finally {
+        for (const [key, value] of previous.entries()) {
+            if (value === undefined) {
+                delete process.env[key];
+            } else {
+                process.env[key] = value;
+            }
+        }
+    }
 }
 
 run().catch((error) => {

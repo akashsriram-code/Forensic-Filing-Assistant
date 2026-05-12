@@ -1,6 +1,22 @@
 import { createClient, type InValue } from '@libsql/client';
 import * as dotenv from 'dotenv';
 import {
+    completePostgresIngestionRun,
+    createPostgresPool,
+    dropPostgres13FIndexes,
+    ensurePostgres13FIndexes,
+    ensurePostgres13FSchema,
+    failPostgresIngestionRun,
+    getPostgresConnectionString,
+    queryPostgresExistingAccessions,
+    replacePostgres13FHoldings,
+    retainPostgres13FQuarters,
+    startPostgresIngestionRun,
+    upsertPostgres13FFilings,
+    type Postgres13FFilingInput,
+    type Postgres13FHoldingInput,
+} from '../lib/thirteen-f-radar-postgres';
+import {
     batchWithRetry,
     chunkRows,
     completeIngestionRun,
@@ -15,10 +31,13 @@ import {
     isDirectRun,
     normalizeCikForStorage,
     parseLive13FSubmissionText,
+    previousReportQuarter,
     quarterFromReportDate,
+    resolveIngestionTargetProvider,
     startIngestionRun,
     dropHoldingSearchIndexes,
     type HoldingInput,
+    type IngestionTargetProvider,
 } from './13f-ingestion-utils';
 
 dotenv.config();
@@ -50,10 +69,16 @@ const DEFAULT_RATE_LIMIT_MS = 110;
 const DEFAULT_WRITE_BATCH_SIZE = 5;
 const DEFAULT_HOLDING_INSERT_CHUNK_SIZE = 100;
 const MAX_HOLDING_INSERT_CHUNK_SIZE = 100;
+const MAX_POSTGRES_HOLDING_INSERT_CHUNK_SIZE = 1000;
 const HOLDING_INSERT_STATEMENTS_PER_BATCH = 25;
+
+type LiveDbTarget =
+    | { provider: 'turso'; client: ReturnType<typeof createClient> }
+    | { provider: 'postgres'; pool: ReturnType<typeof createPostgresPool> };
 
 async function main() {
     const quarter = getArg('--quarter');
+    const targetProvider = resolveIngestionTargetProvider();
     const dryRun = hasArg('--dry-run');
     const refreshExisting = hasArg('--refresh-existing');
     const rebuildSearchIndexes = hasArg('--rebuild-search-indexes');
@@ -62,15 +87,22 @@ async function main() {
     const rateLimitMs = positiveIntArg('--rate-limit-ms', DEFAULT_RATE_LIMIT_MS);
     const writeBatchSize = positiveIntArg('--write-batch-size', DEFAULT_WRITE_BATCH_SIZE);
     const requestedHoldingInsertChunkSize = positiveIntArg('--holding-insert-chunk-size', DEFAULT_HOLDING_INSERT_CHUNK_SIZE);
-    const holdingInsertChunkSize = Math.min(requestedHoldingInsertChunkSize, MAX_HOLDING_INSERT_CHUNK_SIZE);
+    const holdingInsertChunkSize = Math.min(
+        requestedHoldingInsertChunkSize,
+        maxHoldingInsertChunkSizeFor(targetProvider)
+    );
     const maxNewFilings = positiveOptionalIntArg('--max-new-filings');
 
     if (!quarter) {
-        console.error('Usage: npm run ingest:13f-live -- --quarter 2026-Q1 [--dry-run] [--refresh-existing] [--rebuild-search-indexes] [--limit 250] [--max-new-filings 200] [--concurrency 6] [--rate-limit-ms 110] [--write-batch-size 5] [--holding-insert-chunk-size 100]');
+        console.error('Usage: npm run ingest:13f-live -- --quarter 2026-Q1 [--target turso|postgres] [--dry-run] [--refresh-existing] [--rebuild-search-indexes] [--limit 250] [--max-new-filings 200] [--concurrency 6] [--rate-limit-ms 110] [--write-batch-size 5] [--holding-insert-chunk-size 100]');
         process.exit(1);
     }
-    if (!dryRun && (!TURSO_URL || !TURSO_TOKEN)) {
+    if (!dryRun && targetProvider === 'turso' && (!TURSO_URL || !TURSO_TOKEN)) {
         console.error('Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN.');
+        process.exit(1);
+    }
+    if (!dryRun && targetProvider === 'postgres' && !getPostgresConnectionString()) {
+        console.error('Missing DATABASE_URL or POSTGRES_URL for Postgres ingestion.');
         process.exit(1);
     }
 
@@ -80,6 +112,7 @@ async function main() {
     const limitedEntries = Number.isFinite(limit) && limit > 0 ? entries.slice(0, limit) : entries;
 
     console.log(`[13F Live EDGAR] Target report quarter: ${quarter}`);
+    console.log(`[13F Live EDGAR] Target database: ${targetProvider}`);
     console.log(`[13F Live EDGAR] Scanning ${masterIndexUrl}`);
     console.log(`[13F Live EDGAR] Found ${entries.length} 13F-HR/13F-HR-A filings; processing ${limitedEntries.length}`);
     console.log(`[13F Live EDGAR] Fast mode: fetch submission .txt once per filing.`);
@@ -89,22 +122,23 @@ async function main() {
     }
     if (maxNewFilings) console.log(`[13F Live EDGAR] Stop after roughly ${maxNewFilings} new matching filings.`);
 
-    let turso: ReturnType<typeof createClient> | null = null;
+    let target: LiveDbTarget | null = null;
     let existingAccessions = new Set<string>();
     let runId: string | null = null;
     if (!dryRun) {
-        turso = createClient({ url: TURSO_URL!, authToken: TURSO_TOKEN! });
+        target = await createLiveTarget(targetProvider);
         if (hasArg('--skip-schema')) {
             console.log('[13F Live EDGAR] Skipping schema setup.');
         } else {
-            await ensure13FSchema(turso);
+            await ensureLiveTargetSchema(target);
         }
-        if (rebuildSearchIndexes) await dropHoldingSearchIndexes(turso);
+        if (rebuildSearchIndexes) await dropLiveTargetIndexes(target);
+        else await ensureLiveTargetIndexes(target);
         if (!refreshExisting) {
-            existingAccessions = await queryExistingAccessions(turso, quarter);
+            existingAccessions = await queryExistingAccessions(target, quarter);
             console.log(`[13F Live EDGAR] ${existingAccessions.size} existing accessions for ${quarter}; use --refresh-existing to replace them.`);
         }
-        runId = await startIngestionRun(turso, { quarter, source: 'live-edgar', sourceUrl: masterIndexUrl });
+        runId = await startLiveIngestionRun(target, quarter, masterIndexUrl);
     }
 
     const stats = {
@@ -126,14 +160,14 @@ async function main() {
         let completed = 0;
 
         const flushBufferedWrites = async (force = false) => {
-            if (dryRun || !turso) return;
+            if (dryRun || !target) return;
             if (writeBuffer.length === 0) return;
             if (!force && writeBuffer.length < writeBatchSize) return;
             const batch = writeBuffer.splice(0, writeBuffer.length);
             writeChain = writeChain.then(async () => {
                 const holdingCount = batch.reduce((sum, filing) => sum + filing.holdings.length, 0);
                 console.log(`\n[13F Live EDGAR] Writing ${batch.length} filing(s), ${holdingCount} holding row(s)...`);
-                const result = await replaceLiveFilings(turso!, batch, holdingInsertChunkSize);
+                const result = await replaceLiveFilings(target!, batch, holdingInsertChunkSize);
                 stats.filingsUpserted += result.filings;
                 stats.holdingsInserted += result.holdings;
                 console.log(`[13F Live EDGAR] Wrote ${result.filings} filing(s), ${result.holdings} holding row(s).`);
@@ -161,7 +195,7 @@ async function main() {
                         console.warn(`\n[13F Live EDGAR] Skipped ${processed.accessionNumber}: ${processed.errorMessage || 'unknown error'}`);
                     } else if (processed.holdings.length > 0) {
                         stats.reportQuarterMatches++;
-                        if (!dryRun && turso) {
+                        if (!dryRun && target) {
                             writeBuffer.push(processed);
                             await flushBufferedWrites(false);
                         } else {
@@ -182,8 +216,8 @@ async function main() {
         console.log('');
         console.table(stats);
 
-        if (!dryRun && turso && runId) {
-            await completeIngestionRun(turso, runId, {
+        if (!dryRun && target && runId) {
+            await completeLiveIngestionRun(target, runId, {
                 filingsSeen: stats.filingsSeen,
                 filingsUpserted: stats.filingsUpserted,
                 holdingsInserted: stats.holdingsInserted,
@@ -193,17 +227,19 @@ async function main() {
                 skippedNoHoldings: stats.skippedNoHoldings,
                 skippedErrors: stats.skippedErrors,
             });
+            await retainLiveTargetQuarters(target, quarter);
         }
 
-        console.log(dryRun ? '[13F Live EDGAR] Dry run complete; no Turso writes performed.' : '[13F Live EDGAR] Complete.');
+        console.log(dryRun ? `[13F Live EDGAR] Dry run complete; no ${targetProvider} writes performed.` : '[13F Live EDGAR] Complete.');
     } catch (error) {
-        if (!dryRun && turso && runId) await failIngestionRun(turso, runId, error);
+        if (!dryRun && target && runId) await failLiveIngestionRun(target, runId, error);
         throw error;
     } finally {
-        if (!dryRun && turso && rebuildSearchIndexes) {
+        if (!dryRun && target && rebuildSearchIndexes) {
             console.log('[13F Live EDGAR] Rebuilding required 13F indexes...');
-            await ensureRequired13FIndexes(turso);
+            await ensureLiveTargetIndexes(target);
         }
+        if (target?.provider === 'postgres') await target.pool.end();
     }
 }
 
@@ -255,7 +291,66 @@ async function processLiveFiling(
     };
 }
 
+async function createLiveTarget(provider: IngestionTargetProvider): Promise<LiveDbTarget> {
+    if (provider === 'postgres') {
+        return { provider, pool: createPostgresPool() };
+    }
+    return { provider, client: createClient({ url: TURSO_URL!, authToken: TURSO_TOKEN! }) };
+}
+
+async function ensureLiveTargetSchema(target: LiveDbTarget) {
+    if (target.provider === 'postgres') await ensurePostgres13FSchema(target.pool);
+    else await ensure13FSchema(target.client);
+}
+
+async function ensureLiveTargetIndexes(target: LiveDbTarget) {
+    if (target.provider === 'postgres') await ensurePostgres13FIndexes(target.pool);
+    else await ensureRequired13FIndexes(target.client);
+}
+
+async function dropLiveTargetIndexes(target: LiveDbTarget) {
+    if (target.provider === 'postgres') await dropPostgres13FIndexes(target.pool);
+    else await dropHoldingSearchIndexes(target.client);
+}
+
+async function startLiveIngestionRun(target: LiveDbTarget, quarter: string, sourceUrl: string): Promise<string> {
+    if (target.provider === 'postgres') {
+        return startPostgresIngestionRun(target.pool, { quarter, source: 'live-edgar', sourceUrl });
+    }
+    return startIngestionRun(target.client, { quarter, source: 'live-edgar', sourceUrl });
+}
+
+async function completeLiveIngestionRun(
+    target: LiveDbTarget,
+    runId: string,
+    counts: Parameters<typeof completeIngestionRun>[2]
+) {
+    if (target.provider === 'postgres') await completePostgresIngestionRun(target.pool, runId, counts);
+    else await completeIngestionRun(target.client, runId, counts);
+}
+
+async function failLiveIngestionRun(target: LiveDbTarget, runId: string, error: unknown) {
+    if (target.provider === 'postgres') await failPostgresIngestionRun(target.pool, runId, error);
+    else await failIngestionRun(target.client, runId, error);
+}
+
+async function retainLiveTargetQuarters(target: LiveDbTarget, quarter: string) {
+    if (target.provider !== 'postgres' || hasArg('--keep-all-quarters')) return;
+    await retainPostgres13FQuarters(target.pool, [quarter, previousReportQuarter(quarter)]);
+}
+
 async function replaceLiveFilings(
+    target: LiveDbTarget,
+    filings: ProcessedLiveFiling[],
+    holdingInsertChunkSize: number
+): Promise<{ filings: number; holdings: number }> {
+    if (target.provider === 'postgres') {
+        return replacePostgresLiveFilings(target.pool, filings, holdingInsertChunkSize);
+    }
+    return replaceTursoLiveFilings(target.client, filings, holdingInsertChunkSize);
+}
+
+async function replaceTursoLiveFilings(
     turso: ReturnType<typeof createClient>,
     filings: ProcessedLiveFiling[],
     holdingInsertChunkSize: number
@@ -326,6 +421,44 @@ async function replaceLiveFilings(
     return { filings: filings.length, holdings: holdings.length };
 }
 
+async function replacePostgresLiveFilings(
+    pool: ReturnType<typeof createPostgresPool>,
+    filings: ProcessedLiveFiling[],
+    holdingInsertChunkSize: number
+): Promise<{ filings: number; holdings: number }> {
+    if (filings.length === 0) return { filings: 0, holdings: 0 };
+    const pgFilings: Postgres13FFilingInput[] = filings.map((filing) => ({
+        accessionNumber: filing.accessionNumber,
+        cik: filing.cik,
+        fundName: filing.fundName,
+        filingDate: filing.filingDate,
+        quarter: quarterFromReportDate(filing.reportDate) || '',
+        form: filing.form,
+        reportDate: filing.reportDate,
+        source: 'live-edgar',
+    }));
+    await upsertPostgres13FFilings(pool, pgFilings);
+
+    const holdings: Postgres13FHoldingInput[] = filings.flatMap((filing) =>
+        filing.holdings.map((holding) => ({
+            accessionNumber: filing.accessionNumber,
+            issuer: holding.issuer,
+            cusip: holding.cusip,
+            value: holding.value,
+            shares: holding.shares,
+            putcall: holding.putcall,
+            sshPrnamtType: holding.sshPrnamtType,
+        }))
+    );
+    const inserted = await replacePostgres13FHoldings(pool, {
+        accessions: filings.map((filing) => filing.accessionNumber),
+        holdings,
+        holdingInsertChunkSize,
+    });
+
+    return { filings: pgFilings.length, holdings: inserted };
+}
+
 async function batchStatementGroup(
     turso: ReturnType<typeof createClient>,
     statements: Array<{ sql: string; args: InValue[] }>
@@ -343,8 +476,10 @@ async function batchStatementGroup(
     }
 }
 
-async function queryExistingAccessions(turso: ReturnType<typeof createClient>, quarter: string): Promise<Set<string>> {
-    const result = await turso.execute({
+async function queryExistingAccessions(target: LiveDbTarget, quarter: string): Promise<Set<string>> {
+    if (target.provider === 'postgres') return queryPostgresExistingAccessions(target.pool, quarter);
+
+    const result = await target.client.execute({
         sql: 'SELECT accession_number FROM filings WHERE quarter = ?',
         args: [quarter],
     });
@@ -392,6 +527,10 @@ function positiveIntArg(name: string, fallback: number): number {
 function positiveOptionalIntArg(name: string): number | null {
     const value = Number.parseInt(getArg(name) || '', 10);
     return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function maxHoldingInsertChunkSizeFor(provider: IngestionTargetProvider): number {
+    return provider === 'postgres' ? MAX_POSTGRES_HOLDING_INSERT_CHUNK_SIZE : MAX_HOLDING_INSERT_CHUNK_SIZE;
 }
 
 function createRateLimiter(delayMs: number) {

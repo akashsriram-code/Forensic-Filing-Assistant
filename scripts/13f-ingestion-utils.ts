@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 export type TursoClient = ReturnType<typeof createClient>;
 export type IngestionSource = 'live-edgar' | 'sec-bulk';
+export type IngestionTargetProvider = 'turso' | 'postgres';
 export type TsvRow = Record<string, string>;
 
 export interface HoldingInput {
@@ -81,10 +82,22 @@ export function hasArg(name: string): boolean {
     return process.argv.includes(name);
 }
 
+export function resolveIngestionTargetProvider(explicitTarget = getArg('--target')): IngestionTargetProvider {
+    const normalized = (explicitTarget || process.env.THIRTEEN_F_DB_PROVIDER || 'turso').trim().toLowerCase();
+    if (normalized === 'postgres') return 'postgres';
+    if (normalized === 'turso') return 'turso';
+    throw new Error(`Invalid ingestion target "${normalized}". Expected "turso" or "postgres".`);
+}
+
 export function parseQuarterKey(value: string): { year: number; quarter: number } {
     const match = value.match(/^(\d{4})-Q([1-4])$/);
     if (!match) throw new Error(`Invalid quarter "${value}". Expected YYYY-Q1..YYYY-Q4.`);
     return { year: Number(match[1]), quarter: Number(match[2]) };
+}
+
+export function previousReportQuarter(quarterKey: string): string {
+    const { year, quarter } = parseQuarterKey(quarterKey);
+    return quarter === 1 ? `${year - 1}-Q4` : `${year}-Q${quarter - 1}`;
 }
 
 export function quarterFromReportDate(value: string): string | null {

@@ -8,9 +8,11 @@ import {
     mostRecentCompletedReportQuarter,
     parseLive13FSubmissionText,
     parseLive13FXmlText,
+    previousReportQuarter,
     quarterEndDateString,
     quarterFromReportDate,
     resolveIngestionSchedule,
+    resolveIngestionTargetProvider,
     selectSecDatasetSubmissionsForQuarter,
     type TsvRow,
 } from './13f-ingestion-utils';
@@ -19,6 +21,8 @@ async function run() {
     assert.equal(quarterFromReportDate('2026-03-31'), '2026-Q1');
     assert.equal(quarterFromReportDate('20260331'), '2026-Q1');
     assert.equal(quarterEndDateString('2026-Q1'), '2026-03-31');
+    assert.equal(previousReportQuarter('2026-Q1'), '2025-Q4');
+    assert.equal(previousReportQuarter('2026-Q3'), '2026-Q2');
     assert.equal(filingDeadlineDateString('2026-Q1'), '2026-05-15');
     assert.deepEqual(filingIndexQuarterForReportQuarter('2026-Q1'), { year: 2026, quarter: 2 });
     assert.deepEqual(filingIndexQuarterForReportQuarter('2025-Q4'), { year: 2026, quarter: 1 });
@@ -49,6 +53,16 @@ async function run() {
     assert.equal(liveRefreshModeForLatestStatus('failed'), 'refresh-existing');
     assert.equal(liveRefreshModeForLatestStatus('interrupted'), 'refresh-existing');
     assert.equal(liveRefreshModeForLatestStatus('running'), 'refresh-existing');
+    withTemporaryEnv({ THIRTEEN_F_DB_PROVIDER: undefined }, () => {
+        assert.equal(resolveIngestionTargetProvider(null), 'turso');
+    });
+    withTemporaryEnv({ THIRTEEN_F_DB_PROVIDER: 'postgres' }, () => {
+        assert.equal(resolveIngestionTargetProvider(null), 'postgres');
+    });
+    withTemporaryEnv({ THIRTEEN_F_DB_PROVIDER: 'turso' }, () => {
+        assert.equal(resolveIngestionTargetProvider('postgres'), 'postgres');
+    });
+    assert.throws(() => resolveIngestionTargetProvider('sqlite'), /Invalid ingestion target/);
 
     assert.deepEqual(missingRequiredHoldingIndexes([
         'idx_holdings_accession',
@@ -160,6 +174,24 @@ function submission(accession: string, form: string, period: string): TsvRow {
         SUBMISSIONTYPE: form,
         PERIODOFREPORT: period,
     };
+}
+
+function withTemporaryEnv(values: Record<string, string | undefined>, fn: () => void) {
+    const previous = new Map<string, string | undefined>();
+    for (const [key, value] of Object.entries(values)) {
+        previous.set(key, process.env[key]);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+    }
+
+    try {
+        fn();
+    } finally {
+        for (const [key, value] of previous.entries()) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+    }
 }
 
 run().catch((error) => {

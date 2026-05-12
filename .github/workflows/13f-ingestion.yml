@@ -20,6 +20,14 @@ on:
           - bulk
           - both
           - repair-indexes
+      target:
+        description: 'Database target for ingestion writes.'
+        required: false
+        default: postgres
+        type: choice
+        options:
+          - postgres
+          - turso
       sec_zip_url:
         description: 'Optional SEC Form 13F Data Set ZIP URL override for bulk mode.'
         required: false
@@ -35,7 +43,10 @@ jobs:
     env:
       TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
       TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
       SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'ForensicFilingAssistant contact@example.com' }}
+      ALLOW_TURSO_13F_WRITES: ${{ secrets.ALLOW_TURSO_13F_WRITES || 'false' }}
+      THIRTEEN_F_DB_PROVIDER: ${{ inputs.target || secrets.THIRTEEN_F_DB_PROVIDER || 'postgres' }}
       REQUESTED_QUARTER: ${{ inputs.quarter || '' }}
       REQUESTED_MODE: ${{ inputs.mode || 'auto' }}
       REQUESTED_SEC_ZIP_URL: ${{ inputs.sec_zip_url || '' }}
@@ -64,19 +75,40 @@ jobs:
 
       - name: Check official bulk status
         id: bulk_status
-        run: npx tsx scripts/check-13f-ingestion-status.ts --quarter "${{ steps.schedule.outputs.quarter }}" --source sec-bulk --github-output
+        run: npx tsx scripts/check-13f-ingestion-status.ts --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --source sec-bulk --github-output
 
       - name: Check live EDGAR status
         id: live_status
-        run: npx tsx scripts/check-13f-ingestion-status.ts --quarter "${{ steps.schedule.outputs.quarter }}" --source live-edgar --github-output
+        run: npx tsx scripts/check-13f-ingestion-status.ts --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --source live-edgar --github-output
+
+      - name: Turso write quota guard
+        if: env.THIRTEEN_F_DB_PROVIDER == 'turso' && env.ALLOW_TURSO_13F_WRITES != 'true'
+        run: |
+          echo "Turso 13F writes are disabled because ALLOW_TURSO_13F_WRITES is not true." >> "$GITHUB_STEP_SUMMARY"
+          echo "Scheduled runs will not ingest, bulk-load, or repair Turso indexes while the write quota is exhausted." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Postgres write target
+        if: env.THIRTEEN_F_DB_PROVIDER == 'postgres'
+        run: |
+          echo "13F ingestion target: Postgres/Neon." >> "$GITHUB_STEP_SUMMARY"
+          echo "Turso is not used for ingestion writes in this run." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Repair required indexes
-        if: env.REQUESTED_MODE == 'repair-indexes'
-        run: npm run repair:13f-indexes -- --quarter "${{ steps.schedule.outputs.quarter }}" --require-all --github-summary
+        if: |
+          env.REQUESTED_MODE == 'repair-indexes' &&
+          (
+            env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
+            env.ALLOW_TURSO_13F_WRITES == 'true'
+          )
+        run: npm run repair:13f-indexes -- --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --require-all --github-summary
 
       - name: Run live EDGAR ingestion
         id: live_ingest
         if: |
+          (
+            env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
+            env.ALLOW_TURSO_13F_WRITES == 'true'
+          ) &&
           (
             env.REQUESTED_MODE == 'live' ||
             env.REQUESTED_MODE == 'both' ||
@@ -87,12 +119,17 @@ jobs:
             )
           )
         run: |
+          HOLDING_CHUNK_SIZE=100
+          if [ "$THIRTEEN_F_DB_PROVIDER" = "postgres" ]; then
+            HOLDING_CHUNK_SIZE=1000
+          fi
           LIVE_ARGS=(
+            --target "$THIRTEEN_F_DB_PROVIDER"
             --quarter "${{ steps.schedule.outputs.quarter }}"
             --concurrency 16
             --rate-limit-ms 100
             --write-batch-size 8
-            --holding-insert-chunk-size 100
+            --holding-insert-chunk-size "$HOLDING_CHUNK_SIZE"
           )
           if [ "${{ steps.live_status.outputs.live_mode }}" = "refresh-existing" ]; then
             LIVE_ARGS+=(--refresh-existing --rebuild-search-indexes)
@@ -104,6 +141,10 @@ jobs:
       - name: Resolve SEC bulk ZIP
         id: sec_dataset
         if: |
+          (
+            env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
+            env.ALLOW_TURSO_13F_WRITES == 'true'
+          ) &&
           (
             env.REQUESTED_MODE == 'bulk' ||
             env.REQUESTED_MODE == 'both' ||
@@ -124,15 +165,19 @@ jobs:
       - name: Run official SEC bulk ingestion
         id: bulk_ingest
         if: steps.sec_dataset.outputs.sec_zip_url != ''
-        run: npm run ingest:13f-sec -- --quarter "${{ steps.schedule.outputs.quarter }}" --url "${{ steps.sec_dataset.outputs.sec_zip_url }}" --rebuild-search-indexes
+        run: npm run ingest:13f-sec -- --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --url "${{ steps.sec_dataset.outputs.sec_zip_url }}" --rebuild-search-indexes
 
       - name: Verify quarter ingestion
         if: |
           always() &&
+          (
+            env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
+            env.ALLOW_TURSO_13F_WRITES == 'true'
+          ) &&
           (
             env.REQUESTED_MODE == 'repair-indexes' ||
             env.REQUESTED_MODE != 'auto' ||
             steps.schedule.outputs.live_active == 'true' ||
             steps.schedule.outputs.bulk_active == 'true'
           )
-        run: npm run verify:13f -- --quarter "${{ steps.schedule.outputs.quarter }}" --github-summary --require-indexes
+        run: npm run verify:13f -- --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --github-summary --require-indexes

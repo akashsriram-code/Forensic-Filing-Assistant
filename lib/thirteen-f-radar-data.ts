@@ -1,4 +1,6 @@
 import { createClient } from '@libsql/client';
+import { type InValue } from '@libsql/client';
+import { type Pool } from 'pg';
 import {
     DEFAULT_RADAR_WATCHLISTS,
     buildEventLensSummary,
@@ -17,15 +19,28 @@ import {
     type RadarHoldingRow,
     type RadarWatchlist,
 } from './thirteen-f-radar-core';
+import {
+    createPostgresPool,
+    getPostgresConnectionString,
+    queryPostgresRows,
+} from './thirteen-f-radar-postgres';
 
 export const MISSING_TURSO_ERROR =
     'Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN. 13F Radar needs the Turso holdings database.';
+export const MISSING_POSTGRES_ERROR =
+    'Missing DATABASE_URL or POSTGRES_URL. 13F Radar is configured for Postgres.';
 
 const HOLDING_QUERY_CHUNK_SIZE = 500;
 const HOLDING_QUERY_CONCURRENCY = 12;
 
 export type TursoClient = ReturnType<typeof createClient>;
+export type RadarDbProvider = 'turso' | 'postgres';
+export type RadarDbClient =
+    | { provider: 'turso'; client: TursoClient }
+    | { provider: 'postgres'; pool: Pool };
 type DbRow = Record<string, unknown>;
+
+let cachedPostgresPool: Pool | null = null;
 
 export interface RadarRequestBody {
     currentQuarter?: unknown;
@@ -74,7 +89,27 @@ export async function readRadarRequestBody(req: Request): Promise<RadarRequestBo
     }
 }
 
-export function createRadarClientFromEnv(): TursoClient {
+export function resolveRadarDbProviderFromEnv(): RadarDbProvider {
+    const explicit = process.env.THIRTEEN_F_DB_PROVIDER?.trim().toLowerCase();
+    if (explicit === 'postgres') return 'postgres';
+    if (explicit === 'turso') return 'turso';
+    if (getPostgresConnectionString() && (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN)) {
+        return 'postgres';
+    }
+    return 'turso';
+}
+
+export function createRadarClientFromEnv(): RadarDbClient {
+    const provider = resolveRadarDbProviderFromEnv();
+    if (provider === 'postgres') {
+        const connectionString = getPostgresConnectionString();
+        if (!connectionString) {
+            throw new RadarDataError(MISSING_POSTGRES_ERROR, 500);
+        }
+        cachedPostgresPool ||= createPostgresPool(connectionString);
+        return { provider, pool: cachedPostgresPool };
+    }
+
     const url = process.env.TURSO_DATABASE_URL;
     const authToken = process.env.TURSO_AUTH_TOKEN;
 
@@ -82,14 +117,14 @@ export function createRadarClientFromEnv(): TursoClient {
         throw new RadarDataError(MISSING_TURSO_ERROR, 500);
     }
 
-    return createClient({ url, authToken });
+    return { provider, client: createClient({ url, authToken }) };
 }
 
 export async function resolveRadarRequest(
-    turso: TursoClient,
+    db: RadarDbClient,
     body: RadarRequestBody
 ): Promise<ResolvedRadarRequest> {
-    const availableQuarters = await queryAvailableQuarters(turso);
+    const availableQuarters = await queryAvailableQuarters(db);
 
     if (availableQuarters.length < 2) {
         throw new RadarDataError('Need at least two ingested 13F quarters to build the radar.', 404);
@@ -105,7 +140,7 @@ export async function resolveRadarRequest(
     const watchlists = normalizeWatchlists(body.watchlists);
     const selectedCategories = normalizeCategories(body.categories, watchlists);
     const movementBasis: MovementBasis = body.movementBasis === 'filer-count' ? 'filer-count' : 'filer-count';
-    const dbShape = await inspectDbShape(turso);
+    const dbShape = await inspectDbShape(db);
 
     return {
         currentQuarter,
@@ -119,7 +154,7 @@ export async function resolveRadarRequest(
 }
 
 export async function loadRadarComparison(
-    turso: TursoClient,
+    db: RadarDbClient,
     request: ResolvedRadarRequest
 ): Promise<LoadedRadarComparison> {
     const {
@@ -131,7 +166,7 @@ export async function loadRadarComparison(
         dbShape,
     } = request;
     const quarters = [currentQuarter, previousQuarter];
-    const filings = await queryFilings(turso, quarters);
+    const filings = await queryFilings(db, quarters);
     const currentFilings = selectLatestFilings(filings, currentQuarter);
     const previousFilings = selectLatestFilings(filings, previousQuarter);
     const previousByCik = new Map(previousFilings.map((filing) => [filing.cik, filing]));
@@ -140,7 +175,7 @@ export async function loadRadarComparison(
         return previousFiling ? [currentFiling, previousFiling] : [];
     });
     const holdings = selectedCategories.length > 0
-        ? await queryWatchedHoldings(turso, comparableFilings, dbShape.putCallColumn)
+        ? await queryWatchedHoldings(db, comparableFilings, dbShape.putCallColumn)
         : [];
 
     return {
@@ -159,7 +194,7 @@ export async function loadRadarComparison(
 }
 
 export async function buildEventLens(params: {
-    turso: TursoClient;
+    db: RadarDbClient;
     request: ResolvedRadarRequest;
     mainComparison: RadarComparison;
 }): Promise<EventLensSummary[]> {
@@ -195,35 +230,36 @@ export async function buildEventLens(params: {
 }
 
 export async function queryFilerSideMatches(params: {
-    turso: TursoClient;
+    db: RadarDbClient;
     currentQuarter: string;
     previousQuarter: string;
     watchlists: RadarWatchlist[];
     selectedCategories: string[];
 }): Promise<FilerSideMatch[]> {
-    const { turso, currentQuarter, previousQuarter, watchlists, selectedCategories } = params;
+    const { db, currentQuarter, previousQuarter, watchlists, selectedCategories } = params;
     const patterns = buildIssuerSqlPatterns(watchlists, selectedCategories);
     if (patterns.length === 0) return [];
 
     const rowsByCik = new Map<string, DbRow>();
     for (const patternChunk of chunkArray(patterns, 40)) {
         const patternClauses = patternChunk.map(() => "UPPER(f.name) LIKE ? ESCAPE '\\'").join(' OR ');
-        const result = await turso.execute({
-            sql: `
+        const result = await executeRadarQuery(
+            db,
+            `
                 SELECT
                     f.cik AS cik,
-                    f.name AS fundName,
-                    MAX(fil.filing_date) AS latestFilingDate,
-                    SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS currentCount,
-                    SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS previousCount
+                    f.name AS "fundName",
+                    MAX(fil.filing_date) AS "latestFilingDate",
+                    SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS "currentCount",
+                    SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS "previousCount"
                 FROM funds f
                 LEFT JOIN filings fil ON fil.cik = f.cik
                 WHERE ${patternClauses}
                 GROUP BY f.cik, f.name
                 LIMIT 200
             `,
-            args: [currentQuarter, previousQuarter, ...patternChunk],
-        });
+            [currentQuarter, previousQuarter, ...patternChunk]
+        );
 
         for (const row of result.rows) {
             rowsByCik.set(toStringValue(row, 'cik'), row);
@@ -263,8 +299,8 @@ export function buildRadarNotes(dbShape: DbShape): string[] {
     return notes;
 }
 
-async function queryAvailableQuarters(turso: TursoClient): Promise<string[]> {
-    const result = await turso.execute(`
+async function queryAvailableQuarters(db: RadarDbClient): Promise<string[]> {
+    const result = await executeRadarQuery(db, `
         SELECT quarter
         FROM filings
         WHERE quarter IS NOT NULL AND quarter != ''
@@ -274,22 +310,23 @@ async function queryAvailableQuarters(turso: TursoClient): Promise<string[]> {
     return sortQuartersDesc(result.rows.map((row) => toStringValue(row, 'quarter')).filter(Boolean));
 }
 
-async function queryFilings(turso: TursoClient, quarters: string[]): Promise<RadarFilingRow[]> {
+async function queryFilings(db: RadarDbClient, quarters: string[]): Promise<RadarFilingRow[]> {
     const placeholders = quarters.map(() => '?').join(', ');
-    const result = await turso.execute({
-        sql: `
+    const result = await executeRadarQuery(
+        db,
+        `
             SELECT
                 fil.cik AS cik,
-                COALESCE(f.name, fil.cik) AS fundName,
-                fil.accession_number AS accessionNumber,
-                fil.filing_date AS filingDate,
+                COALESCE(f.name, fil.cik) AS "fundName",
+                fil.accession_number AS "accessionNumber",
+                fil.filing_date AS "filingDate",
                 fil.quarter AS quarter
             FROM filings fil
             LEFT JOIN funds f ON fil.cik = f.cik
             WHERE fil.quarter IN (${placeholders})
         `,
-        args: quarters,
-    });
+        quarters
+    );
 
     return result.rows.map((row) => ({
         cik: normalizeCik(toStringValue(row, 'cik')),
@@ -301,7 +338,7 @@ async function queryFilings(turso: TursoClient, quarters: string[]): Promise<Rad
 }
 
 async function queryWatchedHoldings(
-    turso: TursoClient,
+    db: RadarDbClient,
     filings: RadarFilingRow[],
     putCallColumn: string | null
 ): Promise<RadarHoldingRow[]> {
@@ -322,20 +359,11 @@ async function queryWatchedHoldings(
 
             const filingChunk = filingChunks[chunkIndex];
             const placeholders = filingChunk.map(() => '?').join(', ');
-            const result = await turso.execute({
-                sql: `
-                    SELECT
-                        h.accession_number AS accessionNumber,
-                        h.issuer AS issuer,
-                        h.cusip AS cusip,
-                        h.value AS value,
-                        h.shares AS shares
-                    FROM holdings h
-                    WHERE h.accession_number IN (${placeholders})
-                      ${putCallFilter}
-                `,
-                args: filingChunk.map((filing) => filing.accessionNumber),
-            });
+            const result = await executeRadarQuery(
+                db,
+                buildHoldingsSql(db, placeholders, putCallFilter),
+                filingChunk.map((filing) => filing.accessionNumber)
+            );
 
             for (const row of result.rows) {
                 const accessionNumber = toStringValue(row, 'accessionNumber');
@@ -365,8 +393,14 @@ async function queryWatchedHoldings(
     return holdings;
 }
 
-async function inspectDbShape(turso: TursoClient): Promise<DbShape> {
-    const result = await turso.execute('PRAGMA table_info(holdings)');
+async function inspectDbShape(db: RadarDbClient): Promise<DbShape> {
+    const result = db.provider === 'postgres'
+        ? await executeRadarQuery(db, `
+            SELECT column_name AS name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'holdings'
+        `)
+        : await executeRadarQuery(db, 'PRAGMA table_info(holdings)');
     const holdingsColumns = result.rows.map((row) => toStringValue(row, 'name')).filter(Boolean);
     const putCallColumn =
         holdingsColumns.find((column) => column.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === 'putcall') || null;
@@ -442,6 +476,49 @@ function toStringValue(row: DbRow, key: string): string {
 function nullableStringValue(row: DbRow, key: string): string | null {
     const value = toStringValue(row, key);
     return value || null;
+}
+
+function buildHoldingsSql(db: RadarDbClient, placeholders: string, putCallFilter: string): string {
+    if (db.provider === 'postgres') {
+        return `
+            SELECT
+                h.accession_number AS "accessionNumber",
+                s.issuer AS issuer,
+                s.cusip AS cusip,
+                h.value AS value,
+                h.shares AS shares
+            FROM holdings h
+            JOIN securities s ON s.security_key = h.security_key
+            WHERE h.accession_number IN (${placeholders})
+              ${putCallFilter}
+        `;
+    }
+
+    return `
+        SELECT
+            h.accession_number AS "accessionNumber",
+            h.issuer AS issuer,
+            h.cusip AS cusip,
+            h.value AS value,
+            h.shares AS shares
+        FROM holdings h
+        WHERE h.accession_number IN (${placeholders})
+          ${putCallFilter}
+    `;
+}
+
+async function executeRadarQuery(
+    db: RadarDbClient,
+    sql: string,
+    args: unknown[] = []
+): Promise<{ rows: DbRow[] }> {
+    if (db.provider === 'postgres') {
+        const result = await queryPostgresRows(db.pool, sql, args);
+        return { rows: result.rows as DbRow[] };
+    }
+
+    const result = await db.client.execute({ sql, args: args as InValue[] });
+    return { rows: result.rows as DbRow[] };
 }
 
 function toNumberValue(row: DbRow, key: string): number {

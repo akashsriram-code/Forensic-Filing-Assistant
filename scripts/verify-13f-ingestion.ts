@@ -2,11 +2,18 @@ import { createClient } from '@libsql/client';
 import * as dotenv from 'dotenv';
 import * as fs from 'node:fs';
 import {
+    createPostgresPool,
+    getPostgresConnectionString,
+    listPostgres13FIndexes,
+    missingRequiredPostgres13FIndexes,
+} from '../lib/thirteen-f-radar-postgres';
+import {
     getArg,
     hasArg,
     isDirectRun,
     listTableIndexes,
     missingRequiredHoldingIndexes,
+    resolveIngestionTargetProvider,
 } from './13f-ingestion-utils';
 
 dotenv.config();
@@ -18,9 +25,18 @@ async function main() {
     const quarter = getArg('--quarter');
     const githubSummary = hasArg('--github-summary');
     const requireIndexes = hasArg('--require-indexes');
+    const target = resolveIngestionTargetProvider();
     if (!quarter) {
-        console.error('Usage: npm run verify:13f -- --quarter 2026-Q1');
+        console.error('Usage: npm run verify:13f -- --quarter 2026-Q1 [--target turso|postgres]');
         process.exit(1);
+    }
+    if (target === 'postgres') {
+        if (!getPostgresConnectionString()) {
+            console.error('Missing DATABASE_URL or POSTGRES_URL for Postgres verification.');
+            process.exit(1);
+        }
+        await verifyPostgres({ quarter, githubSummary, requireIndexes, target });
+        return;
     }
     if (!TURSO_URL || !TURSO_TOKEN) {
         console.error('Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN.');
@@ -87,6 +103,7 @@ async function main() {
     if (githubSummary) {
         appendGithubSummary({
             quarter,
+            target,
             filingCounts: filingCounts.rows,
             totals: totals.rows,
             runs: runs.rows,
@@ -99,6 +116,81 @@ async function main() {
     }
 }
 
+async function verifyPostgres(params: {
+    quarter: string;
+    githubSummary: boolean;
+    requireIndexes: boolean;
+    target: string;
+}) {
+    const pool = createPostgresPool();
+    try {
+        console.log(`[13F Verify] Quarter: ${params.quarter}`);
+        console.log(`[13F Verify] Target: ${params.target}`);
+        const filingCounts = await pool.query({
+            text: `
+                SELECT quarter, COALESCE(source, 'unknown') AS source, form, report_date, COUNT(*) AS filings
+                FROM filings
+                WHERE quarter = $1
+                GROUP BY quarter, COALESCE(source, 'unknown'), form, report_date
+                ORDER BY source, form, report_date
+            `,
+            values: [params.quarter],
+        });
+        console.log('\n[13F Verify] Filings by source/form/report_date');
+        console.table(filingCounts.rows);
+
+        const totals = await pool.query({
+            text: `
+                SELECT
+                    COUNT(DISTINCT f.accession_number) AS filings,
+                    COUNT(DISTINCT f.cik) AS filers,
+                    COUNT(h.accession_number) AS holdings
+                FROM filings f
+                LEFT JOIN holdings h ON h.accession_number = f.accession_number
+                WHERE f.quarter = $1
+            `,
+            values: [params.quarter],
+        });
+        console.log('\n[13F Verify] Quarter totals');
+        console.table(totals.rows);
+
+        const runs = await pool.query({
+            text: `
+                SELECT source, status, started_at, completed_at, filings_seen, filings_upserted, holdings_inserted, report_quarter_matches, skipped_existing, skipped_wrong_quarter, skipped_no_holdings, skipped_errors, error_text
+                FROM ingestion_runs
+                WHERE quarter = $1
+                ORDER BY started_at DESC
+                LIMIT 10
+            `,
+            values: [params.quarter],
+        });
+        console.log('\n[13F Verify] Recent ingestion runs');
+        console.table(runs.rows);
+
+        const indexes = await listPostgres13FIndexes(pool);
+        const missingIndexes = missingRequiredPostgres13FIndexes(indexes);
+        console.log('\n[13F Verify] Postgres indexes');
+        console.table(indexes.map((name) => ({ name })));
+
+        if (params.githubSummary) {
+            appendGithubSummary({
+                quarter: params.quarter,
+                target: params.target,
+                filingCounts: filingCounts.rows,
+                totals: totals.rows,
+                runs: runs.rows,
+                holdingsIndexes: indexes,
+                missingIndexes,
+            });
+        }
+        if (params.requireIndexes && missingIndexes.length > 0) {
+            throw new Error(`Missing required Postgres 13F indexes: ${missingIndexes.join(', ')}`);
+        }
+    } finally {
+        await pool.end();
+    }
+}
+
 async function existingColumns(turso: ReturnType<typeof createClient>, table: string): Promise<Set<string>> {
     const result = await turso.execute(`PRAGMA table_info('${table.replace(/'/g, "''")}')`);
     return new Set(result.rows.map((row) => String(row.name)));
@@ -106,6 +198,7 @@ async function existingColumns(turso: ReturnType<typeof createClient>, table: st
 
 function appendGithubSummary(params: {
     quarter: string;
+    target: string;
     filingCounts: unknown[];
     totals: unknown[];
     runs: unknown[];
@@ -119,6 +212,7 @@ function appendGithubSummary(params: {
     fs.appendFileSync(summaryPath, [
         `## 13F Ingestion Verification (${params.quarter})`,
         '',
+        `- Target: ${params.target}`,
         `- Filings: ${total.filings ?? 'n/a'}`,
         `- Filers: ${total.filers ?? 'n/a'}`,
         `- Holdings: ${total.holdings ?? 'n/a'}`,
