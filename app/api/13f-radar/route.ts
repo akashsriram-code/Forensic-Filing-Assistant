@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import {
     RadarDataError,
-    buildEventLens,
     buildRadarNotes,
     createRadarClientFromEnv,
     loadRadarComparison,
@@ -18,7 +17,6 @@ export async function POST(req: Request) {
         const db = createRadarClientFromEnv();
         const request = await resolveRadarRequest(db, body);
         const { comparison: mainComparison } = await loadRadarComparison(db, request);
-        const eventLens = await buildEventLens({ db, request, mainComparison });
 
         return NextResponse.json({
             ...mainComparison,
@@ -28,7 +26,6 @@ export async function POST(req: Request) {
             topFilerMoves: mainComparison.topFilerMoves.slice(0, 100),
             availableQuarters: request.availableQuarters,
             watchlists: request.watchlists,
-            eventLens,
             notes: buildRadarNotes(request.dbShape),
         });
     } catch (error) {

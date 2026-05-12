@@ -3,7 +3,6 @@ import { type InValue } from '@libsql/client';
 import { type Pool } from 'pg';
 import {
     DEFAULT_RADAR_WATCHLISTS,
-    buildEventLensSummary,
     buildIssuerSqlPatterns,
     buildRadarComparison,
     compareQuartersAsc,
@@ -11,7 +10,6 @@ import {
     normalizeCik,
     selectLatestFilings,
     sortQuartersDesc,
-    type EventLensSummary,
     type FilerSideMatch,
     type MovementBasis,
     type RadarComparison,
@@ -191,42 +189,6 @@ export async function loadRadarComparison(
             movementBasis,
         }),
     };
-}
-
-export async function buildEventLens(params: {
-    db: RadarDbClient;
-    request: ResolvedRadarRequest;
-    mainComparison: RadarComparison;
-}): Promise<EventLensSummary[]> {
-    const { request, mainComparison } = params;
-    const eventPairs: Array<{ key: EventLensSummary['key']; currentQuarter: string; previousQuarter: string }> = [
-        { key: 'pre-event', currentQuarter: '2025-Q4', previousQuarter: '2025-Q3' },
-        { key: 'post-event', currentQuarter: '2026-Q1', previousQuarter: '2025-Q4' },
-    ];
-    const lenses: EventLensSummary[] = [];
-
-    for (const eventPair of eventPairs) {
-        const available =
-            request.availableQuarters.includes(eventPair.currentQuarter) &&
-            request.availableQuarters.includes(eventPair.previousQuarter);
-
-        if (!available) {
-            lenses.push(buildEventLensSummary(eventPair.key, request.availableQuarters, null));
-            continue;
-        }
-
-        const isSelectedComparison =
-            mainComparison.coverage.currentQuarter === eventPair.currentQuarter &&
-            mainComparison.coverage.previousQuarter === eventPair.previousQuarter;
-
-        lenses.push(buildEventLensSummary(
-            eventPair.key,
-            request.availableQuarters,
-            isSelectedComparison ? mainComparison : null
-        ));
-    }
-
-    return lenses;
 }
 
 export async function queryFilerSideMatches(params: {

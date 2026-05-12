@@ -43,7 +43,8 @@ jobs:
     env:
       TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
       TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL || secrets.POSTGRES_URL }}
+      POSTGRES_URL: ${{ secrets.POSTGRES_URL || secrets.DATABASE_URL }}
       SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'ForensicFilingAssistant contact@example.com' }}
       ALLOW_TURSO_13F_WRITES: ${{ secrets.ALLOW_TURSO_13F_WRITES || 'false' }}
       THIRTEEN_F_DB_PROVIDER: ${{ inputs.target || secrets.THIRTEEN_F_DB_PROVIDER || 'postgres' }}
@@ -71,6 +72,17 @@ jobs:
             npx tsx scripts/resolve-13f-schedule.ts --quarter "$REQUESTED_QUARTER" --github-output
           else
             npx tsx scripts/resolve-13f-schedule.ts --github-output
+          fi
+
+      - name: Validate database target configuration
+        run: |
+          if [ "$THIRTEEN_F_DB_PROVIDER" = "postgres" ] && [ -z "$DATABASE_URL" ] && [ -z "$POSTGRES_URL" ]; then
+            echo "::error title=Missing Postgres database secret::Set a repository secret named DATABASE_URL or POSTGRES_URL, or run this workflow with target=turso."
+            exit 1
+          fi
+          if [ "$THIRTEEN_F_DB_PROVIDER" = "turso" ] && { [ -z "$TURSO_DATABASE_URL" ] || [ -z "$TURSO_AUTH_TOKEN" ]; }; then
+            echo "::error title=Missing Turso database secrets::Set repository secrets TURSO_DATABASE_URL and TURSO_AUTH_TOKEN, or run this workflow with target=postgres."
+            exit 1
           fi
 
       - name: Check official bulk status

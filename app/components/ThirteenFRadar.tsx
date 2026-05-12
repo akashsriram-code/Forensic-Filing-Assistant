@@ -19,7 +19,6 @@ import {
     DEFAULT_RADAR_WATCHLISTS,
     hydrateEditableWatchlists,
     type CategorySummary,
-    type EventLensSummary,
     type FilerMove,
     type FilerTypeSummary,
     type PrivateCreditInstitutionSummary,
@@ -433,12 +432,6 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                         />
                     </section>
 
-                    <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                        {data.eventLens.map((lens) => (
-                            <EventLensCard key={lens.key} theme={theme} lens={lens} />
-                        ))}
-                    </section>
-
                     {data.notes.length > 0 && (
                         <div className={`rounded-xl border p-4 text-xs ${isDark ? 'border-amber-900/60 bg-amber-950/20 text-amber-100' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
                             <div className="mb-2 flex items-center gap-2 font-semibold">
@@ -455,7 +448,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
 
                     <section className={`rounded-xl border ${panelClass}`}>
                         <div className={`border-b px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-                            <h3 className="text-sm font-bold">Consensus Trends</h3>
+                            <h3 className="text-sm font-bold">Overview</h3>
                         </div>
                         <div className="grid grid-cols-1 divide-y md:grid-cols-2 md:divide-x md:divide-y-0 lg:grid-cols-3 lg:divide-x">
                             {data.categorySummaries.map((summary) => (
@@ -556,53 +549,6 @@ function MetricCard({ theme, label, value, sub }: { theme: 'light' | 'dark'; lab
     );
 }
 
-function EventLensCard({ theme, lens }: { theme: 'light' | 'dark'; lens: EventLensSummary }) {
-    const isDark = theme === 'dark';
-    return (
-        <div className={`rounded-xl border p-4 ${isDark ? 'border-zinc-800 bg-zinc-900/45' : 'border-gray-200 bg-white'}`}>
-            <div className="flex items-start justify-between gap-3">
-                <div>
-                    <div className="text-sm font-bold">{lens.label}</div>
-                    <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                        {lens.currentQuarter} vs {lens.previousQuarter}
-                    </div>
-                </div>
-                <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${lens.available
-                    ? isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700'
-                    : isDark ? 'bg-zinc-800 text-zinc-400' : 'bg-gray-100 text-gray-500'
-                    }`}>
-                    {lens.available ? 'Available' : 'Pending'}
-                </span>
-            </div>
-            <div className={`mt-3 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{lens.status}</div>
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {lens.signals.length > 0 ? lens.signals.map((signal) => (
-                    <div key={signal.categoryKey} className={`rounded-lg border p-3 ${isDark ? 'border-zinc-800 bg-zinc-950/40' : 'border-gray-200 bg-gray-50'}`}>
-                        <div className="flex items-center justify-between gap-3">
-                            <div className="text-xs font-semibold uppercase text-gray-500">{signal.label}</div>
-                            <div className={`font-mono text-xs ${signal.netBuyers >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                                net {formatSignedNumber(signal.netBuyers)}
-                            </div>
-                        </div>
-                        <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-                            <MiniStat label="Current Holders" value={`${formatNumber(signal.currentHolders)} (${formatSignedNumber(signal.holderDelta)}; ${formatPct(signal.holderDeltaPctOfPrevious)})`} />
-                            <MiniStat label="Previous Holders" value={formatNumber(signal.previousHolders)} />
-                            <MiniStat label="Buyers" value={formatCountPct(signal.buyers, signal.buyerPctOfComparable)} tone="buy" />
-                            <MiniStat label="Sellers" value={formatCountPct(signal.sellers, signal.sellerPctOfComparable)} tone="sell" />
-                            <MiniStat label="Initiated" value={formatNumber(signal.initiatedFilers)} />
-                            <MiniStat label="Liquidated" value={formatNumber(signal.liquidatedFilers)} />
-                        </div>
-                    </div>
-                )) : (
-                    <div className={`col-span-full rounded-lg border p-4 text-sm ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-200 text-gray-500'}`}>
-                        Quarter-end holdings, not trade timing.
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-}
-
 function ConsensusCard({ theme, summary }: { theme: 'light' | 'dark'; summary: CategorySummary }) {
     const isDark = theme === 'dark';
     return (
@@ -664,16 +610,6 @@ function MetricLine({ label, value }: { label: string; value: string }) {
         <div className="flex items-center justify-between gap-2">
             <span>{label}</span>
             <span className="font-mono">{value}</span>
-        </div>
-    );
-}
-
-function MiniStat({ label, value, tone }: { label: string; value: string; tone?: 'buy' | 'sell' }) {
-    const toneClass = tone === 'buy' ? 'text-emerald-500' : tone === 'sell' ? 'text-red-500' : 'text-inherit';
-    return (
-        <div>
-            <div className="text-[11px] uppercase text-gray-500">{label}</div>
-            <div className={`font-mono text-sm font-semibold ${toneClass}`}>{value}</div>
         </div>
     );
 }

@@ -135,33 +135,6 @@ export interface FilerSideMatch {
     hasPreviousQuarter: boolean;
 }
 
-export interface EventLensCategorySignal {
-    categoryKey: string;
-    label: string;
-    currentHolders: number;
-    previousHolders: number;
-    holderDelta: number;
-    holderDeltaPctOfPrevious: number;
-    buyers: number;
-    sellers: number;
-    netBuyers: number;
-    initiatedFilers: number;
-    liquidatedFilers: number;
-    buyerPctOfComparable: number;
-    sellerPctOfComparable: number;
-    exposedFilers: number;
-}
-
-export interface EventLensSummary {
-    key: 'pre-event' | 'post-event';
-    label: string;
-    currentQuarter: string;
-    previousQuarter: string;
-    available: boolean;
-    status: string;
-    signals: EventLensCategorySignal[];
-}
-
 export interface RadarComparison {
     movementBasis: MovementBasis;
     coverage: RadarCoverage;
@@ -178,7 +151,6 @@ export interface RadarComparison {
 export interface RadarApiResponse extends RadarComparison {
     availableQuarters: string[];
     watchlists: RadarWatchlist[];
-    eventLens: EventLensSummary[];
     notes: string[];
 }
 
@@ -1319,50 +1291,6 @@ export function buildRadarAudit(params: {
         filerSecurityAuditRows,
         rawCurrentHoldings: sortRawHoldings(rawCurrentHoldings),
         rawPreviousHoldings: sortRawHoldings(rawPreviousHoldings),
-    };
-}
-
-export function buildEventLensSummary(
-    key: EventLensSummary['key'],
-    availableQuarters: string[],
-    comparison: RadarComparison | null
-): EventLensSummary {
-    const isPre = key === 'pre-event';
-    const currentQuarter = isPre ? '2025-Q4' : '2026-Q1';
-    const previousQuarter = isPre ? '2025-Q3' : '2025-Q4';
-    const available = availableQuarters.includes(currentQuarter) && availableQuarters.includes(previousQuarter);
-    const signals = comparison
-        ? comparison.categorySummaries
-            .map((summary) => ({
-                categoryKey: summary.key,
-                label: summary.label,
-                currentHolders: summary.currentHolders,
-                previousHolders: summary.previousHolders,
-                holderDelta: summary.currentHolders - summary.previousHolders,
-                holderDeltaPctOfPrevious: pct(summary.currentHolders - summary.previousHolders, summary.previousHolders),
-                buyers: summary.buyers,
-                sellers: summary.sellers,
-                netBuyers: summary.buyers - summary.sellers,
-                initiatedFilers: summary.initiatedFilers,
-                liquidatedFilers: summary.liquidatedFilers,
-                buyerPctOfComparable: summary.buyerPctOfComparable,
-                sellerPctOfComparable: summary.sellerPctOfComparable,
-                exposedFilers: summary.exposedFilers,
-            }))
-        : [];
-
-    return {
-        key,
-        label: isPre ? 'Pre-event setup' : 'Post-event response',
-        currentQuarter,
-        previousQuarter,
-        available,
-        status: available
-            ? isPre
-                ? 'Q4 2025 vs Q3 2025 quarter-end positioning.'
-                : 'Q1 2026 vs Q4 2025 is partial until the May 15, 2026 deadline.'
-            : 'Not enough ingested quarters yet.',
-        signals,
     };
 }
 
