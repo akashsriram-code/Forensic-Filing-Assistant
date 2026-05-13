@@ -118,6 +118,18 @@ async function run() {
     assert.equal(issuerMatchesItem('ALPHABET INC', alphabetClassC), true);
     assert.equal(issuerMatchesItem('ALPHABET INC', alphabetClassA), false);
 
+    const bdcItems = DEFAULT_RADAR_WATCHLISTS
+        .find((watchlist) => watchlist.key === 'bdc')!
+        .items;
+    const findBdcItem = (ticker: string) => bdcItems.find((item) => item.ticker === ticker)!;
+    assert.equal(bdcItems.some((item) => item.ticker === 'W'), false);
+    assert.equal(issuerMatchesItem('WHITEHORSE FINANCE INC', findBdcItem('WHF')), true);
+    assert.equal(issuerMatchesItem('BLUE OWL CAPITAL CORP', findBdcItem('OBDC')), true);
+    assert.equal(issuerMatchesItem('BLUE OWL CAPITAL CORP', findBdcItem('OWL')), false);
+    assert.equal(issuerMatchesItem('BLACKSTONE PRIVATE CREDIT FUND', findBdcItem('BCRED')), true);
+    assert.equal(issuerMatchesItem('T ROWE PRICE OHA SELECT PRIVATE CREDIT FUND', findBdcItem('OCREDIT')), true);
+    assert.equal(issuerMatchesItem('CLIFFWATER CORPORATE LENDING FUND', findBdcItem('CCLFX')), true);
+
     assert.equal(getSector('NVIDIA CORP'), 'Information Technology');
     assert.equal(getSector('CONSTELLATION ENERGY CORP'), 'Utilities');
     assert.equal(classifyFiler('0001350694', 'Example Teachers Retirement System').type, 'Hedge Fund');
