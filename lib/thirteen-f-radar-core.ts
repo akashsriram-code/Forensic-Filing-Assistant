@@ -469,7 +469,6 @@ export const DEFAULT_RADAR_WATCHLISTS: RadarWatchlist[] = [
             { ticker: 'CCLFX', label: 'Cliffwater Corporate Lending Fund', aliases: ['CLIFFWATER CORPORATE LENDING FUND', 'CCLFX'] },
             { ticker: 'OWL', label: 'Blue Owl Capital Inc', aliases: ['BLUE OWL CAPITAL INC', 'BLUE OWL CAP INC'] },
             { ticker: 'ARES', label: 'Ares Management', aliases: ['ARES MANAGEMENT', 'ARES MANAGEMENT CORP', 'ARES MANAGEMENT CORPORATION'] },
-            { ticker: 'KKR', label: 'KKR', aliases: ['KKR AND CO', 'KKR & CO', 'KKR CO INC', 'KKR CO'] },
             { ticker: 'GOLUB', label: 'Golub Capital', aliases: ['GOLUB CAPITAL'] },
             { ticker: 'HPS', label: 'HPS Investment Partners', aliases: ['HPS INVESTMENT PARTNERS'] },
             { ticker: 'CLIFFWATER', label: 'Cliffwater', aliases: ['CLIFFWATER'] },
