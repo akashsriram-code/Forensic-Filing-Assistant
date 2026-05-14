@@ -1,0 +1,93 @@
+name: 13F Radar Cache
+
+on:
+  workflow_dispatch:
+    inputs:
+      current_quarter:
+        description: 'Current quarter, e.g. 2026-Q1. Leave blank for latest available quarter.'
+        required: false
+        type: string
+      previous_quarter:
+        description: 'Previous quarter, e.g. 2025-Q4. Leave blank for prior available quarter.'
+        required: false
+        type: string
+      target:
+        description: 'Database source for cache generation.'
+        required: false
+        default: postgres
+        type: choice
+        options:
+          - postgres
+          - turso
+
+permissions:
+  contents: write
+
+concurrency:
+  group: 13f-radar-cache
+  cancel-in-progress: false
+
+jobs:
+  generate-cache:
+    runs-on: ubuntu-latest
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL || secrets.POSTGRES_URL }}
+      POSTGRES_URL: ${{ secrets.POSTGRES_URL || secrets.DATABASE_URL }}
+      THIRTEEN_F_DB_PROVIDER: ${{ inputs.target || 'postgres' }}
+      CURRENT_QUARTER: ${{ inputs.current_quarter || '' }}
+      PREVIOUS_QUARTER: ${{ inputs.previous_quarter || '' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate database source configuration
+        run: |
+          if [ "$THIRTEEN_F_DB_PROVIDER" = "postgres" ] && [ -z "$DATABASE_URL" ] && [ -z "$POSTGRES_URL" ]; then
+            echo "::error title=Missing Postgres database secret::Set a repository secret named DATABASE_URL or POSTGRES_URL, or run this workflow with target=turso."
+            exit 1
+          fi
+          if [ "$THIRTEEN_F_DB_PROVIDER" = "turso" ] && { [ -z "$TURSO_DATABASE_URL" ] || [ -z "$TURSO_AUTH_TOKEN" ]; }; then
+            echo "::error title=Missing Turso database secrets::Set repository secrets TURSO_DATABASE_URL and TURSO_AUTH_TOKEN, or run this workflow with target=postgres."
+            exit 1
+          fi
+
+      - name: Generate matched-rows cache
+        run: |
+          CACHE_ARGS=()
+          if [ -n "$CURRENT_QUARTER" ]; then
+            CACHE_ARGS+=(--current="$CURRENT_QUARTER")
+          fi
+          if [ -n "$PREVIOUS_QUARTER" ]; then
+            CACHE_ARGS+=(--previous="$PREVIOUS_QUARTER")
+          fi
+          npm run cache:13f-radar -- "${CACHE_ARGS[@]}"
+
+      - name: Run radar cache tests
+        run: npm run test:13f-radar
+
+      - name: Commit cache JSON
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/13f-radar-cache
+          if git diff --cached --quiet; then
+            echo "No cache changes to commit." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -m "Refresh 13F radar cache"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "Committed refreshed 13F radar cache." >> "$GITHUB_STEP_SUMMARY"

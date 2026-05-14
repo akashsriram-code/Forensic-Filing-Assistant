@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import * as XLSX from 'xlsx';
 import {
     DEFAULT_RADAR_WATCHLISTS,
@@ -16,8 +19,18 @@ import {
 } from '../lib/thirteen-f-radar-core';
 import { classifyFiler } from '../lib/filer-classification';
 import { getSector } from '../lib/sectors';
+import {
+    buildRadarMatchedRowsCache,
+    getRadarWatchlistHash,
+    readRadarMatchedRowsCache,
+    writeRadarMatchedRowsCache,
+} from '../lib/thirteen-f-radar-cache';
 import { buildRadarAuditWorkbook, buildRadarExportFilename } from '../lib/thirteen-f-radar-export';
-import { resolveRadarDbProviderFromEnv, type ResolvedRadarRequest } from '../lib/thirteen-f-radar-data';
+import {
+    loadRadarComparison,
+    resolveRadarDbProviderFromEnv,
+    type ResolvedRadarRequest,
+} from '../lib/thirteen-f-radar-data';
 import {
     buildPostgresSecurityKey,
     normalizePostgresIssuer,
@@ -351,6 +364,88 @@ async function run() {
         movementBasis: 'filer-count',
         dbShape: { holdingsColumns: ['putcall'], putCallColumn: 'putcall' },
     };
+
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), '13f-radar-cache-'));
+    try {
+        const directAudit = buildRadarAudit({
+            currentQuarter: request.currentQuarter,
+            previousQuarter: request.previousQuarter,
+            filings,
+            holdings,
+            watchlists: request.watchlists,
+            selectedCategories: request.selectedCategories,
+        });
+        const cache = buildRadarMatchedRowsCache({
+            request,
+            filings,
+            holdings: [
+                ...holdings,
+                holding('A', 'Alpha Capital', 'A-curr', '2026-02-17', '2025-Q4', 'UNWATCHED INDUSTRIAL CO', '999999999', 100, 1),
+            ],
+            generatedAt: new Date('2026-05-11T12:00:00.000Z'),
+        });
+
+        assert.equal(cache.watchlistHash, getRadarWatchlistHash(DEFAULT_RADAR_WATCHLISTS));
+        assert.equal(cache.holdings.some((row) => row.issuer === 'UNWATCHED INDUSTRIAL CO'), false);
+        await writeRadarMatchedRowsCache(cache, { cacheRoot });
+
+        const cachedRows = await readRadarMatchedRowsCache(request, { cacheRoot });
+        assert.ok(cachedRows);
+        const cachedComparison = buildRadarComparison({
+            currentQuarter: request.currentQuarter,
+            previousQuarter: request.previousQuarter,
+            filings: cachedRows.filings,
+            holdings: cachedRows.holdings,
+            watchlists: request.watchlists,
+            selectedCategories: request.selectedCategories,
+        });
+        const cachedAudit = buildRadarAudit({
+            currentQuarter: request.currentQuarter,
+            previousQuarter: request.previousQuarter,
+            filings: cachedRows.filings,
+            holdings: cachedRows.holdings,
+            watchlists: request.watchlists,
+            selectedCategories: request.selectedCategories,
+        });
+
+        assert.deepEqual(cachedComparison.categorySummaries, comparison.categorySummaries);
+        assert.deepEqual(cachedComparison.initiations, comparison.initiations);
+        assert.deepEqual(cachedComparison.liquidations, comparison.liquidations);
+        assert.deepEqual(cachedComparison.topFilerMoves, comparison.topFilerMoves);
+        assert.deepEqual(cachedAudit.filerSecurityAuditRows, directAudit.filerSecurityAuditRows);
+
+        const noDb = {
+            provider: 'turso',
+            client: {
+                execute: async () => {
+                    throw new Error('DB should not be queried on cache hit');
+                },
+            },
+        } as unknown as Parameters<typeof loadRadarComparison>[0];
+        const loadedFromCache = await loadRadarComparison(noDb, request, { cacheRoot });
+        assert.deepEqual(loadedFromCache.comparison.categorySummaries, comparison.categorySummaries);
+
+        await writeRadarMatchedRowsCache({ ...cache, watchlistHash: 'stale' }, { cacheRoot });
+        assert.equal(await readRadarMatchedRowsCache(request, { cacheRoot }), null);
+
+        const softwareOnlyCache = buildRadarMatchedRowsCache({
+            request: { ...request, selectedCategories: ['software'] },
+            filings,
+            holdings,
+        });
+        await writeRadarMatchedRowsCache(softwareOnlyCache, { cacheRoot });
+        assert.equal(await readRadarMatchedRowsCache(request, { cacheRoot }), null);
+
+        const missingCacheRoot = await mkdtemp(path.join(os.tmpdir(), '13f-radar-cache-missing-'));
+        try {
+            assert.equal(await readRadarMatchedRowsCache(request, { cacheRoot: missingCacheRoot }), null);
+        } finally {
+            await rm(missingCacheRoot, { recursive: true, force: true });
+        }
+    } finally {
+        await rm(cacheRoot, { recursive: true, force: true });
+    }
+
     const workbookBuffer = buildRadarAuditWorkbook({
         request,
         comparison,

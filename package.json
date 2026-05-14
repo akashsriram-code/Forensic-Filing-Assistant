@@ -11,6 +11,7 @@
     "ingest:13f": "npx ts-node scripts/ingest-13f-raw.ts",
     "ingest:13f-sec": "tsx scripts/ingest-sec-13f-dataset.ts",
     "ingest:13f-live": "tsx scripts/ingest-live-13f.ts",
+    "cache:13f-radar": "tsx scripts/generate-13f-radar-cache.ts",
     "migrate:13f-neon": "tsx scripts/migrate-13f-neon.ts",
     "repair:13f-indexes": "tsx scripts/repair-13f-indexes.ts",
     "verify:13f": "tsx scripts/verify-13f-ingestion.ts",

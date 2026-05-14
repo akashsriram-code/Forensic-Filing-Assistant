@@ -22,6 +22,10 @@ import {
     getPostgresConnectionString,
     queryPostgresRows,
 } from './thirteen-f-radar-postgres';
+import {
+    readRadarMatchedRowsCache,
+    type RadarCacheOptions,
+} from './thirteen-f-radar-cache';
 
 export const MISSING_TURSO_ERROR =
     'Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN. 13F Radar needs the Turso holdings database.';
@@ -67,6 +71,10 @@ export interface LoadedRadarComparison {
     comparison: RadarComparison;
     filings: RadarFilingRow[];
     holdings: RadarHoldingRow[];
+}
+
+export interface LoadRadarComparisonOptions extends RadarCacheOptions {
+    useCache?: boolean;
 }
 
 export class RadarDataError extends Error {
@@ -153,7 +161,8 @@ export async function resolveRadarRequest(
 
 export async function loadRadarComparison(
     db: RadarDbClient,
-    request: ResolvedRadarRequest
+    request: ResolvedRadarRequest,
+    options: LoadRadarComparisonOptions = {}
 ): Promise<LoadedRadarComparison> {
     const {
         currentQuarter,
@@ -163,6 +172,26 @@ export async function loadRadarComparison(
         movementBasis,
         dbShape,
     } = request;
+
+    const cachedRows = options.useCache === false
+        ? null
+        : await readRadarMatchedRowsCache(request, options);
+    if (cachedRows) {
+        return {
+            filings: cachedRows.filings,
+            holdings: cachedRows.holdings,
+            comparison: buildRadarComparison({
+                currentQuarter,
+                previousQuarter,
+                filings: cachedRows.filings,
+                holdings: cachedRows.holdings,
+                watchlists,
+                selectedCategories,
+                movementBasis,
+            }),
+        };
+    }
+
     const quarters = [currentQuarter, previousQuarter];
     const filings = await queryFilings(db, quarters);
     const currentFilings = selectLatestFilings(filings, currentQuarter);
