@@ -33,8 +33,8 @@ jobs:
     env:
       TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
       TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL || secrets.POSTGRES_URL }}
-      POSTGRES_URL: ${{ secrets.POSTGRES_URL || secrets.DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.AIVEN_DATABASE_URL || secrets.DATABASE_URL || secrets.POSTGRES_URL }}
+      POSTGRES_URL: ${{ secrets.POSTGRES_URL || secrets.AIVEN_DATABASE_URL || secrets.DATABASE_URL }}
       THIRTEEN_F_DB_PROVIDER: ${{ inputs.target || 'postgres' }}
       CURRENT_QUARTER: ${{ inputs.current_quarter || '' }}
       PREVIOUS_QUARTER: ${{ inputs.previous_quarter || '' }}
@@ -57,7 +57,7 @@ jobs:
       - name: Validate database source configuration
         run: |
           if [ "$THIRTEEN_F_DB_PROVIDER" = "postgres" ] && [ -z "$DATABASE_URL" ] && [ -z "$POSTGRES_URL" ]; then
-            echo "::error title=Missing Postgres database secret::Set a repository secret named DATABASE_URL or POSTGRES_URL, or run this workflow with target=turso."
+            echo "::error title=Missing Postgres database secret::Set a repository secret named AIVEN_DATABASE_URL, DATABASE_URL, or POSTGRES_URL, or run this workflow with target=turso."
             exit 1
           fi
           if [ "$THIRTEEN_F_DB_PROVIDER" = "turso" ] && { [ -z "$TURSO_DATABASE_URL" ] || [ -z "$TURSO_AUTH_TOKEN" ]; }; then

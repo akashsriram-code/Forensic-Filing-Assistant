@@ -4,9 +4,12 @@ import {
     RadarDataError,
     buildRadarNotes,
     createRadarClientFromEnv,
+    isRadarCacheOnlyEnabled,
     loadRadarComparison,
+    loadRadarComparisonFromCache,
     readRadarRequestBody,
     resolveRadarRequest,
+    resolveRadarRequestFromCache,
 } from '@/lib/thirteen-f-radar-data';
 import { buildRadarAuditWorkbook, buildRadarExportFilename } from '@/lib/thirteen-f-radar-export';
 
@@ -17,9 +20,15 @@ export const maxDuration = 60;
 export async function POST(req: Request) {
     try {
         const body = await readRadarRequestBody(req);
-        const db = createRadarClientFromEnv();
-        const request = await resolveRadarRequest(db, body);
-        const { comparison, filings, holdings } = await loadRadarComparison(db, request);
+        const cacheOnly = isRadarCacheOnlyEnabled();
+        const db = cacheOnly ? null : createRadarClientFromEnv();
+        const request = cacheOnly
+            ? await resolveRadarRequestFromCache(body)
+            : await resolveRadarRequest(db!, body);
+        const loaded = cacheOnly
+            ? await loadRadarComparisonFromCache(request)
+            : await loadRadarComparison(db!, request);
+        const { comparison, filings, holdings } = loaded;
         const audit = buildRadarAudit({
             currentQuarter: request.currentQuarter,
             previousQuarter: request.previousQuarter,

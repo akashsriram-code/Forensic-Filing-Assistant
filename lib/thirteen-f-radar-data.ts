@@ -23,6 +23,8 @@ import {
     queryPostgresRows,
 } from './thirteen-f-radar-postgres';
 import {
+    getRadarWatchlistHash,
+    listRadarMatchedRowsCaches,
     readRadarMatchedRowsCache,
     type RadarCacheOptions,
 } from './thirteen-f-radar-cache';
@@ -126,6 +128,58 @@ export function createRadarClientFromEnv(): RadarDbClient {
     return { provider, client: createClient({ url, authToken }) };
 }
 
+export function isRadarCacheOnlyEnabled(): boolean {
+    return ['1', 'true', 'yes'].includes(String(process.env.THIRTEEN_F_RADAR_CACHE_ONLY || '').trim().toLowerCase());
+}
+
+export async function resolveRadarRequestFromCache(
+    body: RadarRequestBody,
+    options: RadarCacheOptions = {}
+): Promise<ResolvedRadarRequest> {
+    const watchlists = normalizeWatchlists(body.watchlists);
+    const selectedCategories = normalizeCategories(body.categories, watchlists);
+    const movementBasis: MovementBasis = body.movementBasis === 'filer-count' ? 'filer-count' : 'filer-count';
+    const cache = await findUsableCache(body, watchlists, selectedCategories, options);
+
+    if (!cache) {
+        throw new RadarDataError('13F Radar cache is missing or stale, and database fallback is disabled.', 503);
+    }
+
+    return {
+        currentQuarter: cache.currentQuarter,
+        previousQuarter: cache.previousQuarter,
+        availableQuarters: cache.availableQuarters,
+        watchlists,
+        selectedCategories,
+        movementBasis,
+        dbShape: cache.dbShape,
+    };
+}
+
+export async function loadRadarComparisonFromCache(
+    request: ResolvedRadarRequest,
+    options: RadarCacheOptions = {}
+): Promise<LoadedRadarComparison> {
+    const cachedRows = await readRadarMatchedRowsCache(request, options);
+    if (!cachedRows) {
+        throw new RadarDataError('13F Radar cache is missing or stale, and database fallback is disabled.', 503);
+    }
+
+    return {
+        filings: cachedRows.filings,
+        holdings: cachedRows.holdings,
+        comparison: buildRadarComparison({
+            currentQuarter: request.currentQuarter,
+            previousQuarter: request.previousQuarter,
+            filings: cachedRows.filings,
+            holdings: cachedRows.holdings,
+            watchlists: request.watchlists,
+            selectedCategories: request.selectedCategories,
+            movementBasis: request.movementBasis,
+        }),
+    };
+}
+
 export async function resolveRadarRequest(
     db: RadarDbClient,
     body: RadarRequestBody
@@ -157,6 +211,27 @@ export async function resolveRadarRequest(
         movementBasis,
         dbShape,
     };
+}
+
+async function findUsableCache(
+    body: RadarRequestBody,
+    watchlists: RadarWatchlist[],
+    selectedCategories: string[],
+    options: RadarCacheOptions
+) {
+    const requestedCurrent = typeof body.currentQuarter === 'string' ? body.currentQuarter : '';
+    const requestedPrevious = typeof body.previousQuarter === 'string' ? body.previousQuarter : '';
+    const watchlistHash = getRadarWatchlistHash(watchlists);
+    const requestedCategorySet = new Set(selectedCategories);
+    const caches = await listRadarMatchedRowsCaches(options);
+
+    return caches.find((cache) => {
+        if (cache.watchlistHash !== watchlistHash) return false;
+        if (requestedCurrent && cache.currentQuarter !== requestedCurrent) return false;
+        if (requestedPrevious && cache.previousQuarter !== requestedPrevious) return false;
+        const cachedCategorySet = new Set(cache.matchedCategoryKeys);
+        return Array.from(requestedCategorySet).every((category) => cachedCategorySet.has(category));
+    }) || null;
 }
 
 export async function loadRadarComparison(

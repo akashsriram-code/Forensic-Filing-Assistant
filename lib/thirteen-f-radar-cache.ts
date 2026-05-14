@@ -20,6 +20,12 @@ export interface RadarCacheRequest {
     watchlists: RadarWatchlist[];
     selectedCategories: string[];
     movementBasis: MovementBasis;
+    dbShape?: RadarCacheDbShape;
+}
+
+export interface RadarCacheDbShape {
+    holdingsColumns: string[];
+    putCallColumn: string | null;
 }
 
 export interface RadarMatchedRowsCache {
@@ -30,6 +36,7 @@ export interface RadarMatchedRowsCache {
     availableQuarters: string[];
     watchlistHash: string;
     matchedCategoryKeys: string[];
+    dbShape: RadarCacheDbShape;
     watchlists: RadarWatchlist[];
     filings: RadarFilingRow[];
     holdings: RadarHoldingRow[];
@@ -47,6 +54,7 @@ export interface BuildRadarMatchedRowsCacheInput {
 }
 
 const DEFAULT_CACHE_ROOT = path.join(process.cwd(), 'data', '13f-radar-cache');
+const DEFAULT_CACHE_DB_SHAPE: RadarCacheDbShape = { holdingsColumns: [], putCallColumn: null };
 
 export function getRadarCacheRoot(options?: RadarCacheOptions): string {
     return options?.cacheRoot || process.env.THIRTEEN_F_RADAR_CACHE_DIR || DEFAULT_CACHE_ROOT;
@@ -89,10 +97,39 @@ export function buildRadarMatchedRowsCache(input: BuildRadarMatchedRowsCacheInpu
         availableQuarters: [...request.availableQuarters],
         watchlistHash: getRadarWatchlistHash(request.watchlists),
         matchedCategoryKeys,
+        dbShape: request.dbShape || { holdingsColumns: [], putCallColumn: null },
         watchlists: request.watchlists,
         filings: dedupeRadarFilings(filings),
         holdings: matchedHoldings,
     };
+}
+
+export async function listRadarMatchedRowsCaches(options?: RadarCacheOptions): Promise<RadarMatchedRowsCache[]> {
+    const cacheRoot = getRadarCacheRoot(options);
+    let entries: Array<{ isDirectory(): boolean; name: string }>;
+
+    try {
+        entries = await fs.readdir(cacheRoot, { withFileTypes: true });
+    } catch {
+        return [];
+    }
+
+    const caches: RadarMatchedRowsCache[] = [];
+    for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const cachePath = path.join(cacheRoot, entry.name, 'matched-holdings.json');
+        try {
+            const parsed = normalizeRadarMatchedRowsCache(JSON.parse(await fs.readFile(cachePath, 'utf8')));
+            if (parsed) caches.push(parsed);
+        } catch {
+            continue;
+        }
+    }
+
+    return caches.sort((a, b) =>
+        b.currentQuarter.localeCompare(a.currentQuarter) ||
+        b.previousQuarter.localeCompare(a.previousQuarter)
+    );
 }
 
 export async function readRadarMatchedRowsCache(
@@ -108,14 +145,15 @@ export async function readRadarMatchedRowsCache(
         return null;
     }
 
-    if (!isRadarMatchedRowsCache(parsed)) return null;
-    if (parsed.currentQuarter !== request.currentQuarter || parsed.previousQuarter !== request.previousQuarter) return null;
-    if (parsed.watchlistHash !== getRadarWatchlistHash(request.watchlists)) return null;
+    const cache = normalizeRadarMatchedRowsCache(parsed);
+    if (!cache) return null;
+    if (cache.currentQuarter !== request.currentQuarter || cache.previousQuarter !== request.previousQuarter) return null;
+    if (cache.watchlistHash !== getRadarWatchlistHash(request.watchlists)) return null;
 
-    const cachedCategories = new Set(parsed.matchedCategoryKeys);
+    const cachedCategories = new Set(cache.matchedCategoryKeys);
     if (!getRequestedCategoryKeys(request).every((category) => cachedCategories.has(category))) return null;
 
-    return parsed;
+    return cache;
 }
 
 export async function writeRadarMatchedRowsCache(
@@ -187,7 +225,15 @@ function canonicalizeWatchlists(watchlists: RadarWatchlist[]) {
     }));
 }
 
-function isRadarMatchedRowsCache(value: unknown): value is RadarMatchedRowsCache {
+function normalizeRadarMatchedRowsCache(value: unknown): RadarMatchedRowsCache | null {
+    if (!isRadarMatchedRowsCacheRecord(value)) return null;
+    const dbShape = isRadarCacheDbShape(value.dbShape) ? value.dbShape : DEFAULT_CACHE_DB_SHAPE;
+    return { ...value, dbShape };
+}
+
+function isRadarMatchedRowsCacheRecord(
+    value: unknown
+): value is Omit<RadarMatchedRowsCache, 'dbShape'> & { dbShape?: unknown } {
     if (!value || typeof value !== 'object') return false;
     const record = value as Partial<RadarMatchedRowsCache>;
 
@@ -200,11 +246,21 @@ function isRadarMatchedRowsCache(value: unknown): value is RadarMatchedRowsCache
         typeof record.watchlistHash === 'string' &&
         Array.isArray(record.matchedCategoryKeys) &&
         record.matchedCategoryKeys.every((category) => typeof category === 'string') &&
+        (record.dbShape === undefined || isRadarCacheDbShape(record.dbShape)) &&
         Array.isArray(record.watchlists) &&
         Array.isArray(record.filings) &&
         record.filings.every(isRadarFilingRow) &&
         Array.isArray(record.holdings) &&
         record.holdings.every(isRadarHoldingRow);
+}
+
+function isRadarCacheDbShape(value: unknown): value is RadarCacheDbShape {
+    if (!value || typeof value !== 'object') return false;
+    const record = value as Partial<RadarCacheDbShape>;
+
+    return Array.isArray(record.holdingsColumns) &&
+        record.holdingsColumns.every((column) => typeof column === 'string') &&
+        (typeof record.putCallColumn === 'string' || record.putCallColumn === null);
 }
 
 function isRadarFilingRow(value: unknown): value is RadarFilingRow {

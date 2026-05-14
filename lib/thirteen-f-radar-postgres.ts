@@ -68,18 +68,27 @@ export function createPostgresPool(connectionString = getPostgresConnectionStrin
         throw new Error('Missing DATABASE_URL or POSTGRES_URL for Postgres 13F Radar.');
     }
 
-    const isLocal = /localhost|127\.0\.0\.1/i.test(connectionString);
-    const hasSslMode = /[?&]sslmode=/i.test(connectionString);
+    const normalizedConnectionString = normalizePostgresConnectionStringForNode(connectionString);
+    const isLocal = /localhost|127\.0\.0\.1/i.test(normalizedConnectionString);
+    const hasSslMode = /[?&]sslmode=/i.test(normalizedConnectionString);
     const config: PoolConfig & { enableChannelBinding?: boolean } = {
-        connectionString,
+        connectionString: normalizedConnectionString,
         max: 4,
         ssl: isLocal || hasSslMode ? undefined : { rejectUnauthorized: false },
     };
-    if (/[?&]channel_binding=require/i.test(connectionString)) {
+    if (/[?&]channel_binding=require/i.test(normalizedConnectionString)) {
         config.enableChannelBinding = true;
     }
 
     return new Pool(config);
+}
+
+function normalizePostgresConnectionStringForNode(connectionString: string): string {
+    const needsLibpqCompat = /[?&]sslmode=(require|prefer)(?:&|$)/i.test(connectionString) &&
+        !/[?&]uselibpqcompat=/i.test(connectionString);
+    if (!needsLibpqCompat) return connectionString;
+
+    return `${connectionString}${connectionString.includes('?') ? '&' : '?'}uselibpqcompat=true`;
 }
 
 export async function ensurePostgres13FSchema(db: PostgresExecutor) {

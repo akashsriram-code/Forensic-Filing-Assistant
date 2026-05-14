@@ -79,6 +79,28 @@ This application relies on **Server-Side API Routes** to proxy requests to the S
 2.  Import the repo on [Vercel.com](https://vercel.com).
 3.  Deploy (Zero configuration required).
 
+### 13F Radar: Aiven + Cache-Only Reads
+
+For production radar views, use PostgreSQL for ingestion/cache refresh and committed JSON for dashboard/export reads.
+
+App environment:
+
+```bash
+THIRTEEN_F_DB_PROVIDER=postgres
+DATABASE_URL=postgres://...aivencloud.com:PORT/defaultdb?sslmode=require
+THIRTEEN_F_RADAR_CACHE_ONLY=true
+```
+
+Cache generation:
+
+*   Add a GitHub secret named `AIVEN_DATABASE_URL` with the Aiven PostgreSQL URI.
+*   Run the manual `13F Radar Cache` workflow after ingesting or refreshing a quarter.
+*   The workflow writes `data/13f-radar-cache/*/matched-holdings.json` and commits it.
+
+When `THIRTEEN_F_RADAR_CACHE_ONLY=true`, `/api/13f-radar` and `/api/13f-radar/export` read only matching JSON cache files. If the requested quarter pair, categories, or watchlist hash are not cached, the API returns an error instead of falling back to SQL.
+
+The app normalizes `sslmode=require` for Node's Postgres driver, so the standard Aiven URI is acceptable.
+
 ---
 
 ## 📄 License

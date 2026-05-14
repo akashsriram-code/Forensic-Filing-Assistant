@@ -22,13 +22,18 @@ import { getSector } from '../lib/sectors';
 import {
     buildRadarMatchedRowsCache,
     getRadarWatchlistHash,
+    listRadarMatchedRowsCaches,
     readRadarMatchedRowsCache,
     writeRadarMatchedRowsCache,
 } from '../lib/thirteen-f-radar-cache';
 import { buildRadarAuditWorkbook, buildRadarExportFilename } from '../lib/thirteen-f-radar-export';
 import {
+    RadarDataError,
+    isRadarCacheOnlyEnabled,
     loadRadarComparison,
+    loadRadarComparisonFromCache,
     resolveRadarDbProviderFromEnv,
+    resolveRadarRequestFromCache,
     type ResolvedRadarRequest,
 } from '../lib/thirteen-f-radar-data';
 import {
@@ -109,6 +114,12 @@ async function run() {
         THIRTEEN_F_DB_PROVIDER: 'postgres',
     }, () => {
         assert.equal(resolveRadarDbProviderFromEnv(), 'postgres');
+    });
+    withTemporaryEnv({ THIRTEEN_F_RADAR_CACHE_ONLY: 'true' }, () => {
+        assert.equal(isRadarCacheOnlyEnabled(), true);
+    });
+    withTemporaryEnv({ THIRTEEN_F_RADAR_CACHE_ONLY: undefined }, () => {
+        assert.equal(isRadarCacheOnlyEnabled(), false);
     });
 
     const palantir = DEFAULT_RADAR_WATCHLISTS
@@ -388,9 +399,20 @@ async function run() {
         assert.equal(cache.watchlistHash, getRadarWatchlistHash(DEFAULT_RADAR_WATCHLISTS));
         assert.equal(cache.holdings.some((row) => row.issuer === 'UNWATCHED INDUSTRIAL CO'), false);
         await writeRadarMatchedRowsCache(cache, { cacheRoot });
+        const listedCaches = await listRadarMatchedRowsCaches({ cacheRoot });
+        assert.equal(listedCaches.length, 1);
+        assert.equal(listedCaches[0].currentQuarter, request.currentQuarter);
+        assert.deepEqual(listedCaches[0].dbShape, request.dbShape);
 
         const cachedRows = await readRadarMatchedRowsCache(request, { cacheRoot });
         assert.ok(cachedRows);
+        const resolvedFromCache = await resolveRadarRequestFromCache({
+            categories: request.selectedCategories,
+            watchlists: request.watchlists,
+        }, { cacheRoot });
+        assert.equal(resolvedFromCache.currentQuarter, request.currentQuarter);
+        assert.equal(resolvedFromCache.previousQuarter, request.previousQuarter);
+        assert.deepEqual(resolvedFromCache.dbShape, request.dbShape);
         const cachedComparison = buildRadarComparison({
             currentQuarter: request.currentQuarter,
             previousQuarter: request.previousQuarter,
@@ -413,6 +435,8 @@ async function run() {
         assert.deepEqual(cachedComparison.liquidations, comparison.liquidations);
         assert.deepEqual(cachedComparison.topFilerMoves, comparison.topFilerMoves);
         assert.deepEqual(cachedAudit.filerSecurityAuditRows, directAudit.filerSecurityAuditRows);
+        const loadedDirectlyFromCache = await loadRadarComparisonFromCache(resolvedFromCache, { cacheRoot });
+        assert.deepEqual(loadedDirectlyFromCache.comparison.categorySummaries, comparison.categorySummaries);
 
         const noDb = {
             provider: 'turso',
@@ -427,6 +451,13 @@ async function run() {
 
         await writeRadarMatchedRowsCache({ ...cache, watchlistHash: 'stale' }, { cacheRoot });
         assert.equal(await readRadarMatchedRowsCache(request, { cacheRoot }), null);
+        await assert.rejects(
+            () => resolveRadarRequestFromCache({
+                categories: request.selectedCategories,
+                watchlists: request.watchlists,
+            }, { cacheRoot }),
+            (error) => error instanceof RadarDataError && error.status === 503
+        );
 
         const softwareOnlyCache = buildRadarMatchedRowsCache({
             request: { ...request, selectedCategories: ['software'] },
@@ -439,6 +470,13 @@ async function run() {
         const missingCacheRoot = await mkdtemp(path.join(os.tmpdir(), '13f-radar-cache-missing-'));
         try {
             assert.equal(await readRadarMatchedRowsCache(request, { cacheRoot: missingCacheRoot }), null);
+            await assert.rejects(
+                () => resolveRadarRequestFromCache({
+                    categories: request.selectedCategories,
+                    watchlists: request.watchlists,
+                }, { cacheRoot: missingCacheRoot }),
+                (error) => error instanceof RadarDataError && error.status === 503
+            );
         } finally {
             await rm(missingCacheRoot, { recursive: true, force: true });
         }
@@ -474,17 +512,60 @@ async function run() {
     const exportPost = exportRouteModule.POST || (
         exportRouteModule as unknown as { default: { POST: (req: Request) => Promise<Response> } }
     ).default.POST;
+    const routeCacheRoot = await mkdtemp(path.join(os.tmpdir(), '13f-radar-route-cache-'));
+    const routeEnvSnapshot = snapshotEnv([
+        'TURSO_DATABASE_URL',
+        'TURSO_AUTH_TOKEN',
+        'DATABASE_URL',
+        'POSTGRES_URL',
+        'THIRTEEN_F_DB_PROVIDER',
+        'THIRTEEN_F_RADAR_CACHE_ONLY',
+        'THIRTEEN_F_RADAR_CACHE_DIR',
+    ]);
+    try {
+        await writeRadarMatchedRowsCache(buildRadarMatchedRowsCache({ request, filings, holdings }), {
+            cacheRoot: routeCacheRoot,
+        });
+        delete process.env.TURSO_DATABASE_URL;
+        delete process.env.TURSO_AUTH_TOKEN;
+        delete process.env.DATABASE_URL;
+        delete process.env.POSTGRES_URL;
+        delete process.env.THIRTEEN_F_DB_PROVIDER;
+        process.env.THIRTEEN_F_RADAR_CACHE_ONLY = 'true';
+        process.env.THIRTEEN_F_RADAR_CACHE_DIR = routeCacheRoot;
+
+        const cachedExportResponse = await exportPost(new Request('http://localhost/api/13f-radar/export', {
+            method: 'POST',
+            body: JSON.stringify({
+                currentQuarter: request.currentQuarter,
+                previousQuarter: request.previousQuarter,
+                categories: request.selectedCategories,
+                watchlists: request.watchlists,
+            }),
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        assert.equal(cachedExportResponse.status, 200);
+        assert.match(cachedExportResponse.headers.get('content-type') || '', /spreadsheetml\.sheet/);
+    } finally {
+        restoreEnv(routeEnvSnapshot);
+        await rm(routeCacheRoot, { recursive: true, force: true });
+    }
+
     const previousUrl = process.env.TURSO_DATABASE_URL;
     const previousToken = process.env.TURSO_AUTH_TOKEN;
     const previousDatabaseUrl = process.env.DATABASE_URL;
     const previousPostgresUrl = process.env.POSTGRES_URL;
     const previousProvider = process.env.THIRTEEN_F_DB_PROVIDER;
+    const previousCacheOnly = process.env.THIRTEEN_F_RADAR_CACHE_ONLY;
+    const previousCacheDir = process.env.THIRTEEN_F_RADAR_CACHE_DIR;
     const previousConsoleError = console.error;
     delete process.env.TURSO_DATABASE_URL;
     delete process.env.TURSO_AUTH_TOKEN;
     delete process.env.DATABASE_URL;
     delete process.env.POSTGRES_URL;
     delete process.env.THIRTEEN_F_DB_PROVIDER;
+    delete process.env.THIRTEEN_F_RADAR_CACHE_ONLY;
+    delete process.env.THIRTEEN_F_RADAR_CACHE_DIR;
     console.error = () => undefined;
     try {
         const response = await exportPost(new Request('http://localhost/api/13f-radar/export', {
@@ -522,6 +603,16 @@ async function run() {
             delete process.env.THIRTEEN_F_DB_PROVIDER;
         } else {
             process.env.THIRTEEN_F_DB_PROVIDER = previousProvider;
+        }
+        if (previousCacheOnly === undefined) {
+            delete process.env.THIRTEEN_F_RADAR_CACHE_ONLY;
+        } else {
+            process.env.THIRTEEN_F_RADAR_CACHE_ONLY = previousCacheOnly;
+        }
+        if (previousCacheDir === undefined) {
+            delete process.env.THIRTEEN_F_RADAR_CACHE_DIR;
+        } else {
+            process.env.THIRTEEN_F_RADAR_CACHE_DIR = previousCacheDir;
         }
     }
 
@@ -572,6 +663,20 @@ function withTemporaryEnv(values: Record<string, string | undefined>, fn: () => 
             } else {
                 process.env[key] = value;
             }
+        }
+    }
+}
+
+function snapshotEnv(keys: string[]): Map<string, string | undefined> {
+    return new Map(keys.map((key) => [key, process.env[key]]));
+}
+
+function restoreEnv(snapshot: Map<string, string | undefined>) {
+    for (const [key, value] of snapshot.entries()) {
+        if (value === undefined) {
+            delete process.env[key];
+        } else {
+            process.env[key] = value;
         }
     }
 }
