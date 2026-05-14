@@ -465,12 +465,8 @@ export const DEFAULT_RADAR_WATCHLISTS: RadarWatchlist[] = [
             { ticker: 'KLCC', label: 'Kennedy Lewis Capital Company', aliases: ['KENNEDY LEWIS CAPITAL COMPANY', 'KLCC'] },
             { ticker: 'OCREDIT', label: 'T. Rowe Price OHA Select Private Credit Fund', aliases: ['T ROWE PRICE OHA SELECT PRIVATE CREDIT FUND', 'ROWE PRICE OHA SELECT PRIVATE CREDIT FUND', 'OHA SELECT PRIVATE CREDIT FUND', 'OCREDIT'] },
 
-            // Interval funds and private-credit asset managers.
+            // Interval funds and selected manager proxy.
             { ticker: 'CCLFX', label: 'Cliffwater Corporate Lending Fund', aliases: ['CLIFFWATER CORPORATE LENDING FUND', 'CCLFX'] },
-            { ticker: 'OWL', label: 'Blue Owl Capital Inc', aliases: ['BLUE OWL CAPITAL INC', 'BLUE OWL CAP INC'] },
-            { ticker: 'ARES', label: 'Ares Management', aliases: ['ARES MANAGEMENT', 'ARES MANAGEMENT CORP', 'ARES MANAGEMENT CORPORATION'] },
-            { ticker: 'GOLUB', label: 'Golub Capital', aliases: ['GOLUB CAPITAL'] },
-            { ticker: 'HPS', label: 'HPS Investment Partners', aliases: ['HPS INVESTMENT PARTNERS'] },
             { ticker: 'CLIFFWATER', label: 'Cliffwater', aliases: ['CLIFFWATER'] },
         ],
     },
