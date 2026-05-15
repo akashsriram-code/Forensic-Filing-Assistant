@@ -401,8 +401,6 @@ export const DEFAULT_RADAR_WATCHLISTS: RadarWatchlist[] = [
             { ticker: 'BCIC', label: 'BCP Investment', aliases: ['BCP INVESTMENT', 'BCP INVESTMENT CORP', 'BCP INVESTMENT CORPORATION'] },
             { ticker: 'TCPC', label: 'BlackRock TCP Capital', aliases: ['BLACKROCK TCP CAPITAL', 'BLACKROCK TCP CAPITAL CORP', 'BLACKROCK TCP CAPITAL CORPORATION', 'TCP CAPITAL'] },
             { ticker: 'BXSL', label: 'Blackstone Secured Lending', aliases: ['BLACKSTONE SECURED LENDING', 'BLACKSTONE SECURED LENDING FUND'] },
-            { ticker: 'OBDC', label: 'Blue Owl Capital Corp', aliases: ['BLUE OWL CAPITAL CORP', 'BLUE OWL CAPITAL CORPORATION', 'OWL ROCK CAPITAL CORP', 'OWL ROCK CAPITAL CORPORATION'] },
-            { ticker: 'OTF', label: 'Blue Owl Technology Finance', aliases: ['BLUE OWL TECHNOLOGY FINANCE', 'BLUE OWL TECHNOLOGY FINANCE CORP', 'BLUE OWL TECHNOLOGY FINANCE CORPORATION'] },
             { ticker: 'CSWC', label: 'Capital Southwest', aliases: ['CAPITAL SOUTHWEST', 'CAPITAL SOUTHWEST CORP', 'CAPITAL SOUTHWEST CORPORATION'] },
             { ticker: 'CGBD', label: 'Carlyle Secured Lending', aliases: ['CARLYLE SECURED LENDING', 'CARLYLE SECURED LENDING INC', 'TCG BDC'] },
             { ticker: 'CION', label: 'CION Investment', aliases: ['CION INVESTMENT', 'CION INVESTMENT CORP', 'CION INVESTMENT CORPORATION'] },
@@ -448,8 +446,6 @@ export const DEFAULT_RADAR_WATCHLISTS: RadarWatchlist[] = [
             { ticker: 'BCPC', label: 'Bain Capital Private Credit', aliases: ['BAIN CAPITAL PRIVATE CREDIT', 'BAIN CAPITAL PRIVATE CREDIT BDC', 'BCPC'] },
             { ticker: 'BlackRock Private Credit Fund', label: 'BlackRock Private Credit Fund', aliases: ['BLACKROCK PRIVATE CREDIT FUND'] },
             { ticker: 'BCRED', label: 'Blackstone Private Credit Fund', aliases: ['BLACKSTONE PRIVATE CREDIT FUND', 'BCRED'] },
-            { ticker: 'OCIC', label: 'Blue Owl Credit Income Corp', aliases: ['BLUE OWL CREDIT INCOME', 'BLUE OWL CREDIT INCOME CORP', 'BLUE OWL CREDIT INCOME CORPORATION', 'OCIC'] },
-            { ticker: 'OTIC', label: 'Blue Owl Technology Income Corp', aliases: ['BLUE OWL TECHNOLOGY INCOME', 'BLUE OWL TECHNOLOGY INCOME CORP', 'BLUE OWL TECHNOLOGY INCOME CORPORATION', 'OTIC'] },
             { ticker: 'Crescent Private Credit Income Corp', label: 'Crescent Private Credit Income Corp', aliases: ['CRESCENT PRIVATE CREDIT INCOME', 'CRESCENT PRIVATE CREDIT INCOME CORP', 'CRESCENT PRIVATE CREDIT INCOME CORPORATION'] },
             { ticker: 'Fidelity Private Credit Fund', label: 'Fidelity Private Credit Fund', aliases: ['FIDELITY PRIVATE CREDIT FUND'] },
             { ticker: 'GCRED', label: 'Golub Capital Private Credit Fund', aliases: ['GOLUB CAPITAL PRIVATE CREDIT FUND', 'GCRED'] },
@@ -468,6 +464,18 @@ export const DEFAULT_RADAR_WATCHLISTS: RadarWatchlist[] = [
             // Interval funds and selected manager proxy.
             { ticker: 'CCLFX', label: 'Cliffwater Corporate Lending Fund', aliases: ['CLIFFWATER CORPORATE LENDING FUND', 'CCLFX'] },
             { ticker: 'CLIFFWATER', label: 'Cliffwater', aliases: ['CLIFFWATER'] },
+        ],
+    },
+    {
+        key: 'blue-owl',
+        label: 'Blue Owl',
+        description: 'Blue Owl Capital Inc and Blue Owl credit vehicles as a standalone scan.',
+        items: [
+            { ticker: 'OWL', label: 'Blue Owl Capital Inc', aliases: ['BLUE OWL CAPITAL INC', 'BLUE OWL CAPITAL INC CLASS A', 'BLUE OWL CAPITAL INC CL A'] },
+            { ticker: 'OBDC', label: 'Blue Owl Capital Corp', aliases: ['BLUE OWL CAPITAL CORP', 'BLUE OWL CAPITAL CORPORATION', 'OWL ROCK CAPITAL CORP', 'OWL ROCK CAPITAL CORPORATION'] },
+            { ticker: 'OTF', label: 'Blue Owl Technology Finance', aliases: ['BLUE OWL TECHNOLOGY FINANCE', 'BLUE OWL TECHNOLOGY FINANCE CORP', 'BLUE OWL TECHNOLOGY FINANCE CORPORATION'] },
+            { ticker: 'OCIC', label: 'Blue Owl Credit Income Corp', aliases: ['BLUE OWL CREDIT INCOME', 'BLUE OWL CREDIT INCOME CORP', 'BLUE OWL CREDIT INCOME CORPORATION', 'OCIC'] },
+            { ticker: 'OTIC', label: 'Blue Owl Technology Income Corp', aliases: ['BLUE OWL TECHNOLOGY INCOME', 'BLUE OWL TECHNOLOGY INCOME CORP', 'BLUE OWL TECHNOLOGY INCOME CORPORATION', 'OTIC'] },
         ],
     },
     {

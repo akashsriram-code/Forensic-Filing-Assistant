@@ -146,20 +146,33 @@ async function run() {
         .find((watchlist) => watchlist.key === 'bdc')!
         .items;
     const findBdcItem = (ticker: string) => bdcItems.find((item) => item.ticker === ticker)!;
+    const blueOwlItems = DEFAULT_RADAR_WATCHLISTS
+        .find((watchlist) => watchlist.key === 'blue-owl')!
+        .items;
+    const findBlueOwlItem = (ticker: string) => blueOwlItems.find((item) => item.ticker === ticker)!;
     assert.equal(bdcItems.some((item) => item.ticker === 'W'), false);
     assert.equal(bdcItems.some((item) => item.ticker === 'OWL'), false);
+    assert.equal(bdcItems.some((item) => item.ticker === 'OBDC'), false);
+    assert.equal(bdcItems.some((item) => item.ticker === 'OTF'), false);
+    assert.equal(bdcItems.some((item) => item.ticker === 'OCIC'), false);
+    assert.equal(bdcItems.some((item) => item.ticker === 'OTIC'), false);
     assert.equal(bdcItems.some((item) => item.ticker === 'ARES'), false);
     assert.equal(bdcItems.some((item) => item.ticker === 'GOLUB'), false);
     assert.equal(bdcItems.some((item) => item.ticker === 'HPS'), false);
     assert.equal(bdcItems.some((item) => item.ticker === 'CLIFFWATER'), true);
     assert.equal(issuerMatchesItem('WHITEHORSE FINANCE INC', findBdcItem('WHF')), true);
-    assert.equal(issuerMatchesItem('BLUE OWL CAPITAL CORP', findBdcItem('OBDC')), true);
-    assert.equal(issuerMatchesItem('BLUE OWL CAPITAL INC', findBdcItem('OBDC')), false);
     assert.equal(issuerMatchesItem('ARES MANAGEMENT CORP', findBdcItem('ARCC')), false);
     assert.equal(issuerMatchesItem('BLACKSTONE PRIVATE CREDIT FUND', findBdcItem('BCRED')), true);
     assert.equal(issuerMatchesItem('T ROWE PRICE OHA SELECT PRIVATE CREDIT FUND', findBdcItem('OCREDIT')), true);
     assert.equal(issuerMatchesItem('CLIFFWATER CORPORATE LENDING FUND', findBdcItem('CCLFX')), true);
     assert.equal(issuerMatchesItem('CLIFFWATER LLC', findBdcItem('CLIFFWATER')), true);
+    assert.equal(issuerMatchesItem('BLUE OWL CAPITAL INC COM CL A', findBlueOwlItem('OWL')), true);
+    assert.equal(issuerMatchesItem('BLUE OWL CAPITAL CORP', findBlueOwlItem('OWL')), false);
+    assert.equal(issuerMatchesItem('BLUE OWL CAPITAL CORP', findBlueOwlItem('OBDC')), true);
+    assert.equal(issuerMatchesItem('BLUE OWL CAPITAL INC', findBlueOwlItem('OBDC')), false);
+    assert.equal(issuerMatchesItem('BLUE OWL TECHNOLOGY FINANCE CORP', findBlueOwlItem('OTF')), true);
+    assert.equal(issuerMatchesItem('BLUE OWL CREDIT INCOME CORP', findBlueOwlItem('OCIC')), true);
+    assert.equal(issuerMatchesItem('BLUE OWL TECHNOLOGY INCOME CORP', findBlueOwlItem('OTIC')), true);
 
     assert.equal(getSector('NVIDIA CORP'), 'Information Technology');
     assert.equal(getSector('CONSTELLATION ENERGY CORP'), 'Utilities');
@@ -308,7 +321,7 @@ async function run() {
             filing('U', 'Regents of Example University', 'U-curr', '2026-02-13', '2025-Q4'),
         ],
         holdings: [
-            holding('P', 'Teachers Retirement System of Blue State', 'P-curr', '2026-02-13', '2025-Q4', 'BLUE OWL CAPITAL CORP', '09581B103', 5000, 50),
+            holding('P', 'Teachers Retirement System of Blue State', 'P-curr', '2026-02-13', '2025-Q4', 'BLACKSTONE PRIVATE CREDIT FUND', '09261H108', 5000, 50),
             holding('U', 'Regents of Example University', 'U-prev', '2025-08-14', '2025-Q3', 'ARES CAPITAL CORP', '04010L103', 3000, 30),
         ],
         watchlists: DEFAULT_RADAR_WATCHLISTS,
@@ -317,7 +330,7 @@ async function run() {
     assert.equal(privateCreditComparison.privateCreditInstitutionSummaries.length, 2);
     assert.equal(
         privateCreditComparison.privateCreditInstitutionSummaries.some((summary) =>
-            summary.filerType === 'Pension / Public Fund' && summary.initiatedItems.includes('Blue Owl Capital Corp')
+            summary.filerType === 'Pension / Public Fund' && summary.initiatedItems.includes('Blackstone Private Credit Fund')
         ),
         true
     );
@@ -327,6 +340,28 @@ async function run() {
         ),
         true
     );
+
+    const blueOwlComparison = buildRadarComparison({
+        currentQuarter: '2025-Q4',
+        previousQuarter: '2025-Q3',
+        filings: [
+            filing('P', 'Teachers Retirement System of Blue State', 'P-prev', '2025-08-14', '2025-Q3'),
+            filing('P', 'Teachers Retirement System of Blue State', 'P-curr', '2026-02-13', '2025-Q4'),
+            filing('U', 'Regents of Example University', 'U-prev', '2025-08-14', '2025-Q3'),
+            filing('U', 'Regents of Example University', 'U-curr', '2026-02-13', '2025-Q4'),
+        ],
+        holdings: [
+            holding('P', 'Teachers Retirement System of Blue State', 'P-curr', '2026-02-13', '2025-Q4', 'BLUE OWL CAPITAL INC COM CL A', '09581B103', 5000, 50),
+            holding('U', 'Regents of Example University', 'U-prev', '2025-08-14', '2025-Q3', 'BLUE OWL CAPITAL CORP', '09581B108', 3000, 30),
+        ],
+        watchlists: DEFAULT_RADAR_WATCHLISTS,
+        selectedCategories: ['blue-owl'],
+    });
+    const blueOwlSummary = blueOwlComparison.categorySummaries.find((summary) => summary.key === 'blue-owl');
+    assert.ok(blueOwlSummary);
+    assert.equal(blueOwlSummary.initiatedFilers, 1);
+    assert.equal(blueOwlSummary.liquidatedFilers, 1);
+    assert.equal(blueOwlComparison.privateCreditInstitutionSummaries.length, 0);
 
     const auditFilings = [
         ...filings,

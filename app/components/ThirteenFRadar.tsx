@@ -494,7 +494,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
 
                         <section className={`rounded-xl border ${panelClass}`}>
                             <div className={`border-b px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-                                <h3 className="text-sm font-bold">Private Credit / Blue Owl Institutions</h3>
+                                <h3 className="text-sm font-bold">Private Credit Institutions</h3>
                                 <div className={`mt-1 text-xs ${mutedText}`}>Pension, public-fund, and endowment filers with BDC/private-credit exposure.</div>
                             </div>
                             <PrivateCreditTable theme={theme} summaries={data.privateCreditInstitutionSummaries} />
