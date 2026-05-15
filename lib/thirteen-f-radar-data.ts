@@ -105,8 +105,7 @@ export function resolveRadarDbProviderFromEnv(): RadarDbProvider {
     return 'turso';
 }
 
-export function createRadarClientFromEnv(): RadarDbClient {
-    const provider = resolveRadarDbProviderFromEnv();
+export function createRadarClientFromEnv(provider = resolveRadarDbProviderFromEnv()): RadarDbClient {
     if (provider === 'postgres') {
         const connectionString = getPostgresConnectionString();
         if (!connectionString) {

@@ -79,18 +79,33 @@ interface FundHistoryPoint {
     price?: number;
 }
 
+type ReverseAction = 'initiated' | 'liquidated' | 'increased' | 'decreased' | 'unchanged';
+
 interface ReverseFund {
     fundName: string;
     cik: string;
+    action: ReverseAction;
     shares: number;
     value: number;
     filing_date: string;
+    currentShares: number;
+    previousShares: number;
+    shareDelta: number;
+    percentChange: number | null;
+    currentValue: number;
+    previousValue: number;
+    valueDelta: number;
+    currentFilingDate: string;
+    previousFilingDate: string | null;
+    currentQuarter: string;
+    previousQuarter: string | null;
     history: FundHistoryPoint[];
 }
 
 interface ReverseLookupData {
     companyName: string;
     matchCount: number;
+    returnedCount?: number;
     funds: ReverseFund[];
 }
 
@@ -301,6 +316,28 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         return new Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 }).format(num);
     };
 
+    const formatReverseDelta = (delta: number, percentChange: number | null) => {
+        if (delta === 0) return '-';
+        const prefix = delta > 0 ? '+' : '';
+        const pct = percentChange === null ? '' : ` (${percentChange.toFixed(1)}%)`;
+        return `${prefix}${formatNumber(delta)}${pct}`;
+    };
+
+    const reverseActionLabel = (action: ReverseAction) => {
+        return action.charAt(0).toUpperCase() + action.slice(1);
+    };
+
+    const reverseActionClass = (action: ReverseAction) => {
+        const isDark = theme === 'dark';
+        if (action === 'initiated' || action === 'increased') {
+            return isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700';
+        }
+        if (action === 'liquidated' || action === 'decreased') {
+            return isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700';
+        }
+        return isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-gray-100 text-gray-600';
+    };
+
     const handleDownloadCSV = <T extends object>(dataToExport: T[], filename: string) => {
         if (!dataToExport || dataToExport.length === 0) return;
         const headers = Object.keys(dataToExport[0]) as (keyof T)[];
@@ -437,7 +474,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                 <LineChart data={selectedFundHistory}>
                                     <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
                                     <XAxis dataKey="date" fontSize={12} tickFormatter={(val) => val} />
-                                    <YAxis yAxisId="left" fontSize={12} tickFormatter={(val) => `$${formatNumber(val * 1000)}`} />
+                                    <YAxis yAxisId="left" fontSize={12} tickFormatter={(val) => `$${formatNumber(val)}`} />
                                     <YAxis yAxisId="right" orientation="right" fontSize={12} tickFormatter={(val) => formatNumber(val)} />
                                     <Tooltip contentStyle={{ backgroundColor: theme === 'dark' ? '#18181b' : 'white', borderColor: '#333' }} labelStyle={{ color: theme === 'dark' ? 'white' : 'black' }} />
                                     <Legend />
@@ -469,7 +506,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                             <tr key={i}>
                                                 <td className="px-6 py-3 font-mono text-xs">{point.date} ({point.quarter})</td>
                                                 <td className="px-6 py-3 text-right font-mono text-xs">{formatNumber(point.shares)}</td>
-                                                <td className="px-6 py-3 text-right font-mono text-xs">${formatNumber(point.value)} k</td>
+                                                <td className="px-6 py-3 text-right font-mono text-xs">${formatNumber(point.value)}</td>
                                                 <td className={`px-6 py-3 text-right font-mono text-xs font-bold ${change > 0 ? 'text-emerald-500' : (change < 0 ? 'text-red-500' : 'opacity-50')}`}>
                                                     {change > 0 ? '+' : ''}{change !== 0 ? `${formatNumber(change)} (${changePercent.toFixed(1)}%)` : '-'}
                                                 </td>
@@ -736,7 +773,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                         <div className={`p-8 rounded-2xl border transition-all ${theme === 'dark' ? 'bg-zinc-900/50 border-zinc-800 shadow-xl' : 'bg-white border-gray-200 shadow-sm'}`}>
                             <div className="max-w-2xl mx-auto text-center mb-8">
                                 <h2 className={`text-2xl font-bold tracking-tight mb-2 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>Reverse Whale Lookup</h2>
-                                <p className={`text-sm ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Find which top funds hold a specific stock.</p>
+                                <p className={`text-sm ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>Find funds with current or prior holdings and see who increased, decreased, initiated, or liquidated.</p>
                             </div>
                             <div className="max-w-xl mx-auto flex gap-3">
                                 <div className="relative flex-1">
@@ -755,17 +792,25 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                 <div className="flex items-center justify-between px-2">
                                     <div className="flex items-center gap-2">
                                         <Database className={`h-5 w-5 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-400'}`} />
-                                        <span className={`font-semibold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>Funds Holding {reverseData.companyName}</span>
-                                        <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-bold">{reverseData.matchCount} Found</span>
+                                        <span className={`font-semibold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>Funds Moving {reverseData.companyName}</span>
+                                        <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-bold">
+                                            {reverseData.returnedCount && reverseData.returnedCount < reverseData.matchCount
+                                                ? `${formatNumber(reverseData.returnedCount)} of ${formatNumber(reverseData.matchCount)} shown`
+                                                : `${formatNumber(reverseData.matchCount)} found`}
+                                        </span>
                                     </div>
                                 </div>
 
                                 <div className={`rounded-xl border overflow-hidden ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900/30' : 'border-gray-200 bg-white'}`}>
+                                    <div className="overflow-x-auto">
                                     <table className="w-full text-sm text-left">
                                         <thead className={`text-xs uppercase font-medium ${theme === 'dark' ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500'}`}>
                                             <tr>
                                                 <th className="px-6 py-3">Fund Name</th>
-                                                <th className="px-6 py-3 text-right">Shares Held</th>
+                                                <th className="px-6 py-3">Action</th>
+                                                <th className="px-6 py-3 text-right">Current Shares</th>
+                                                <th className="px-6 py-3 text-right">Prior Shares</th>
+                                                <th className="px-6 py-3 text-right">Change</th>
                                                 <th className="px-6 py-3 text-right">Position Value</th>
                                                 <th className="px-6 py-3 text-right">Trend (History)</th>
                                                 <th className="px-6 py-3 text-right">Filing Date</th>
@@ -778,8 +823,17 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                                         <div>{f.fundName}</div>
                                                         <div className="text-[10px] opacity-50">CIK: {f.cik}</div>
                                                     </td>
-                                                    <td className="px-6 py-3 text-right font-mono text-xs">{formatNumber(f.shares)}</td>
-                                                    <td className="px-6 py-3 text-right font-mono text-xs font-bold text-emerald-500">${formatNumber(f.value)}</td>
+                                                    <td className="px-6 py-3">
+                                                        <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${reverseActionClass(f.action)}`}>
+                                                            {reverseActionLabel(f.action)}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-6 py-3 text-right font-mono text-xs">{formatNumber(f.currentShares)}</td>
+                                                    <td className="px-6 py-3 text-right font-mono text-xs opacity-70">{formatNumber(f.previousShares)}</td>
+                                                    <td className={`px-6 py-3 text-right font-mono text-xs font-bold ${f.shareDelta > 0 ? 'text-emerald-500' : f.shareDelta < 0 ? 'text-red-500' : 'opacity-50'}`}>
+                                                        {formatReverseDelta(f.shareDelta, f.percentChange)}
+                                                    </td>
+                                                    <td className={`px-6 py-3 text-right font-mono text-xs font-bold ${f.currentValue > 0 ? 'text-emerald-500' : 'opacity-50'}`}>${formatNumber(f.currentValue)}</td>
                                                     <td
                                                         className="px-6 py-3 text-right w-32 h-16 cursor-pointer hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
                                                         onClick={(e) => {
@@ -798,7 +852,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                                                         <Line
                                                                             type="monotone"
                                                                             dataKey="value"
-                                                                            stroke={f.value > (f.history[0]?.value || 0) ? "#10b981" : "#ef4444"}
+                                                                            stroke={f.shareDelta >= 0 ? "#10b981" : "#ef4444"}
                                                                             strokeWidth={2}
                                                                             dot={false}
                                                                         />
@@ -809,16 +863,20 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                                             <span className="text-xs opacity-30">No History</span>
                                                         )}
                                                     </td>
-                                                    <td className="px-6 py-3 text-right text-xs opacity-60">{f.filing_date}</td>
+                                                    <td className="px-6 py-3 text-right text-xs opacity-60">
+                                                        <div className="font-mono">{f.currentFilingDate}</div>
+                                                        <div className="text-[10px]">{f.currentQuarter}</div>
+                                                    </td>
                                                 </tr>
                                             ))}
                                             {reverseData.funds.length === 0 && (
                                                 <tr>
-                                                    <td colSpan={5} className="px-6 py-8 text-center opacity-50">No funds found holding this stock in the current database.</td>
+                                                    <td colSpan={8} className="px-6 py-8 text-center opacity-50">No funds found with current or prior holdings for this stock in the current database.</td>
                                                 </tr>
                                             )}
                                         </tbody>
                                     </table>
+                                    </div>
                                 </div>
                             </div>
                         )}

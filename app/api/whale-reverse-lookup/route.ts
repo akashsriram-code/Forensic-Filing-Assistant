@@ -1,140 +1,461 @@
-
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@libsql/client';
+import {
+    classifyMovement,
+    compareQuartersAsc,
+    estimateActualValue,
+    normalizeCik,
+    type MovementAction,
+} from '@/lib/thirteen-f-radar-core';
+import {
+    createRadarClientFromEnv,
+    type RadarDbClient,
+    type RadarDbProvider,
+} from '@/lib/thirteen-f-radar-data';
+import { queryPostgresRows } from '@/lib/thirteen-f-radar-postgres';
 
-// Cache for Ticker -> Name resolution
 const CACHE_REVALIDATE = 3600;
+const MAX_RESULT_LIMIT = 1000;
+const ACTION_RANK: Record<MovementAction, number> = {
+    initiated: 0,
+    liquidated: 1,
+    increased: 2,
+    decreased: 3,
+    unchanged: 4,
+    absent: 5,
+};
+
+interface SecCompanyTickerEntry {
+    ticker: string;
+    title: string;
+}
+
+type DbRow = Record<string, unknown>;
+
+export interface ReverseHoldingRow {
+    fundName: string;
+    cik: string;
+    accessionNumber: string;
+    filingDate: string;
+    quarter: string;
+    issuer: string;
+    cusip: string | null;
+    value: number;
+    shares: number;
+}
+
+export interface ReverseFilingRow {
+    fundName: string;
+    cik: string;
+    accessionNumber: string;
+    filingDate: string;
+    quarter: string;
+}
+
+export interface ReverseHistoryPoint {
+    date: string;
+    quarter: string;
+    shares: number;
+    value: number;
+}
+
+export interface ReverseFund {
+    fundName: string;
+    cik: string;
+    action: Exclude<MovementAction, 'absent'>;
+    shares: number;
+    value: number;
+    filing_date: string;
+    currentShares: number;
+    previousShares: number;
+    shareDelta: number;
+    percentChange: number | null;
+    currentValue: number;
+    previousValue: number;
+    valueDelta: number;
+    currentFilingDate: string;
+    previousFilingDate: string | null;
+    currentQuarter: string;
+    previousQuarter: string | null;
+    issuerSamples: string[];
+    cusips: string[];
+    history: ReverseHistoryPoint[];
+}
+
+export interface ReverseLookupBuildResult {
+    funds: ReverseFund[];
+    matchCount: number;
+    returnedCount: number;
+}
 
 async function getCompanyName(ticker: string): Promise<string | null> {
     try {
-        const response = await fetch("https://www.sec.gov/files/company_tickers.json", {
-            headers: { "User-Agent": "ForensicAnalyzer contact@example.com" },
-            next: { revalidate: CACHE_REVALIDATE }
+        const response = await fetch('https://www.sec.gov/files/company_tickers.json', {
+            headers: { 'User-Agent': 'ForensicAnalyzer contact@example.com' },
+            next: { revalidate: CACHE_REVALIDATE },
         });
         if (!response.ok) return null;
 
-        const data = await response.json();
-        const entries: any[] = Object.values(data);
-        const t = ticker.toUpperCase();
-
-        const match = entries.find(e => e.ticker === t);
-        return match ? match.title : null;
-    } catch (e) {
-        console.error("Error fetching company name", e);
+        const data = await response.json() as Record<string, SecCompanyTickerEntry>;
+        const normalizedTicker = ticker.toUpperCase();
+        const match = Object.values(data).find((entry) => entry.ticker === normalizedTicker);
+        return match?.title || null;
+    } catch (error) {
+        console.error('Error fetching company name', error);
         return null;
     }
 }
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json();
-        const { ticker } = body;
+        const body = await readRequestBody(req);
+        const ticker = typeof body.ticker === 'string' ? body.ticker.trim().toUpperCase() : '';
+        const limit = resolveLimit(body.limit);
 
         if (!ticker) {
-            return NextResponse.json({ error: "Ticker required" }, { status: 400 });
+            return NextResponse.json({ error: 'Ticker required' }, { status: 400 });
         }
 
         const companyName = await getCompanyName(ticker);
         if (!companyName) {
-            return NextResponse.json({ error: "Could not resolve ticker to specific company name" }, { status: 404 });
+            return NextResponse.json({ error: 'Could not resolve ticker to specific company name' }, { status: 404 });
         }
 
         console.log(`[ReverseLookup] Searching for holders of: ${ticker} (${companyName})`);
 
-        const turso = createClient({
-            url: process.env.TURSO_DATABASE_URL!,
-            authToken: process.env.TURSO_AUTH_TOKEN!,
-        });
-
-        // Search Query
-        // 1. Find all holdings for this issuer across ALL quarters.
-        // 2. We use a LIKE query on the Issuer Name.
-        //    Note: This can be noisy if "Apple" matches "Apple Hospitality". 
-        //    Refining search to be stricter: 
-
-        // Clean company name for search: "APPLE INC." -> "APPLE"
-        const searchName = companyName.toUpperCase().split(' ')[0].replace(/[^A-Z0-9]/g, '');
-        const searchPattern = `${searchName}%`;
-
-        const query = `
-            SELECT 
-                f.name as fundName, 
-                f.cik, 
-                h.value, 
-                h.shares, 
-                fil.filing_date,
-                fil.quarter
-            FROM holdings h 
-            JOIN filings fil ON h.accession_number = fil.accession_number 
-            JOIN funds f ON fil.cik = f.cik 
-            WHERE 
-                h.issuer LIKE ? 
-            ORDER BY fil.filing_date ASC, fil.accession_number ASC
-        `;
-
-        const rs = await turso.execute({ sql: query, args: [searchPattern] });
-
-        // Aggregation Logic
-        // Map<CIK, FundData>
-        const fundsMap = new Map<string, any>();
-
-        for (const row of rs.rows as any[]) {
-            if (!fundsMap.has(row.cik)) {
-                fundsMap.set(row.cik, {
-                    fundName: row.fundName,
-                    cik: row.cik,
-                    shares: 0, // Will be set to latest
-                    value: 0,  // Will be set to latest
-                    history: []
-                });
-            }
-
-            const fund = fundsMap.get(row.cik);
-
-            // Normalization Heuristic: Convert mixed DB units (Thousands vs Ones) to Actual Dollars
-            const rawVal = row.value;
-            const shares = row.shares;
-            const ratio = shares > 0 ? rawVal / shares : 0;
-            // Standardize to Actual Dollars (Ratio > 4 implies Ones)
-            const realValue = (ratio > 500) ? rawVal : (ratio > 4 ? rawVal : rawVal * 1000);
-
-            const point = {
-                date: row.filing_date,
-                quarter: row.quarter,
-                shares: row.shares,
-                value: realValue
-            };
-
-            // Deduplicate by Quarter: Keep only the latest filing for a given quarter
-            const lastPoint = fund.history[fund.history.length - 1];
-            if (lastPoint && lastPoint.quarter === row.quarter) {
-                // If same quarter, overwrite the previous entry (assuming sorted by date/accession ascending)
-                fund.history[fund.history.length - 1] = point;
-            } else {
-                fund.history.push(point);
-            }
-
-            fund.shares = shares;
-            fund.value = realValue;
-            fund.filing_date = row.filing_date;
-        }
-
-        // Convert to array and sort by Current Value DESC
-        const allFunds = Array.from(fundsMap.values());
-        const sortedFunds = allFunds.sort((a, b) => b.value - a.value);
-
-        // Limit top 100 to avoid sending huge payload
-        const topFunds = sortedFunds.slice(0, 100);
+        const db = createRadarClientFromEnv(resolveReverseLookupDbProviderFromEnv());
+        const searchPattern = `${buildIssuerSearchPrefix(companyName)}%`;
+        const matchedHoldings = await queryMatchedHoldings(db, searchPattern);
+        const matchedCiks = uniqueStrings(matchedHoldings.map((row) => row.cik));
+        const filings = matchedCiks.length > 0 ? await queryFilingsForCiks(db, matchedCiks) : [];
+        const result = buildReverseLookupFunds({ matchedHoldings, filings, limit });
 
         return NextResponse.json({
             ticker,
             companyName,
-            matchCount: allFunds.length,
-            funds: topFunds
+            matchCount: result.matchCount,
+            returnedCount: result.returnedCount,
+            funds: result.funds,
         });
-
-    } catch (error: any) {
-        console.error("[ReverseLookup] Error:", error);
-        return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+    } catch (error) {
+        console.error('[ReverseLookup] Error:', error);
+        return NextResponse.json(
+            { error: error instanceof Error ? error.message : 'Internal Server Error' },
+            { status: 500 }
+        );
     }
+}
+
+export function resolveReverseLookupDbProviderFromEnv(): RadarDbProvider {
+    const explicit = process.env.THIRTEEN_F_DB_PROVIDER?.trim().toLowerCase();
+    if (explicit === 'turso') return 'turso';
+    return 'postgres';
+}
+
+export function buildReverseLookupFunds(params: {
+    matchedHoldings: ReverseHoldingRow[];
+    filings: ReverseFilingRow[];
+    limit?: number;
+}): ReverseLookupBuildResult {
+    const { matchedHoldings, filings, limit } = params;
+    const holdingsByAccession = aggregateHoldingsByAccession(matchedHoldings);
+    const filingsByCik = groupFilingsByCik(filings);
+    const funds: ReverseFund[] = [];
+
+    for (const [cik, cikFilings] of filingsByCik.entries()) {
+        const quarterFilings = selectLatestFilingPerQuarter(cikFilings);
+        const firstPositiveIndex = quarterFilings.findIndex((filing) =>
+            (holdingsByAccession.get(filing.accessionNumber)?.shares || 0) > 0
+        );
+        if (firstPositiveIndex === -1) continue;
+
+        const history = quarterFilings.slice(firstPositiveIndex).map((filing) => {
+            const aggregate = holdingsByAccession.get(filing.accessionNumber);
+            return {
+                date: filing.filingDate,
+                quarter: filing.quarter,
+                shares: aggregate?.shares || 0,
+                value: aggregate?.value || 0,
+            };
+        });
+        if (history.length === 0) continue;
+
+        const current = history[history.length - 1];
+        const previous = history.length > 1 ? history[history.length - 2] : null;
+        const action = classifyMovement(previous?.shares || 0, current.shares);
+        if (action === 'absent') continue;
+
+        const currentFiling = quarterFilings[quarterFilings.length - 1];
+        const latestAggregate = holdingsByAccession.get(currentFiling.accessionNumber);
+        const shareDelta = current.shares - (previous?.shares || 0);
+        const valueDelta = current.value - (previous?.value || 0);
+
+        funds.push({
+            fundName: currentFiling.fundName,
+            cik,
+            action,
+            shares: current.shares,
+            value: current.value,
+            filing_date: current.date,
+            currentShares: current.shares,
+            previousShares: previous?.shares || 0,
+            shareDelta,
+            percentChange: previous && previous.shares > 0 ? (shareDelta / previous.shares) * 100 : null,
+            currentValue: current.value,
+            previousValue: previous?.value || 0,
+            valueDelta,
+            currentFilingDate: current.date,
+            previousFilingDate: previous?.date || null,
+            currentQuarter: current.quarter,
+            previousQuarter: previous?.quarter || null,
+            issuerSamples: latestAggregate?.issuerSamples || [],
+            cusips: latestAggregate?.cusips || [],
+            history,
+        });
+    }
+
+    const sortedFunds = funds.sort(compareReverseFunds);
+    const cappedFunds = typeof limit === 'number' ? sortedFunds.slice(0, limit) : sortedFunds;
+
+    return {
+        funds: cappedFunds,
+        matchCount: funds.length,
+        returnedCount: cappedFunds.length,
+    };
+}
+
+async function queryMatchedHoldings(db: RadarDbClient, searchPattern: string): Promise<ReverseHoldingRow[]> {
+    if (db.provider === 'postgres') {
+        const result = await queryPostgresRows<DbRow>(
+            db.pool,
+            `
+                SELECT
+                    COALESCE(f.name, fil.cik) AS "fundName",
+                    fil.cik AS cik,
+                    fil.accession_number AS "accessionNumber",
+                    fil.filing_date AS "filingDate",
+                    fil.quarter AS quarter,
+                    s.issuer AS issuer,
+                    s.cusip AS cusip,
+                    h.value AS value,
+                    h.shares AS shares
+                FROM holdings h
+                JOIN filings fil ON h.accession_number = fil.accession_number
+                LEFT JOIN funds f ON fil.cik = f.cik
+                JOIN securities s ON h.security_key = s.security_key
+                WHERE s.issuer_search LIKE ?
+                ORDER BY fil.cik ASC, fil.filing_date ASC, fil.accession_number ASC
+            `,
+            [searchPattern]
+        );
+        return result.rows.map(normalizeHoldingRow);
+    }
+
+    const result = await db.client.execute({
+        sql: `
+            SELECT
+                COALESCE(f.name, fil.cik) AS fundName,
+                fil.cik AS cik,
+                fil.accession_number AS accessionNumber,
+                fil.filing_date AS filingDate,
+                fil.quarter AS quarter,
+                h.issuer AS issuer,
+                h.cusip AS cusip,
+                h.value AS value,
+                h.shares AS shares
+            FROM holdings h
+            JOIN filings fil ON h.accession_number = fil.accession_number
+            LEFT JOIN funds f ON fil.cik = f.cik
+            WHERE UPPER(h.issuer) LIKE ?
+            ORDER BY fil.cik ASC, fil.filing_date ASC, fil.accession_number ASC
+        `,
+        args: [searchPattern],
+    });
+
+    return result.rows.map((row) => normalizeHoldingRow(row as DbRow));
+}
+
+async function queryFilingsForCiks(db: RadarDbClient, ciks: string[]): Promise<ReverseFilingRow[]> {
+    const rows: ReverseFilingRow[] = [];
+    for (const chunk of chunkArray(ciks, 500)) {
+        const placeholders = chunk.map(() => '?').join(', ');
+        if (db.provider === 'postgres') {
+            const result = await queryPostgresRows<DbRow>(
+                db.pool,
+                `
+                    SELECT
+                        COALESCE(f.name, fil.cik) AS "fundName",
+                        fil.cik AS cik,
+                        fil.accession_number AS "accessionNumber",
+                        fil.filing_date AS "filingDate",
+                        fil.quarter AS quarter
+                    FROM filings fil
+                    LEFT JOIN funds f ON fil.cik = f.cik
+                    WHERE fil.cik IN (${placeholders})
+                    ORDER BY fil.cik ASC, fil.filing_date ASC, fil.accession_number ASC
+                `,
+                chunk
+            );
+            rows.push(...result.rows.map(normalizeFilingRow));
+        } else {
+            const result = await db.client.execute({
+                sql: `
+                    SELECT
+                        COALESCE(f.name, fil.cik) AS fundName,
+                        fil.cik AS cik,
+                        fil.accession_number AS accessionNumber,
+                        fil.filing_date AS filingDate,
+                        fil.quarter AS quarter
+                    FROM filings fil
+                    LEFT JOIN funds f ON fil.cik = f.cik
+                    WHERE fil.cik IN (${placeholders})
+                    ORDER BY fil.cik ASC, fil.filing_date ASC, fil.accession_number ASC
+                `,
+                args: chunk,
+            });
+            rows.push(...result.rows.map((row) => normalizeFilingRow(row as DbRow)));
+        }
+    }
+
+    return rows;
+}
+
+function aggregateHoldingsByAccession(rows: ReverseHoldingRow[]) {
+    const holdings = new Map<string, { shares: number; value: number; issuerSamples: string[]; cusips: string[] }>();
+
+    for (const row of rows) {
+        const existing = holdings.get(row.accessionNumber) || {
+            shares: 0,
+            value: 0,
+            issuerSamples: [],
+            cusips: [],
+        };
+        existing.shares += row.shares;
+        existing.value += estimateActualValue(row.value, row.shares);
+        pushUnique(existing.issuerSamples, row.issuer, 3);
+        if (row.cusip) pushUnique(existing.cusips, row.cusip, 5);
+        holdings.set(row.accessionNumber, existing);
+    }
+
+    return holdings;
+}
+
+function groupFilingsByCik(filings: ReverseFilingRow[]) {
+    const grouped = new Map<string, ReverseFilingRow[]>();
+    for (const filing of filings) {
+        const cik = normalizeCik(filing.cik);
+        const rows = grouped.get(cik) || [];
+        rows.push({ ...filing, cik });
+        grouped.set(cik, rows);
+    }
+    return grouped;
+}
+
+function selectLatestFilingPerQuarter(filings: ReverseFilingRow[]): ReverseFilingRow[] {
+    const byQuarter = new Map<string, ReverseFilingRow>();
+
+    for (const filing of filings) {
+        const existing = byQuarter.get(filing.quarter);
+        if (!existing || compareFilingsAsc(existing, filing) < 0) {
+            byQuarter.set(filing.quarter, filing);
+        }
+    }
+
+    return Array.from(byQuarter.values()).sort(compareFilingsAsc);
+}
+
+function compareReverseFunds(a: ReverseFund, b: ReverseFund): number {
+    const dateDiff = b.currentFilingDate.localeCompare(a.currentFilingDate);
+    if (dateDiff !== 0) return dateDiff;
+
+    const actionDiff = ACTION_RANK[a.action] - ACTION_RANK[b.action];
+    if (actionDiff !== 0) return actionDiff;
+
+    const shareDeltaDiff = Math.abs(b.shareDelta) - Math.abs(a.shareDelta);
+    if (shareDeltaDiff !== 0) return shareDeltaDiff;
+
+    return a.fundName.localeCompare(b.fundName);
+}
+
+function compareFilingsAsc(a: ReverseFilingRow, b: ReverseFilingRow): number {
+    const quarterDiff = compareQuartersAsc(a.quarter, b.quarter);
+    if (quarterDiff !== 0) return quarterDiff;
+
+    const dateDiff = a.filingDate.localeCompare(b.filingDate);
+    if (dateDiff !== 0) return dateDiff;
+
+    return a.accessionNumber.localeCompare(b.accessionNumber);
+}
+
+function normalizeHoldingRow(row: DbRow): ReverseHoldingRow {
+    return {
+        fundName: stringValue(row.fundName),
+        cik: normalizeCik(stringValue(row.cik)),
+        accessionNumber: stringValue(row.accessionNumber),
+        filingDate: stringValue(row.filingDate),
+        quarter: stringValue(row.quarter),
+        issuer: stringValue(row.issuer),
+        cusip: nullableStringValue(row.cusip),
+        value: numberValue(row.value),
+        shares: numberValue(row.shares),
+    };
+}
+
+function normalizeFilingRow(row: DbRow): ReverseFilingRow {
+    return {
+        fundName: stringValue(row.fundName),
+        cik: normalizeCik(stringValue(row.cik)),
+        accessionNumber: stringValue(row.accessionNumber),
+        filingDate: stringValue(row.filingDate),
+        quarter: stringValue(row.quarter),
+    };
+}
+
+function buildIssuerSearchPrefix(companyName: string): string {
+    return companyName.toUpperCase().split(' ')[0].replace(/[^A-Z0-9]/g, '');
+}
+
+async function readRequestBody(req: NextRequest): Promise<Record<string, unknown>> {
+    try {
+        const parsed = await req.json();
+        return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+    } catch {
+        return {};
+    }
+}
+
+function resolveLimit(value: unknown): number | undefined {
+    const parsed = typeof value === 'number' ? value : Number.parseInt(String(value || ''), 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+    return Math.min(parsed, MAX_RESULT_LIMIT);
+}
+
+function stringValue(value: unknown): string {
+    return String(value || '');
+}
+
+function nullableStringValue(value: unknown): string | null {
+    const text = String(value || '').trim();
+    return text || null;
+}
+
+function numberValue(value: unknown): number {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function uniqueStrings(values: string[]): string[] {
+    return Array.from(new Set(values.filter(Boolean))).sort();
+}
+
+function pushUnique(values: string[], value: string, limit: number) {
+    if (!value || values.includes(value) || values.length >= limit) return;
+    values.push(value);
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let index = 0; index < items.length; index += size) {
+        chunks.push(items.slice(index, index + size));
+    }
+    return chunks;
 }

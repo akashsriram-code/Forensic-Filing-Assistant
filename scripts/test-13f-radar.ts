@@ -131,6 +131,77 @@ async function run() {
         assert.equal(isRadarCacheOnlyEnabled(), false);
     });
 
+    const reverseRouteModule = await import('../app/api/whale-reverse-lookup/route');
+    const buildReverseLookupFunds = reverseRouteModule.buildReverseLookupFunds || (
+        reverseRouteModule as unknown as { default: typeof reverseRouteModule }
+    ).default.buildReverseLookupFunds;
+    const resolveReverseLookupDbProviderFromEnv = reverseRouteModule.resolveReverseLookupDbProviderFromEnv || (
+        reverseRouteModule as unknown as { default: typeof reverseRouteModule }
+    ).default.resolveReverseLookupDbProviderFromEnv;
+    withTemporaryEnv({
+        TURSO_DATABASE_URL: 'libsql://example',
+        TURSO_AUTH_TOKEN: 'token',
+        DATABASE_URL: undefined,
+        POSTGRES_URL: undefined,
+        THIRTEEN_F_DB_PROVIDER: undefined,
+    }, () => {
+        assert.equal(resolveReverseLookupDbProviderFromEnv(), 'postgres');
+    });
+    withTemporaryEnv({
+        TURSO_DATABASE_URL: 'libsql://example',
+        TURSO_AUTH_TOKEN: 'token',
+        DATABASE_URL: undefined,
+        POSTGRES_URL: undefined,
+        THIRTEEN_F_DB_PROVIDER: 'turso',
+    }, () => {
+        assert.equal(resolveReverseLookupDbProviderFromEnv(), 'turso');
+    });
+    withTemporaryEnv({
+        TURSO_DATABASE_URL: 'libsql://example',
+        TURSO_AUTH_TOKEN: 'token',
+        DATABASE_URL: 'postgres://example',
+        POSTGRES_URL: undefined,
+        THIRTEEN_F_DB_PROVIDER: undefined,
+    }, () => {
+        assert.equal(resolveReverseLookupDbProviderFromEnv(), 'postgres');
+    });
+    const reverseLookup = buildReverseLookupFunds({
+        filings: [
+            reverseFiling('A', 'Alpha Fund', 'A-prev', '2026-02-14', '2025-Q4'),
+            reverseFiling('A', 'Alpha Fund', 'A-curr', '2026-05-15', '2026-Q1'),
+            reverseFiling('B', 'Beta Fund', 'B-prev', '2026-02-14', '2025-Q4'),
+            reverseFiling('B', 'Beta Fund', 'B-curr', '2026-05-15', '2026-Q1'),
+            reverseFiling('C', 'Core Fund', 'C-prev', '2026-02-14', '2025-Q4'),
+            reverseFiling('C', 'Core Fund', 'C-curr-old', '2026-05-14', '2026-Q1'),
+            reverseFiling('C', 'Core Fund', 'C-curr', '2026-05-15', '2026-Q1'),
+            reverseFiling('D', 'Delta Fund', 'D-prev', '2026-02-14', '2025-Q4'),
+            reverseFiling('D', 'Delta Fund', 'D-curr', '2026-05-15', '2026-Q1'),
+            reverseFiling('E', 'Echo Fund', 'E-prev', '2026-02-14', '2025-Q4'),
+            reverseFiling('E', 'Echo Fund', 'E-curr', '2026-05-15', '2026-Q1'),
+            reverseFiling('G', 'Gamma Fund', 'G-curr', '2026-05-14', '2026-Q1'),
+        ],
+        matchedHoldings: [
+            reverseHolding('A', 'Alpha Fund', 'A-curr', '2026-05-15', '2026-Q1', 1000, 100),
+            reverseHolding('B', 'Beta Fund', 'B-prev', '2026-02-14', '2025-Q4', 1000, 100),
+            reverseHolding('C', 'Core Fund', 'C-prev', '2026-02-14', '2025-Q4', 1000, 100),
+            reverseHolding('C', 'Core Fund', 'C-curr-old', '2026-05-14', '2026-Q1', 1300, 130),
+            reverseHolding('C', 'Core Fund', 'C-curr', '2026-05-15', '2026-Q1', 1500, 150),
+            reverseHolding('D', 'Delta Fund', 'D-prev', '2026-02-14', '2025-Q4', 1000, 100),
+            reverseHolding('D', 'Delta Fund', 'D-curr', '2026-05-15', '2026-Q1', 500, 50),
+            reverseHolding('E', 'Echo Fund', 'E-prev', '2026-02-14', '2025-Q4', 1000, 100),
+            reverseHolding('E', 'Echo Fund', 'E-curr', '2026-05-15', '2026-Q1', 1000, 100),
+            reverseHolding('G', 'Gamma Fund', 'G-curr', '2026-05-14', '2026-Q1', 1000, 100),
+        ],
+        limit: 10,
+    });
+    assert.equal(reverseLookup.matchCount, 6);
+    assert.deepEqual(reverseLookup.funds.map((fund) => fund.cik), ['A', 'B', 'C', 'D', 'E', 'G']);
+    assert.deepEqual(reverseLookup.funds.map((fund) => fund.action), ['initiated', 'liquidated', 'increased', 'decreased', 'unchanged', 'initiated']);
+    assert.equal(reverseLookup.funds.find((fund) => fund.cik === 'B')?.currentShares, 0);
+    assert.equal(reverseLookup.funds.find((fund) => fund.cik === 'B')?.previousShares, 100);
+    assert.equal(reverseLookup.funds.find((fund) => fund.cik === 'C')?.currentShares, 150);
+    assert.equal(reverseLookup.funds.find((fund) => fund.cik === 'C')?.shareDelta, 50);
+
     const palantir = DEFAULT_RADAR_WATCHLISTS
         .find((watchlist) => watchlist.key === 'palantir')!
         .items[0];
@@ -692,6 +763,38 @@ function holding(
     shares: number
 ): RadarHoldingRow {
     return { cik, fundName, accessionNumber, filingDate, quarter, issuer, cusip, value, shares };
+}
+
+function reverseFiling(
+    cik: string,
+    fundName: string,
+    accessionNumber: string,
+    filingDate: string,
+    quarter: string
+) {
+    return { cik, fundName, accessionNumber, filingDate, quarter };
+}
+
+function reverseHolding(
+    cik: string,
+    fundName: string,
+    accessionNumber: string,
+    filingDate: string,
+    quarter: string,
+    value: number,
+    shares: number
+) {
+    return {
+        cik,
+        fundName,
+        accessionNumber,
+        filingDate,
+        quarter,
+        issuer: 'TEST ISSUER INC',
+        cusip: '123456789',
+        value,
+        shares,
+    };
 }
 
 function withTemporaryEnv(values: Record<string, string | undefined>, fn: () => void) {
