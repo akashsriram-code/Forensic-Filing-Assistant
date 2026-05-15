@@ -104,6 +104,15 @@ async function run() {
         POSTGRES_URL: undefined,
         THIRTEEN_F_DB_PROVIDER: undefined,
     }, () => {
+        assert.equal(resolveRadarDbProviderFromEnv(), 'postgres');
+    });
+    withTemporaryEnv({
+        TURSO_DATABASE_URL: 'libsql://example',
+        TURSO_AUTH_TOKEN: 'token',
+        DATABASE_URL: 'postgres://example',
+        POSTGRES_URL: undefined,
+        THIRTEEN_F_DB_PROVIDER: 'turso',
+    }, () => {
         assert.equal(resolveRadarDbProviderFromEnv(), 'turso');
     });
     withTemporaryEnv({

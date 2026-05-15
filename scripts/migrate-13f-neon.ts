@@ -1,6 +1,7 @@
 import { createClient } from '@libsql/client';
 import * as dotenv from 'dotenv';
 import {
+    assertPostgresWritable,
     buildPostgresSecurityKey,
     clearPostgres13FData,
     createPostgresPool,
@@ -88,6 +89,7 @@ async function main() {
 
     const pool = createPostgresPool(postgresUrl);
     try {
+        await assertPostgresWritable(pool, '13F Postgres migration target');
         await ensurePostgres13FSchema(pool);
         await dropPostgres13FIndexes(pool);
         if (!keepExisting) {

@@ -101,9 +101,7 @@ export function resolveRadarDbProviderFromEnv(): RadarDbProvider {
     const explicit = process.env.THIRTEEN_F_DB_PROVIDER?.trim().toLowerCase();
     if (explicit === 'postgres') return 'postgres';
     if (explicit === 'turso') return 'turso';
-    if (getPostgresConnectionString() && (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN)) {
-        return 'postgres';
-    }
+    if (getPostgresConnectionString()) return 'postgres';
     return 'turso';
 }
 

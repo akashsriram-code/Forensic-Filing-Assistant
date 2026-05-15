@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import * as dotenv from 'dotenv';
 import { DEFAULT_RADAR_WATCHLISTS, compactIssuerName, normalizeIssuerName } from '../lib/thirteen-f-radar-core';
 import {
+    assertPostgresWritable,
     completePostgresIngestionRun,
     createPostgresPool,
     dropPostgres13FIndexes,
@@ -172,7 +173,11 @@ async function main() {
         await retainSecTargetQuarters(target, quarter);
         console.log('\n[13F SEC Dataset] Complete.');
     } catch (error) {
-        await failSecIngestionRun(target, runId, error);
+        try {
+            await failSecIngestionRun(target, runId, error);
+        } catch (failError) {
+            console.warn(`[13F SEC Dataset] Could not mark ingestion run as failed: ${errorMessage(failError)}`);
+        }
         throw error;
     } finally {
         if (rebuildSearchIndexes) {
@@ -185,7 +190,14 @@ async function main() {
 
 async function createSecTarget(provider: IngestionTargetProvider): Promise<SecDbTarget> {
     if (provider === 'postgres') {
-        return { provider, pool: createPostgresPool() };
+        const pool = createPostgresPool();
+        try {
+            await assertPostgresWritable(pool, '13F SEC dataset ingestion target');
+        } catch (error) {
+            await pool.end();
+            throw error;
+        }
+        return { provider, pool };
     }
     return { provider, client: createClient({ url: TURSO_URL!, authToken: TURSO_TOKEN! }) };
 }
@@ -451,6 +463,10 @@ function issuerMatchesWatchlist(issuer: string, aliases: Array<{ normalized: str
     const normalizedIssuer = normalizeIssuerName(issuer);
     const compactIssuer = normalizedIssuer.replace(/\s+/g, '');
     return aliases.some((alias) => normalizedIssuer.includes(alias.normalized) || compactIssuer.includes(alias.compact));
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
 }
 
 if (isDirectRun(import.meta.url)) {

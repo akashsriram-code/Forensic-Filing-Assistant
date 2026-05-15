@@ -43,8 +43,8 @@ jobs:
     env:
       TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
       TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL || secrets.POSTGRES_URL }}
-      POSTGRES_URL: ${{ secrets.POSTGRES_URL || secrets.DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.AIVEN_DATABASE_URL || secrets.DATABASE_URL || secrets.POSTGRES_URL }}
+      POSTGRES_URL: ${{ secrets.POSTGRES_URL || secrets.AIVEN_DATABASE_URL || secrets.DATABASE_URL }}
       SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'ForensicFilingAssistant contact@example.com' }}
       ALLOW_TURSO_13F_WRITES: ${{ secrets.ALLOW_TURSO_13F_WRITES || 'false' }}
       THIRTEEN_F_DB_PROVIDER: ${{ inputs.target || secrets.THIRTEEN_F_DB_PROVIDER || 'postgres' }}
@@ -77,7 +77,7 @@ jobs:
       - name: Validate database target configuration
         run: |
           if [ "$THIRTEEN_F_DB_PROVIDER" = "postgres" ] && [ -z "$DATABASE_URL" ] && [ -z "$POSTGRES_URL" ]; then
-            echo "::error title=Missing Postgres database secret::Set a repository secret named DATABASE_URL or POSTGRES_URL, or run this workflow with target=turso."
+            echo "::error title=Missing Postgres database secret::Set a repository secret named AIVEN_DATABASE_URL, DATABASE_URL, or POSTGRES_URL, or run this workflow with target=turso."
             exit 1
           fi
           if [ "$THIRTEEN_F_DB_PROVIDER" = "turso" ] && { [ -z "$TURSO_DATABASE_URL" ] || [ -z "$TURSO_AUTH_TOKEN" ]; }; then
@@ -102,7 +102,7 @@ jobs:
       - name: Postgres write target
         if: env.THIRTEEN_F_DB_PROVIDER == 'postgres'
         run: |
-          echo "13F ingestion target: Postgres/Neon." >> "$GITHUB_STEP_SUMMARY"
+          echo "13F ingestion target: Aiven/Postgres." >> "$GITHUB_STEP_SUMMARY"
           echo "Turso is not used for ingestion writes in this run." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Repair required indexes

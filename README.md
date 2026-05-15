@@ -91,6 +91,9 @@ DATABASE_URL=postgres://...aivencloud.com:PORT/defaultdb?sslmode=require
 THIRTEEN_F_RADAR_CACHE_ONLY=true
 ```
 
+When cache-only reads are disabled or a cache fallback is needed, the app prefers the PostgreSQL/Aiven URL whenever `DATABASE_URL` or `POSTGRES_URL` is present. Set `THIRTEEN_F_DB_PROVIDER=turso` only when you explicitly want to use Turso.
+Use the Aiven primary/read-write service URI for ingestion and cache refreshes. A read-only replica URI will fail with Postgres error `25006` (`cannot execute UPDATE in a read-only transaction`).
+
 Cache generation:
 
 *   Add a GitHub secret named `AIVEN_DATABASE_URL` with the Aiven PostgreSQL URI.

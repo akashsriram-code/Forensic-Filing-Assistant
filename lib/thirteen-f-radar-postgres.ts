@@ -83,6 +83,34 @@ export function createPostgresPool(connectionString = getPostgresConnectionStrin
     return new Pool(config);
 }
 
+export async function assertPostgresWritable(
+    db: PostgresExecutor,
+    context = 'Postgres 13F target'
+) {
+    const result = await db.query<{
+        in_recovery: boolean;
+        transaction_read_only: string;
+        default_transaction_read_only: string;
+    }>(`
+        SELECT
+            pg_is_in_recovery() AS in_recovery,
+            current_setting('transaction_read_only') AS transaction_read_only,
+            current_setting('default_transaction_read_only') AS default_transaction_read_only
+    `);
+    const row = result.rows[0];
+    const isReadOnly =
+        row?.in_recovery ||
+        row?.transaction_read_only === 'on' ||
+        row?.default_transaction_read_only === 'on';
+
+    if (!isReadOnly) return;
+
+    throw new Error(
+        `${context} is read-only. 13F ingestion needs the primary Aiven/Postgres write URI; ` +
+        `update AIVEN_DATABASE_URL, DATABASE_URL, or POSTGRES_URL to the read-write primary service URI, not a read-only replica URI.`
+    );
+}
+
 function normalizePostgresConnectionStringForNode(connectionString: string): string {
     const needsLibpqCompat = /[?&]sslmode=(require|prefer)(?:&|$)/i.test(connectionString) &&
         !/[?&]uselibpqcompat=/i.test(connectionString);

@@ -1,6 +1,7 @@
 import { createClient, type InValue } from '@libsql/client';
 import * as dotenv from 'dotenv';
 import {
+    assertPostgresWritable,
     completePostgresIngestionRun,
     createPostgresPool,
     dropPostgres13FIndexes,
@@ -232,7 +233,13 @@ async function main() {
 
         console.log(dryRun ? `[13F Live EDGAR] Dry run complete; no ${targetProvider} writes performed.` : '[13F Live EDGAR] Complete.');
     } catch (error) {
-        if (!dryRun && target && runId) await failLiveIngestionRun(target, runId, error);
+        if (!dryRun && target && runId) {
+            try {
+                await failLiveIngestionRun(target, runId, error);
+            } catch (failError) {
+                console.warn(`[13F Live EDGAR] Could not mark ingestion run as failed: ${errorMessage(failError)}`);
+            }
+        }
         throw error;
     } finally {
         if (!dryRun && target && rebuildSearchIndexes) {
@@ -293,7 +300,14 @@ async function processLiveFiling(
 
 async function createLiveTarget(provider: IngestionTargetProvider): Promise<LiveDbTarget> {
     if (provider === 'postgres') {
-        return { provider, pool: createPostgresPool() };
+        const pool = createPostgresPool();
+        try {
+            await assertPostgresWritable(pool, '13F Live EDGAR ingestion target');
+        } catch (error) {
+            await pool.end();
+            throw error;
+        }
+        return { provider, pool };
     }
     return { provider, client: createClient({ url: TURSO_URL!, authToken: TURSO_TOKEN! }) };
 }
@@ -527,6 +541,10 @@ function positiveIntArg(name: string, fallback: number): number {
 function positiveOptionalIntArg(name: string): number | null {
     const value = Number.parseInt(getArg(name) || '', 10);
     return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
 }
 
 function maxHoldingInsertChunkSizeFor(provider: IngestionTargetProvider): number {
