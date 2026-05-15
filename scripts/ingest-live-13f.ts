@@ -43,7 +43,7 @@ import {
 
 dotenv.config();
 
-interface IndexEntry {
+export interface IndexEntry {
     cik: string;
     name: string;
     form: string;
@@ -72,6 +72,8 @@ const DEFAULT_HOLDING_INSERT_CHUNK_SIZE = 100;
 const MAX_HOLDING_INSERT_CHUNK_SIZE = 100;
 const MAX_POSTGRES_HOLDING_INSERT_CHUNK_SIZE = 1000;
 const HOLDING_INSERT_STATEMENTS_PER_BATCH = 25;
+const CURRENT_FEED_PAGE_SIZE = 100;
+const CURRENT_FEED_FORMS = ['13F-HR', '13F-HR/A'] as const;
 
 type LiveDbTarget =
     | { provider: 'turso'; client: ReturnType<typeof createClient> }
@@ -88,6 +90,8 @@ async function main() {
     const rateLimitMs = positiveIntArg('--rate-limit-ms', DEFAULT_RATE_LIMIT_MS);
     const writeBatchSize = positiveIntArg('--write-batch-size', DEFAULT_WRITE_BATCH_SIZE);
     const requestedHoldingInsertChunkSize = positiveIntArg('--holding-insert-chunk-size', DEFAULT_HOLDING_INSERT_CHUNK_SIZE);
+    const dailyIndexLookbackDays = nonNegativeIntArg('--daily-index-lookback-days', 7);
+    const currentFeedPages = nonNegativeIntArg('--current-feed-pages', 5);
     const holdingInsertChunkSize = Math.min(
         requestedHoldingInsertChunkSize,
         maxHoldingInsertChunkSizeFor(targetProvider)
@@ -95,7 +99,7 @@ async function main() {
     const maxNewFilings = positiveOptionalIntArg('--max-new-filings');
 
     if (!quarter) {
-        console.error('Usage: npm run ingest:13f-live -- --quarter 2026-Q1 [--target turso|postgres] [--dry-run] [--refresh-existing] [--rebuild-search-indexes] [--limit 250] [--max-new-filings 200] [--concurrency 6] [--rate-limit-ms 110] [--write-batch-size 5] [--holding-insert-chunk-size 100]');
+        console.error('Usage: npm run ingest:13f-live -- --quarter 2026-Q1 [--target turso|postgres] [--dry-run] [--refresh-existing] [--rebuild-search-indexes] [--limit 250] [--max-new-filings 200] [--concurrency 6] [--rate-limit-ms 110] [--write-batch-size 5] [--holding-insert-chunk-size 100] [--current-feed-pages 5] [--daily-index-lookback-days 7]');
         process.exit(1);
     }
     if (!dryRun && targetProvider === 'turso' && (!TURSO_URL || !TURSO_TOKEN)) {
@@ -109,13 +113,23 @@ async function main() {
 
     const filingIndex = filingIndexQuarterForReportQuarter(quarter);
     const masterIndexUrl = masterIndexUrlFor(filingIndex.year, filingIndex.quarter);
-    const entries = await downloadMasterIndex(masterIndexUrl);
+    const indexSource = await loadLiveIndexEntries(masterIndexUrl, {
+        currentFeedPages,
+        dailyIndexLookbackDays,
+    });
+    const entries = indexSource.entries;
     const limitedEntries = Number.isFinite(limit) && limit > 0 ? entries.slice(0, limit) : entries;
 
     console.log(`[13F Live EDGAR] Target report quarter: ${quarter}`);
     console.log(`[13F Live EDGAR] Target database: ${targetProvider}`);
     console.log(`[13F Live EDGAR] Scanning ${masterIndexUrl}`);
-    console.log(`[13F Live EDGAR] Found ${entries.length} 13F-HR/13F-HR-A filings; processing ${limitedEntries.length}`);
+    console.log(`[13F Live EDGAR] Quarterly index entries: ${indexSource.masterCount}`);
+    console.log(`[13F Live EDGAR] Current feed entries: ${indexSource.currentFeedCount}`);
+    console.log(`[13F Live EDGAR] Recent daily-index entries: ${indexSource.dailyIndexCount}`);
+    if (indexSource.skippedOptionalIndexes > 0) {
+        console.log(`[13F Live EDGAR] Skipped ${indexSource.skippedOptionalIndexes} unavailable recent daily index file(s).`);
+    }
+    console.log(`[13F Live EDGAR] Found ${entries.length} unique 13F-HR/13F-HR-A filings; processing ${limitedEntries.length}`);
     console.log(`[13F Live EDGAR] Fast mode: fetch submission .txt once per filing.`);
     console.log(`[13F Live EDGAR] Concurrency ${concurrency}, global SEC request spacing ${rateLimitMs}ms, write batch ${writeBatchSize}, holding chunk ${holdingInsertChunkSize}`);
     if (requestedHoldingInsertChunkSize !== holdingInsertChunkSize) {
@@ -500,8 +514,34 @@ async function queryExistingAccessions(target: LiveDbTarget, quarter: string): P
     return new Set(result.rows.map((row) => String(row.accession_number)));
 }
 
+async function loadLiveIndexEntries(
+    masterIndexUrl: string,
+    options: { currentFeedPages: number; dailyIndexLookbackDays: number }
+): Promise<{
+    entries: IndexEntry[];
+    masterCount: number;
+    currentFeedCount: number;
+    dailyIndexCount: number;
+    skippedOptionalIndexes: number;
+}> {
+    const masterEntries = await downloadMasterIndex(masterIndexUrl);
+    const currentFeedEntries = await downloadCurrentFeedEntries(options.currentFeedPages);
+    const dailyResult = await downloadRecentDailyIndexEntries(options.dailyIndexLookbackDays);
+    return {
+        entries: mergeIndexEntries([...currentFeedEntries, ...dailyResult.entries, ...masterEntries]),
+        masterCount: masterEntries.length,
+        currentFeedCount: currentFeedEntries.length,
+        dailyIndexCount: dailyResult.entries.length,
+        skippedOptionalIndexes: dailyResult.skipped,
+    };
+}
+
 async function downloadMasterIndex(url: string): Promise<IndexEntry[]> {
     const content = await fetchTextWithRetry(url);
+    return parseIndexContent(content);
+}
+
+function parseIndexContent(content: string): IndexEntry[] {
     const entries: IndexEntry[] = [];
     let processing = false;
     for (const line of content.split('\n')) {
@@ -525,12 +565,138 @@ async function downloadMasterIndex(url: string): Promise<IndexEntry[]> {
     return entries;
 }
 
+async function downloadCurrentFeedEntries(pageCount: number): Promise<IndexEntry[]> {
+    if (pageCount <= 0) return [];
+    const entries: IndexEntry[] = [];
+    for (const form of CURRENT_FEED_FORMS) {
+        for (let page = 0; page < pageCount; page += 1) {
+            const url = currentFeedUrlFor(form, page * CURRENT_FEED_PAGE_SIZE);
+            try {
+                const xml = await fetchTextWithRetry(url, 3);
+                const pageEntries = parseCurrentFeedEntries(xml);
+                if (pageEntries.length === 0) break;
+                entries.push(...pageEntries);
+            } catch (error) {
+                console.warn(`[13F Live EDGAR] Current feed unavailable for ${form} page ${page + 1}: ${errorMessage(error)}`);
+                break;
+            }
+        }
+    }
+    return mergeIndexEntries(entries);
+}
+
+async function downloadRecentDailyIndexEntries(lookbackDays: number): Promise<{ entries: IndexEntry[]; skipped: number }> {
+    if (lookbackDays <= 0) return { entries: [], skipped: 0 };
+    const entries: IndexEntry[] = [];
+    let skipped = 0;
+    for (const url of dailyMasterIndexUrlsForRecentDays(lookbackDays)) {
+        try {
+            entries.push(...await downloadMasterIndex(url));
+        } catch {
+            skipped++;
+        }
+    }
+    return { entries: mergeIndexEntries(entries), skipped };
+}
+
+export function parseCurrentFeedEntries(xml: string): IndexEntry[] {
+    const entries: IndexEntry[] = [];
+    const entryPattern = /<entry>([\s\S]*?)<\/entry>/gi;
+    let match: RegExpExecArray | null;
+    while ((match = entryPattern.exec(xml)) !== null) {
+        const entryXml = match[1];
+        const title = decodeXmlEntities(extractXmlText(entryXml, 'title'));
+        const href = extractHref(entryXml);
+        const date = extractFiledDate(entryXml);
+        const titleMatch = title.match(/^(13F-HR\/A|13F-HR)\s+-\s+(.+)\s+\((\d{10})\)\s+\(Filer\)/i);
+        const filename = href ? filenameFromCurrentFeedIndexLink(href) : null;
+        if (!titleMatch || !filename || !date) continue;
+        entries.push({
+            cik: normalizeCikForStorage(titleMatch[3]),
+            name: titleMatch[2].trim(),
+            form: titleMatch[1].toUpperCase(),
+            date,
+            filename,
+        });
+    }
+    return entries;
+}
+
+export function mergeIndexEntries(entries: IndexEntry[]): IndexEntry[] {
+    const byAccession = new Map<string, IndexEntry>();
+    for (const entry of entries) {
+        const accession = accessionFromFilename(entry.filename);
+        if (!accession || byAccession.has(accession)) continue;
+        byAccession.set(accession, entry);
+    }
+    return Array.from(byAccession.values());
+}
+
+export function dailyMasterIndexUrlsForRecentDays(days: number, asOf = new Date()): string[] {
+    const urls: string[] = [];
+    for (let offset = 0; offset < days; offset += 1) {
+        const date = new Date(Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), asOf.getUTCDate() - offset));
+        const year = date.getUTCFullYear();
+        const quarter = Math.floor(date.getUTCMonth() / 3) + 1;
+        const dateKey = [
+            String(year),
+            String(date.getUTCMonth() + 1).padStart(2, '0'),
+            String(date.getUTCDate()).padStart(2, '0'),
+        ].join('');
+        urls.push(`https://www.sec.gov/Archives/edgar/daily-index/${year}/QTR${quarter}/master.${dateKey}.idx`);
+    }
+    return urls;
+}
+
 function masterIndexUrlFor(year: number, quarter: number): string {
     return `https://www.sec.gov/Archives/edgar/full-index/${year}/QTR${quarter}/master.idx`;
 }
 
 function accessionFromFilename(filename: string): string {
     return filename.split('/').pop()?.replace(/\.txt$/i, '') || filename;
+}
+
+function currentFeedUrlFor(form: string, start: number): string {
+    const params = new URLSearchParams({
+        action: 'getcurrent',
+        type: form,
+        owner: 'include',
+        count: String(CURRENT_FEED_PAGE_SIZE),
+        start: String(start),
+        output: 'atom',
+    });
+    return `https://www.sec.gov/cgi-bin/browse-edgar?${params.toString()}`;
+}
+
+function filenameFromCurrentFeedIndexLink(href: string): string | null {
+    const url = new URL(href, 'https://www.sec.gov');
+    const archivePrefix = '/Archives/';
+    if (!url.pathname.startsWith(archivePrefix)) return null;
+    const archivePath = url.pathname.slice(archivePrefix.length);
+    if (!/-index\.htm$/i.test(archivePath)) return null;
+    return archivePath.replace(/-index\.htm$/i, '.txt');
+}
+
+function extractXmlText(xml: string, tag: string): string {
+    const match = xml.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+    return match?.[1]?.trim() || '';
+}
+
+function extractHref(xml: string): string | null {
+    return xml.match(/<link\b[^>]*href="([^"]+)"/i)?.[1] || null;
+}
+
+function extractFiledDate(xml: string): string | null {
+    return decodeXmlEntities(xml).match(/Filed:<\/b>\s*(\d{4}-\d{2}-\d{2})/i)?.[1] || null;
+}
+
+function decodeXmlEntities(value: string): string {
+    return value
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'");
 }
 
 function positiveIntArg(name: string, fallback: number): number {
@@ -541,6 +707,11 @@ function positiveIntArg(name: string, fallback: number): number {
 function positiveOptionalIntArg(name: string): number | null {
     const value = Number.parseInt(getArg(name) || '', 10);
     return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function nonNegativeIntArg(name: string, fallback: number): number {
+    const value = Number.parseInt(getArg(name) || '', 10);
+    return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 function errorMessage(error: unknown): string {

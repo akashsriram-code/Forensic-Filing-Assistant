@@ -16,6 +16,12 @@ import {
     selectSecDatasetSubmissionsForQuarter,
     type TsvRow,
 } from './13f-ingestion-utils';
+import {
+    dailyMasterIndexUrlsForRecentDays,
+    mergeIndexEntries,
+    parseCurrentFeedEntries,
+    type IndexEntry,
+} from './ingest-live-13f';
 
 async function run() {
     assert.equal(quarterFromReportDate('2026-03-31'), '2026-Q1');
@@ -164,6 +170,46 @@ async function run() {
     assert.equal(wrapped.reportDate, '2026-03-31');
     assert.equal(wrapped.holdings.length, 1);
     assert.equal(wrapped.holdings[0].issuer, 'NVIDIA CORP');
+
+    const currentFeedEntries = parseCurrentFeedEntries(`
+        <feed>
+            <entry>
+                <title>13F-HR - Example Advisors, LLC (0001234567) (Filer)</title>
+                <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/1234567/000123456726000001/0001234567-26-000001-index.htm"/>
+                <summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-05-15 &lt;b&gt;AccNo:&lt;/b&gt; 0001234567-26-000001</summary>
+            </entry>
+            <entry>
+                <title>13F-HR/A - Amended Capital LP (0000000100) (Filer)</title>
+                <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/100/000000010026000002/0000000100-26-000002-index.htm"/>
+                <summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-05-15 &lt;b&gt;AccNo:&lt;/b&gt; 0000000100-26-000002</summary>
+            </entry>
+        </feed>
+    `);
+    assert.equal(currentFeedEntries.length, 2);
+    assert.deepEqual(currentFeedEntries[0], {
+        cik: '1234567',
+        name: 'Example Advisors, LLC',
+        form: '13F-HR',
+        date: '2026-05-15',
+        filename: 'edgar/data/1234567/000123456726000001/0001234567-26-000001.txt',
+    });
+    assert.equal(currentFeedEntries[1].form, '13F-HR/A');
+
+    const duplicateEntries: IndexEntry[] = [
+        currentFeedEntries[0],
+        {
+            ...currentFeedEntries[0],
+            name: 'Duplicate Should Lose',
+        },
+    ];
+    assert.deepEqual(mergeIndexEntries(duplicateEntries), [currentFeedEntries[0]]);
+    assert.deepEqual(
+        dailyMasterIndexUrlsForRecentDays(2, new Date('2026-05-15T21:00:00.000Z')),
+        [
+            'https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260515.idx',
+            'https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/master.20260514.idx',
+        ]
+    );
 
     console.log('13F ingestion unit tests passed.');
 }
