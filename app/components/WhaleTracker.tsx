@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Download, X, Loader2, TrendingUp, Users, GitMerge, Database, Megaphone } from 'lucide-react';
 import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter, ReferenceLine } from 'recharts';
 import { getSector } from '@/lib/sectors';
@@ -80,6 +80,15 @@ interface FundHistoryPoint {
 }
 
 type ReverseAction = 'initiated' | 'liquidated' | 'increased' | 'decreased' | 'unchanged';
+type ReverseActionFilter = 'all' | ReverseAction;
+const REVERSE_ACTIONS: ReverseAction[] = ['initiated', 'liquidated', 'increased', 'decreased', 'unchanged'];
+const REVERSE_ACTION_SUMMARY_LABELS: Record<ReverseAction, string> = {
+    initiated: 'Initiations',
+    liquidated: 'Liquidations',
+    increased: 'Increased',
+    decreased: 'Decreased',
+    unchanged: 'Unchanged',
+};
 
 interface ReverseFund {
     fundName: string;
@@ -164,6 +173,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
     // Reverse Lookup State (Existing)
     const [reverseTicker, setReverseTicker] = useState("");
     const [reverseData, setReverseData] = useState<ReverseLookupData | null>(null);
+    const [reverseActionFilter, setReverseActionFilter] = useState<ReverseActionFilter>('all');
 
     // Activist Watch State
     const [activistTicker, setActivistTicker] = useState("");
@@ -255,6 +265,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         setError("");
         setReverseData(null);
         setActivistData(null);
+        setReverseActionFilter('all');
         try {
             // Parallel Fetch: Reverse Lookup + 13D (Activist)
             const [resReverse, resActivist] = await Promise.all([
@@ -315,6 +326,31 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
     const formatNumber = (num: number) => {
         return new Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 }).format(num);
     };
+
+    const formatInteger = (num: number) => {
+        return new Intl.NumberFormat('en-US').format(num);
+    };
+
+    const reverseActionCounts = useMemo<Record<ReverseActionFilter, number>>(() => {
+        const counts: Record<ReverseActionFilter, number> = {
+            all: reverseData?.funds.length || 0,
+            initiated: 0,
+            liquidated: 0,
+            increased: 0,
+            decreased: 0,
+            unchanged: 0,
+        };
+        for (const fund of reverseData?.funds || []) {
+            counts[fund.action] += 1;
+        }
+        return counts;
+    }, [reverseData]);
+
+    const visibleReverseFunds = useMemo(() => {
+        if (!reverseData) return [];
+        if (reverseActionFilter === 'all') return reverseData.funds;
+        return reverseData.funds.filter((fund) => fund.action === reverseActionFilter);
+    }, [reverseActionFilter, reverseData]);
 
     const formatReverseDelta = (delta: number, percentChange: number | null) => {
         if (delta === 0) return '-';
@@ -789,16 +825,71 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                         {reverseData && (
                             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2">
 
-                                <div className="flex items-center justify-between px-2">
+                                <div className="flex flex-col gap-3 px-2 lg:flex-row lg:items-center lg:justify-between">
                                     <div className="flex items-center gap-2">
                                         <Database className={`h-5 w-5 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-400'}`} />
                                         <span className={`font-semibold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>Funds Moving {reverseData.companyName}</span>
                                         <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-bold">
                                             {reverseData.returnedCount && reverseData.returnedCount < reverseData.matchCount
-                                                ? `${formatNumber(reverseData.returnedCount)} of ${formatNumber(reverseData.matchCount)} shown`
-                                                : `${formatNumber(reverseData.matchCount)} found`}
+                                                ? `${formatInteger(reverseData.returnedCount)} of ${formatInteger(reverseData.matchCount)} shown`
+                                                : `${formatInteger(reverseData.matchCount)} found`}
                                         </span>
                                     </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {(['all', ...REVERSE_ACTIONS] as ReverseActionFilter[]).map((action) => {
+                                            const active = reverseActionFilter === action;
+                                            const count = reverseActionCounts[action];
+                                            return (
+                                                <button
+                                                    key={action}
+                                                    type="button"
+                                                    disabled={count === 0}
+                                                    onClick={() => setReverseActionFilter(action)}
+                                                    className={`rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${active
+                                                        ? theme === 'dark'
+                                                            ? 'border-white bg-white text-black'
+                                                            : 'border-gray-900 bg-gray-900 text-white'
+                                                        : theme === 'dark'
+                                                            ? 'border-zinc-700 text-zinc-300 hover:border-zinc-500 disabled:opacity-40'
+                                                            : 'border-gray-200 text-gray-600 hover:border-gray-400 disabled:opacity-40'
+                                                        }`}
+                                                >
+                                                    {action === 'all' ? 'All' : reverseActionLabel(action)}
+                                                    <span className="ml-1 opacity-70">{formatInteger(count)}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2 px-2 sm:grid-cols-3 lg:grid-cols-5">
+                                    {REVERSE_ACTIONS.map((action) => {
+                                        const active = reverseActionFilter === action;
+                                        const count = reverseActionCounts[action];
+                                        return (
+                                            <button
+                                                key={action}
+                                                type="button"
+                                                disabled={count === 0}
+                                                onClick={() => setReverseActionFilter(action)}
+                                                className={`rounded-lg border p-3 text-left transition-colors ${active
+                                                    ? theme === 'dark'
+                                                        ? 'border-white bg-white text-black'
+                                                        : 'border-gray-900 bg-gray-900 text-white'
+                                                    : theme === 'dark'
+                                                        ? 'border-zinc-800 bg-zinc-900/30 text-zinc-300 hover:border-zinc-600 disabled:opacity-45'
+                                                        : 'border-gray-200 bg-white text-gray-700 hover:border-gray-400 disabled:opacity-45'
+                                                    }`}
+                                            >
+                                                <div className="text-[11px] font-semibold uppercase tracking-wide opacity-70">
+                                                    {REVERSE_ACTION_SUMMARY_LABELS[action]}
+                                                </div>
+                                                <div className="mt-1 font-mono text-2xl font-bold">
+                                                    {formatInteger(count)}
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
                                 </div>
 
                                 <div className={`rounded-xl border overflow-hidden ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900/30' : 'border-gray-200 bg-white'}`}>
@@ -817,7 +908,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                             </tr>
                                         </thead>
                                         <tbody className={`divide-y ${theme === 'dark' ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700'}`}>
-                                            {reverseData.funds.map((f: ReverseFund, i: number) => (
+                                            {visibleReverseFunds.map((f: ReverseFund, i: number) => (
                                                 <tr key={i} className="hover:opacity-70 transition-opacity">
                                                     <td className="px-6 py-3 font-medium">
                                                         <div>{f.fundName}</div>
@@ -869,9 +960,13 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                                     </td>
                                                 </tr>
                                             ))}
-                                            {reverseData.funds.length === 0 && (
+                                            {visibleReverseFunds.length === 0 && (
                                                 <tr>
-                                                    <td colSpan={8} className="px-6 py-8 text-center opacity-50">No funds found with current or prior holdings for this stock in the current database.</td>
+                                                    <td colSpan={8} className="px-6 py-8 text-center opacity-50">
+                                                        {reverseActionFilter === 'all'
+                                                            ? 'No funds found with current or prior holdings for this stock in the current database.'
+                                                            : `No ${reverseActionLabel(reverseActionFilter)} rows found for this stock.`}
+                                                    </td>
                                                 </tr>
                                             )}
                                         </tbody>
