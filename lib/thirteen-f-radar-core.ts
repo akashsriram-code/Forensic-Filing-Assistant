@@ -1213,8 +1213,10 @@ export function buildRadarAudit(params: {
     holdings: RadarHoldingRow[];
     watchlists: RadarWatchlist[];
     selectedCategories?: string[];
+    includeRawHoldings?: boolean;
 }): RadarAuditResult {
     const { currentQuarter, previousQuarter, filings, holdings, watchlists, selectedCategories } = params;
+    const includeRawHoldings = params.includeRawHoldings ?? true;
     const selectedWatchlists = watchlists.filter((watchlist) =>
         !selectedCategories || selectedCategories.length === 0 || selectedCategories.includes(watchlist.key)
     );
@@ -1249,25 +1251,27 @@ export function buildRadarAudit(params: {
         const matches = matchIssuerToWatchlists(row.issuer, selectedWatchlists, selectedCategories);
         if (matches.length === 0) continue;
 
-        const matchedCategoryKeys = uniqueStrings(matches.map((match) => match.category.key));
-        const matchedCategories = uniqueStrings(matches.map((match) => match.category.label));
-        const matchedItems = uniqueStrings(matches.flatMap((match) => match.items.map((item) => item.label)));
-        const rawHolding: MatchedRawHoldingRow = {
-            ...row,
-            period,
-            rawReportedValue: row.value,
-            estimatedValue: estimateActualValue(row.value, row.shares),
-            matchedCategoryKeys,
-            matchedCategories,
-            matchedItems,
-            secFolderUrl: buildSecAccessionFolderUrl(row.cik, row.accessionNumber),
-            submissionTextUrl: buildSecSubmissionTextUrl(row.cik, row.accessionNumber),
-        };
+        if (includeRawHoldings) {
+            const matchedCategoryKeys = uniqueStrings(matches.map((match) => match.category.key));
+            const matchedCategories = uniqueStrings(matches.map((match) => match.category.label));
+            const matchedItems = uniqueStrings(matches.flatMap((match) => match.items.map((item) => item.label)));
+            const rawHolding: MatchedRawHoldingRow = {
+                ...row,
+                period,
+                rawReportedValue: row.value,
+                estimatedValue: estimateActualValue(row.value, row.shares),
+                matchedCategoryKeys,
+                matchedCategories,
+                matchedItems,
+                secFolderUrl: buildSecAccessionFolderUrl(row.cik, row.accessionNumber),
+                submissionTextUrl: buildSecSubmissionTextUrl(row.cik, row.accessionNumber),
+            };
 
-        if (period === 'current') {
-            rawCurrentHoldings.push(rawHolding);
-        } else {
-            rawPreviousHoldings.push(rawHolding);
+            if (period === 'current') {
+                rawCurrentHoldings.push(rawHolding);
+            } else {
+                rawPreviousHoldings.push(rawHolding);
+            }
         }
 
         for (const match of matches) {

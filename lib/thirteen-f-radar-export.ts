@@ -22,10 +22,39 @@ export interface RadarExportWorkbookInput {
     audit: RadarAuditResult;
     notes: string[];
     generatedAt: Date;
+    maxFilerSecurityAuditRows?: number;
+    maxTopFilerMoveDetailRows?: number;
+    includeRawHoldings?: boolean;
 }
 
 export function buildRadarAuditWorkbook(input: RadarExportWorkbookInput): Buffer {
     const workbook = XLSX.utils.book_new();
+    const filerSecurityAuditRows = limitRows(
+        input.audit.filerSecurityAuditRows,
+        input.maxFilerSecurityAuditRows
+    );
+    const topFilerMoveDetailRows = limitRows(
+        input.comparison.topFilerMoves.flatMap((move) =>
+            move.details.map((detail) => ({
+                cik: move.cik,
+                fund_name: move.fundName,
+                category_key: move.categoryKey,
+                category: move.categoryLabel,
+                item_ticker: detail.ticker,
+                item_label: detail.label,
+                item_action: detail.action,
+                current_shares: detail.currentShares,
+                previous_shares: detail.previousShares,
+                current_estimated_value: detail.currentValue,
+                previous_estimated_value: detail.previousValue,
+                estimated_value_delta: detail.currentValue - detail.previousValue,
+                issuer_samples: detail.issuerSamples.join('; '),
+                cusips: detail.cusips.join('; '),
+            }))
+        ),
+        input.maxTopFilerMoveDetailRows
+    );
+    const includeRawHoldings = input.includeRawHoldings ?? true;
 
     appendJsonSheet(workbook, 'Read Me', buildReadMeRows(input), [
         { key: 'section', label: 'Section', width: 24 },
@@ -194,24 +223,7 @@ export function buildRadarAuditWorkbook(input: RadarExportWorkbookInput): Buffer
         { key: 'liquidated_items', label: 'Liquidated Items', width: 40 },
     ]);
 
-    appendJsonSheet(workbook, 'Top Filer Move Details', input.comparison.topFilerMoves.flatMap((move) =>
-        move.details.map((detail) => ({
-            cik: move.cik,
-            fund_name: move.fundName,
-            category_key: move.categoryKey,
-            category: move.categoryLabel,
-            item_ticker: detail.ticker,
-            item_label: detail.label,
-            item_action: detail.action,
-            current_shares: detail.currentShares,
-            previous_shares: detail.previousShares,
-            current_estimated_value: detail.currentValue,
-            previous_estimated_value: detail.previousValue,
-            estimated_value_delta: detail.currentValue - detail.previousValue,
-            issuer_samples: detail.issuerSamples.join('; '),
-            cusips: detail.cusips.join('; '),
-        }))
-    ), [
+    appendJsonSheet(workbook, 'Top Filer Move Details', topFilerMoveDetailRows, [
         { key: 'cik', label: 'CIK', width: 14 },
         { key: 'fund_name', label: 'Fund Name', width: 36 },
         { key: 'category_key', label: 'Category Key', width: 18 },
@@ -228,7 +240,7 @@ export function buildRadarAuditWorkbook(input: RadarExportWorkbookInput): Buffer
         { key: 'cusips', label: 'CUSIPs', width: 28 },
     ]);
 
-    appendJsonSheet(workbook, 'Filer Security Audit', input.audit.filerSecurityAuditRows.map((row) => ({
+    appendJsonSheet(workbook, 'Filer Security Audit', filerSecurityAuditRows.map((row) => ({
         cik: row.cik,
         fund_name: row.fundName,
         category_key: row.categoryKey,
@@ -278,8 +290,10 @@ export function buildRadarAuditWorkbook(input: RadarExportWorkbookInput): Buffer
         { key: 'current_submission_text_url', label: 'Current Submission Text URL', width: 70 },
     ]);
 
-    appendRawHoldingsSheet(workbook, 'Raw Current Holdings', input.audit.rawCurrentHoldings);
-    appendRawHoldingsSheet(workbook, 'Raw Previous Holdings', input.audit.rawPreviousHoldings);
+    if (includeRawHoldings) {
+        appendRawHoldingsSheet(workbook, 'Raw Current Holdings', input.audit.rawCurrentHoldings);
+        appendRawHoldingsSheet(workbook, 'Raw Previous Holdings', input.audit.rawPreviousHoldings);
+    }
 
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
@@ -306,6 +320,21 @@ function buildReadMeRows(input: RadarExportWorkbookInput): SheetRow[] {
         { section: 'Export', field: 'Current Quarter', value: request.currentQuarter },
         { section: 'Export', field: 'Previous Quarter', value: request.previousQuarter },
         { section: 'Export', field: 'Selected Categories', value: selectedCategoryLabels.join('; ') },
+        {
+            section: 'Export',
+            field: 'Filer Security Audit Rows Exported',
+            value: `${Math.min(input.audit.filerSecurityAuditRows.length, input.maxFilerSecurityAuditRows || input.audit.filerSecurityAuditRows.length)} of ${input.audit.filerSecurityAuditRows.length}`,
+        },
+        {
+            section: 'Export',
+            field: 'Top Filer Move Detail Rows Exported',
+            value: `${Math.min(countTopFilerMoveDetailRows(input.comparison), input.maxTopFilerMoveDetailRows ?? countTopFilerMoveDetailRows(input.comparison))} of ${countTopFilerMoveDetailRows(input.comparison)}`,
+        },
+        {
+            section: 'Export',
+            field: 'Raw Holdings Sheets',
+            value: input.includeRawHoldings === false ? 'Omitted from this web export to keep the workbook downloadable.' : 'Included',
+        },
         { section: 'Methodology', field: 'Movement Basis', value: request.movementBasis },
         { section: 'Methodology', field: 'Comparable Filers', value: 'Only filers with latest filings in both selected quarters are compared.' },
         { section: 'Methodology', field: 'Exposed Filers', value: 'A comparable filer that held at least one watched security in the category in either compared quarter.' },
@@ -339,6 +368,14 @@ function buildCoverageRows(input: RadarExportWorkbookInput): SheetRow[] {
         { field: 'Watched Filers', value: comparison.coverage.watchedFilers },
         { field: 'Watched Holding Rows', value: comparison.coverage.watchedHoldingRows },
         { field: 'Filer Security Audit Rows', value: audit.filerSecurityAuditRows.length },
+        {
+            field: 'Filer Security Audit Rows Exported',
+            value: Math.min(audit.filerSecurityAuditRows.length, input.maxFilerSecurityAuditRows ?? audit.filerSecurityAuditRows.length),
+        },
+        {
+            field: 'Top Filer Move Detail Rows Exported',
+            value: Math.min(countTopFilerMoveDetailRows(comparison), input.maxTopFilerMoveDetailRows ?? countTopFilerMoveDetailRows(comparison)),
+        },
         { field: 'Raw Current Holding Rows', value: audit.rawCurrentHoldings.length },
         { field: 'Raw Previous Holding Rows', value: audit.rawPreviousHoldings.length },
         { field: 'Available Quarters', value: request.availableQuarters.join('; ') },
@@ -415,6 +452,16 @@ function appendJsonSheet(
     const worksheet = XLSX.utils.aoa_to_sheet(aoa);
     worksheet['!cols'] = columns.map((column) => ({ wch: column.width || 18 }));
     XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+}
+
+function limitRows<T>(rows: T[], limit?: number): T[] {
+    if (limit === undefined || rows.length <= limit) return rows;
+    if (limit <= 0) return [];
+    return rows.slice(0, limit);
+}
+
+function countTopFilerMoveDetailRows(comparison: RadarComparison): number {
+    return comparison.topFilerMoves.reduce((count, move) => count + move.details.length, 0);
 }
 
 function normalizeCellValue(value: CellValue | undefined): CellValue {

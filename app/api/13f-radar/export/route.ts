@@ -15,7 +15,10 @@ import { buildRadarAuditWorkbook, buildRadarExportFilename } from '@/lib/thirtee
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
+
+const DEFAULT_MAX_FILER_SECURITY_AUDIT_ROWS = 1000;
+const DEFAULT_MAX_TOP_FILER_MOVE_DETAIL_ROWS = 1000;
 
 export async function POST(req: Request) {
     try {
@@ -36,6 +39,7 @@ export async function POST(req: Request) {
             holdings,
             watchlists: request.watchlists,
             selectedCategories: request.selectedCategories,
+            includeRawHoldings: false,
         });
         const workbook = buildRadarAuditWorkbook({
             request,
@@ -43,6 +47,15 @@ export async function POST(req: Request) {
             audit,
             notes: buildRadarNotes(request.dbShape),
             generatedAt: new Date(),
+            maxFilerSecurityAuditRows: resolveExportRowLimit(
+                'THIRTEEN_F_RADAR_EXPORT_AUDIT_ROW_LIMIT',
+                DEFAULT_MAX_FILER_SECURITY_AUDIT_ROWS
+            ),
+            maxTopFilerMoveDetailRows: resolveExportRowLimit(
+                'THIRTEEN_F_RADAR_EXPORT_TOP_MOVE_ROW_LIMIT',
+                DEFAULT_MAX_TOP_FILER_MOVE_DETAIL_ROWS
+            ),
+            includeRawHoldings: false,
         });
         const filename = buildRadarExportFilename(request.currentQuarter, request.previousQuarter);
         const responseBody = new Uint8Array(workbook);
@@ -63,4 +76,11 @@ export async function POST(req: Request) {
             { status }
         );
     }
+}
+
+function resolveExportRowLimit(envName: string, fallback: number): number {
+    const configured = Number.parseInt(process.env[envName] || '', 10);
+    return Number.isFinite(configured) && configured > 0
+        ? configured
+        : fallback;
 }
