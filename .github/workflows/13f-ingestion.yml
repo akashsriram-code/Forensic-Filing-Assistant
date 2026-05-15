@@ -126,7 +126,6 @@ jobs:
             env.REQUESTED_MODE == 'both' ||
             (
               env.REQUESTED_MODE == 'auto' &&
-              steps.bulk_status.outputs.done != 'true' &&
               steps.schedule.outputs.live_active == 'true'
             )
           )
