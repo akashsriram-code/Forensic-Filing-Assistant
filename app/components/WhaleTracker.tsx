@@ -79,15 +79,16 @@ interface FundHistoryPoint {
     price?: number;
 }
 
-type ReverseAction = 'initiated' | 'liquidated' | 'increased' | 'decreased' | 'unchanged';
+type ReverseAction = 'initiated' | 'liquidated' | 'increased' | 'decreased' | 'unchanged' | 'no_prior';
 type ReverseActionFilter = 'all' | ReverseAction;
-const REVERSE_ACTIONS: ReverseAction[] = ['initiated', 'liquidated', 'increased', 'decreased', 'unchanged'];
+const REVERSE_ACTIONS: ReverseAction[] = ['initiated', 'liquidated', 'increased', 'decreased', 'unchanged', 'no_prior'];
 const REVERSE_ACTION_SUMMARY_LABELS: Record<ReverseAction, string> = {
     initiated: 'Initiations',
     liquidated: 'Liquidations',
     increased: 'Increased',
     decreased: 'Decreased',
     unchanged: 'Unchanged',
+    no_prior: 'No Prior',
 };
 
 interface ReverseFund {
@@ -339,6 +340,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
             increased: 0,
             decreased: 0,
             unchanged: 0,
+            no_prior: 0,
         };
         for (const fund of reverseData?.funds || []) {
             counts[fund.action] += 1;
@@ -360,6 +362,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
     };
 
     const reverseActionLabel = (action: ReverseAction) => {
+        if (action === 'no_prior') return 'No prior';
         return action.charAt(0).toUpperCase() + action.slice(1);
     };
 
@@ -370,6 +373,9 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         }
         if (action === 'liquidated' || action === 'decreased') {
             return isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700';
+        }
+        if (action === 'no_prior') {
+            return isDark ? 'bg-amber-500/10 text-amber-300' : 'bg-amber-50 text-amber-700';
         }
         return isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-gray-100 text-gray-600';
     };
@@ -862,7 +868,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-2 px-2 sm:grid-cols-3 lg:grid-cols-5">
+                                <div className="grid grid-cols-2 gap-2 px-2 sm:grid-cols-3 lg:grid-cols-6">
                                     {REVERSE_ACTIONS.map((action) => {
                                         const active = reverseActionFilter === action;
                                         const count = reverseActionCounts[action];
@@ -965,7 +971,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                                     <td colSpan={8} className="px-6 py-8 text-center opacity-50">
                                                         {reverseActionFilter === 'all'
                                                             ? 'No funds found with current or prior holdings for this stock in the current database.'
-                                                            : `No ${reverseActionLabel(reverseActionFilter)} rows found for this stock.`}
+                                                            : `No ${reverseActionLabel(reverseActionFilter).toLowerCase()} rows found for this stock.`}
                                                     </td>
                                                 </tr>
                                             )}

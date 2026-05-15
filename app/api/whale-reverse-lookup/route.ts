@@ -15,13 +15,14 @@ import { queryPostgresRows } from '@/lib/thirteen-f-radar-postgres';
 
 const CACHE_REVALIDATE = 3600;
 const MAX_RESULT_LIMIT = 1000;
-const ACTION_RANK: Record<MovementAction, number> = {
+type ReverseMovementAction = Exclude<MovementAction, 'absent'> | 'no_prior';
+const ACTION_RANK: Record<ReverseMovementAction, number> = {
     initiated: 0,
     liquidated: 1,
     increased: 2,
     decreased: 3,
     unchanged: 4,
-    absent: 5,
+    no_prior: 5,
 };
 
 interface SecCompanyTickerEntry {
@@ -61,7 +62,7 @@ export interface ReverseHistoryPoint {
 export interface ReverseFund {
     fundName: string;
     cik: string;
-    action: Exclude<MovementAction, 'absent'>;
+    action: ReverseMovementAction;
     shares: number;
     value: number;
     filing_date: string;
@@ -163,12 +164,7 @@ export function buildReverseLookupFunds(params: {
 
     for (const [cik, cikFilings] of filingsByCik.entries()) {
         const quarterFilings = selectLatestFilingPerQuarter(cikFilings);
-        const firstPositiveIndex = quarterFilings.findIndex((filing) =>
-            (holdingsByAccession.get(filing.accessionNumber)?.shares || 0) > 0
-        );
-        if (firstPositiveIndex === -1) continue;
-
-        const history = quarterFilings.slice(firstPositiveIndex).map((filing) => {
+        const positionSeries = quarterFilings.map((filing) => {
             const aggregate = holdingsByAccession.get(filing.accessionNumber);
             return {
                 date: filing.filingDate,
@@ -177,15 +173,20 @@ export function buildReverseLookupFunds(params: {
                 value: aggregate?.value || 0,
             };
         });
+        const firstPositiveIndex = positionSeries.findIndex((point) => point.shares > 0);
+        if (firstPositiveIndex === -1) continue;
+
+        const historyStartIndex = firstPositiveIndex > 0 ? firstPositiveIndex - 1 : firstPositiveIndex;
+        const history = positionSeries.slice(historyStartIndex);
         if (history.length === 0) continue;
 
-        const current = history[history.length - 1];
-        const previous = history.length > 1 ? history[history.length - 2] : null;
-        const action = classifyMovement(previous?.shares || 0, current.shares);
+        const current = positionSeries[positionSeries.length - 1];
+        const previous = positionSeries.length > 1 ? positionSeries[positionSeries.length - 2] : null;
+        const action = classifyReverseMovement(previous, current);
         if (action === 'absent') continue;
 
         const currentFiling = quarterFilings[quarterFilings.length - 1];
-        const latestAggregate = holdingsByAccession.get(currentFiling.accessionNumber);
+        const latestAggregate = findLatestHoldingAggregate(quarterFilings, holdingsByAccession);
         const shareDelta = current.shares - (previous?.shares || 0);
         const valueDelta = current.value - (previous?.value || 0);
 
@@ -221,6 +222,16 @@ export function buildReverseLookupFunds(params: {
         matchCount: funds.length,
         returnedCount: cappedFunds.length,
     };
+}
+
+function classifyReverseMovement(
+    previous: ReverseHistoryPoint | null,
+    current: ReverseHistoryPoint
+): ReverseMovementAction | 'absent' {
+    if (!previous) {
+        return current.shares > 0 ? 'no_prior' : 'absent';
+    }
+    return classifyMovement(previous.shares, current.shares);
 }
 
 async function queryMatchedHoldings(db: RadarDbClient, searchPattern: string): Promise<ReverseHoldingRow[]> {
@@ -337,6 +348,17 @@ function aggregateHoldingsByAccession(rows: ReverseHoldingRow[]) {
     }
 
     return holdings;
+}
+
+function findLatestHoldingAggregate(
+    filings: ReverseFilingRow[],
+    holdingsByAccession: Map<string, { shares: number; value: number; issuerSamples: string[]; cusips: string[] }>
+) {
+    for (let index = filings.length - 1; index >= 0; index -= 1) {
+        const aggregate = holdingsByAccession.get(filings[index].accessionNumber);
+        if (aggregate) return aggregate;
+    }
+    return null;
 }
 
 function groupFilingsByCik(filings: ReverseFilingRow[]) {

@@ -196,11 +196,12 @@ async function run() {
     });
     assert.equal(reverseLookup.matchCount, 6);
     assert.deepEqual(reverseLookup.funds.map((fund) => fund.cik), ['A', 'B', 'C', 'D', 'E', 'G']);
-    assert.deepEqual(reverseLookup.funds.map((fund) => fund.action), ['initiated', 'liquidated', 'increased', 'decreased', 'unchanged', 'initiated']);
+    assert.deepEqual(reverseLookup.funds.map((fund) => fund.action), ['initiated', 'liquidated', 'increased', 'decreased', 'unchanged', 'no_prior']);
     assert.equal(reverseLookup.funds.find((fund) => fund.cik === 'B')?.currentShares, 0);
     assert.equal(reverseLookup.funds.find((fund) => fund.cik === 'B')?.previousShares, 100);
     assert.equal(reverseLookup.funds.find((fund) => fund.cik === 'C')?.currentShares, 150);
     assert.equal(reverseLookup.funds.find((fund) => fund.cik === 'C')?.shareDelta, 50);
+    assert.equal(reverseLookup.funds.find((fund) => fund.cik === 'G')?.previousFilingDate, null);
 
     const palantir = DEFAULT_RADAR_WATCHLISTS
         .find((watchlist) => watchlist.key === 'palantir')!
