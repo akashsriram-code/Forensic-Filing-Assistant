@@ -11,7 +11,8 @@ export const maxDuration = 300;
 const DATA_FILE = path.join(process.cwd(), 'data', 'ipo_filings.json');
 const DEFAULT_OPENARENA_BASE_URL = 'https://aiopenarena.thomsonreuters.com';
 const DEFAULT_OPENARENA_IPO_WORKFLOW_ID = 'c994c878-6dc4-482b-a711-9016ec373db';
-const DEFAULT_OPENARENA_TIMEOUT_SECONDS = 45;
+const DEFAULT_OPENARENA_TIMEOUT_SECONDS = 240;
+const DEFAULT_OPENARENA_MAX_TIMEOUT_SECONDS = 240;
 const DEFAULT_DIRECT_CONTEXT_CHARS = 70_000;
 
 class OpenArenaError extends Error {
@@ -145,7 +146,7 @@ function resolveTimeoutSeconds() {
     );
     const requested = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_OPENARENA_TIMEOUT_SECONDS;
     const maxRaw = Number.parseInt(process.env.OPENARENA_IPO_MAX_TIMEOUT_SECONDS || '', 10);
-    const max = Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : DEFAULT_OPENARENA_TIMEOUT_SECONDS;
+    const max = Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : DEFAULT_OPENARENA_MAX_TIMEOUT_SECONDS;
     return Math.min(requested, max);
 }
 
@@ -205,7 +206,7 @@ async function buildInferencePayload({
     timeoutSeconds: number;
     workflowId: string;
 }): Promise<Record<string, unknown>> {
-    const mode = (process.env.OPENARENA_IPO_ANALYSIS_MODE || 'direct').trim().toLowerCase();
+    const mode = (process.env.OPENARENA_IPO_ANALYSIS_MODE || 'upload').trim().toLowerCase();
 
     if (mode === 'upload') {
         const fileName = buildUploadFilename(analysisFiling);
