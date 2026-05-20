@@ -34,27 +34,35 @@ function saveData(data: IpoFiling[]) {
 }
 
 export async function GET() {
-    // Return cached data
-    const data = readData();
-    // If empty, maybe trigger initial scrape? 
-    // For now, just return what we have. Frontend can trigger refresh.
+    const cachedData = readData();
+    const { startDate, endDate } = getLiveFeedWindow();
+
+    try {
+        const liveData = await fetchRecentIpoFilings(startDate, endDate);
+        const mergedData = mergeFilings(liveData, cachedData);
+
+        return NextResponse.json({
+            filings: mergedData,
+            liveCount: liveData.length,
+            cachedCount: cachedData.length,
+            source: liveData.length > 0 ? 'sec-live' : 'cache',
+            lastUpdated: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error("Live IPO feed failed, returning cached data", error);
+    }
+
     return NextResponse.json({
-        filings: data,
+        filings: cachedData,
+        source: 'cache',
+        warning: 'Live SEC feed unavailable; returned cached filings.',
         lastUpdated: fs.existsSync(DATA_FILE) ? fs.statSync(DATA_FILE).mtime : null
     });
 }
 
 export async function POST() {
     try {
-        // Trigger Scrape
-        // Date range: Oct 1 2025 - today
-        // const startDate = "2025-10-01";
-        // const endDate = new Date().toISOString().split('T')[0];
-
-        // Use user requested range: Oct 1, 2025 to Jan 16, 2026 (or today)
-        // Use user requested range: Extended to Aug 1, 2025 to ensure sufficient volume
-        const startDate = "2025-08-01";
-        const endDate = new Date().toISOString().split('T')[0]; // Today
+        const { startDate, endDate } = getLiveFeedWindow();
 
         console.log(`Starting IPO Scrape from ${startDate} to ${endDate}...`);
         const filings = await fetchRecentIpoFilings(startDate, endDate);
@@ -65,15 +73,14 @@ export async function POST() {
         const existingData = readData();
         const existingAccessionSet = new Set(existingData.map(f => f.accessionNumber));
 
-        // 2. Filter out filings we already have
-        // Identify NEW filings only
+        // 2. Filter out filings we already have for the slower enrichment pass.
         const newFilings = filings.filter(f => !existingAccessionSet.has(f.accessionNumber));
         console.log(`Identified ${newFilings.length} new filings to process.`);
 
         // 3. Process Only New Filings
         // Enhance with details - Limit to recent 100 to avoid timeouts during demand-scrape
         // In a real app, this should be a background job.
-        const detailLimit = 100;
+        const detailLimit = 25;
         const filingsToProcess = newFilings.slice(0, detailLimit);
 
         const newlyProcessedFilings: IpoFiling[] = [];
@@ -101,12 +108,7 @@ export async function POST() {
                             filing.isTrueIpo = details.isTrueIpo;
                             filing.offeringType = details.offeringType;
 
-                            // FILTER: Only keep if True IPO
-                            if (filing.isTrueIpo) {
-                                newlyProcessedFilings.push(filing);
-                            } else {
-                                console.log(`[Filter] Skipping ${filing.companyName}: Not a primary IPO.`);
-                            }
+                            newlyProcessedFilings.push(filing);
                         } else {
                             console.log(`[Filter] Skipping ${filing.companyName}: Could not fetch HTML to verify.`);
                         }
@@ -122,16 +124,54 @@ export async function POST() {
         // 4. Merge Data
         // Combine new findings with existing data
         // Sort by date desc
-        const mergedData = [...newlyProcessedFilings, ...existingData];
+        const enrichedByAccession = new Map(newlyProcessedFilings.map(filing => [filing.accessionNumber, filing]));
+        const liveWithEnrichment = filings.map(filing => enrichedByAccession.get(filing.accessionNumber) || filing);
+        const mergedData = mergeFilings(liveWithEnrichment, existingData);
         mergedData.sort((a, b) => b.filingDate.localeCompare(a.filingDate));
 
         // Save
         saveData(mergedData);
 
-        return NextResponse.json({ success: true, count: newlyProcessedFilings.length, total: mergedData.length });
+        return NextResponse.json({
+            success: true,
+            count: newlyProcessedFilings.length,
+            liveCount: filings.length,
+            total: mergedData.length,
+            filings: mergedData
+        });
 
     } catch (e: any) {
         console.error("Scrape failed", e);
         return NextResponse.json({ success: false, error: String(e) }, { status: 500 });
     }
+}
+
+function getLiveFeedWindow() {
+    const lookbackDays = Number.parseInt(process.env.IPO_FEED_LOOKBACK_DAYS || '30', 10);
+    const days = Number.isFinite(lookbackDays) && lookbackDays > 0 ? lookbackDays : 30;
+    const end = new Date();
+    const start = new Date(end);
+    start.setDate(start.getDate() - days);
+
+    return {
+        startDate: start.toISOString().split('T')[0],
+        endDate: end.toISOString().split('T')[0],
+    };
+}
+
+function mergeFilings(primary: IpoFiling[], fallback: IpoFiling[]) {
+    const merged = new Map<string, IpoFiling>();
+
+    for (const filing of fallback) {
+        merged.set(filing.accessionNumber, filing);
+    }
+
+    for (const filing of primary) {
+        const cached = merged.get(filing.accessionNumber);
+        merged.set(filing.accessionNumber, cached ? { ...filing, ...cached, reportUrl: cached.reportUrl || filing.reportUrl } : filing);
+    }
+
+    return Array.from(merged.values())
+        .sort((a, b) => b.filingDate.localeCompare(a.filingDate))
+        .slice(0, 250);
 }

@@ -136,15 +136,14 @@ export function InfoModal({ theme }: { theme: 'light' | 'dark' }) {
                         </div>
                     </section>
 
-                    {/* 6. IPO Watch */}
+                    {/* 6. IPO Intel */}
                     <section className="space-y-3">
                         <div className="flex items-center gap-2 text-blue-600 font-semibold">
                             <TrendingUp className="w-5 h-5" />
-                            <h3>IPO Watch (BETA)</h3>
+                            <h3>IPO Intel (BETA)</h3>
                         </div>
                         <p className={`text-sm leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-600'}`}>
-                            Monitor incoming public offerings (S-1 and F-1 filings).
-                            The dashboard automatically parses the filing to display <strong>Shares Offered</strong>, <strong>Price Range</strong>, and key <strong>Financial Metrics</strong> from the registration statement.
+                            Monitor incoming public offerings (S-1 and F-1 filings), then send any filing to OpenArena for a structured report on useful facts, risks, offering mechanics, and story angles.
                         </p>
                     </section>
 

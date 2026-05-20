@@ -199,7 +199,7 @@ export default function Home() {
                 onClick={() => setActiveTab('ipo')}
                 className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === 'ipo' ? (theme === 'dark' ? 'bg-zinc-800 text-white shadow-sm' : 'bg-white text-gray-900 shadow-sm') : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'}`}
               >
-                IPO Watch <span className="ml-1 px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 text-[10px]">BETA</span>
+                IPO Intel <span className="ml-1 px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 text-[10px]">BETA</span>
               </button>
               <button
                 onClick={() => setActiveTab('intel')}
