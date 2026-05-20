@@ -69,11 +69,10 @@ export async function POST(req: NextRequest) {
             uploadHtml,
         });
 
-        const inferencePayload = {
+        const inferencePayload: Record<string, unknown> = {
             workflow_id: workflowId,
             query: buildIpoIntelligencePrompt(analysisFiling),
             is_persistence_allowed: false,
-            modelparams: buildModelParams(),
             input_variables: {},
             conversation_id: null,
             context: {
@@ -81,6 +80,10 @@ export async function POST(req: NextRequest) {
                 value: [fileUuid],
             },
         };
+        const modelParams = buildModelParams();
+        if (modelParams) {
+            inferencePayload.modelparams = modelParams;
+        }
 
         const responseJson = await callOpenArenaInferenceWithRetries({
             baseUrl,
@@ -352,19 +355,20 @@ async function fetchWithTimeout(input: string, init: RequestInit, timeoutSeconds
     }
 }
 
-function buildModelParams() {
-    const model = process.env.OPENARENA_IPO_MODEL?.trim() || 'gemini-3-flash';
-    return {
-        [`vertexai_${model}`]: {
-            top_p: '0.95',
-            thinking_level: 'high',
-            top_k: '47',
-            temperature: '0.4',
-            media_resolution: 'media_resolution_medium',
-            enable_reasoning: 'true',
-            max_output_tokens: '32768',
-        },
-    };
+function buildModelParams(): Record<string, unknown> | null {
+    const raw = process.env.OPENARENA_IPO_MODELPARAMS_JSON?.trim();
+    if (!raw) return null;
+
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw new Error('Expected a JSON object.');
+        }
+        return parsed as Record<string, unknown>;
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : 'Invalid JSON.';
+        throw new Error(`OPENARENA_IPO_MODELPARAMS_JSON must be a valid JSON object: ${detail}`);
+    }
 }
 
 function buildIpoIntelligencePrompt(filing: IpoFiling) {
