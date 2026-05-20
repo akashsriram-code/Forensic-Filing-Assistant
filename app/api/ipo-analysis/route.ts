@@ -11,7 +11,8 @@ export const maxDuration = 300;
 const DATA_FILE = path.join(process.cwd(), 'data', 'ipo_filings.json');
 const DEFAULT_OPENARENA_BASE_URL = 'https://aiopenarena.thomsonreuters.com';
 const DEFAULT_OPENARENA_IPO_WORKFLOW_ID = 'c994c878-6dc4-482b-a711-9016ec373db';
-const DEFAULT_OPENARENA_TIMEOUT_SECONDS = 300;
+const DEFAULT_OPENARENA_TIMEOUT_SECONDS = 45;
+const DEFAULT_DIRECT_CONTEXT_CHARS = 70_000;
 
 class OpenArenaError extends Error {
     constructor(
@@ -58,28 +59,14 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Could not extract readable text from the SEC filing.' }, { status: 422 });
         }
 
-        const fileName = buildUploadFilename(analysisFiling);
-        const uploadHtml = buildUploadHtml(analysisFiling, filingText);
-        const fileUuid = await uploadFilingToOpenArena({
+        const inferencePayload = await buildInferencePayload({
+            analysisFiling,
             baseUrl,
             bearerToken,
-            workflowId,
+            filingText,
             timeoutSeconds,
-            fileName,
-            uploadHtml,
+            workflowId,
         });
-
-        const inferencePayload: Record<string, unknown> = {
-            workflow_id: workflowId,
-            query: buildIpoIntelligencePrompt(analysisFiling),
-            is_persistence_allowed: false,
-            input_variables: {},
-            conversation_id: null,
-            context: {
-                input_type: 'file_uuid',
-                value: [fileUuid],
-            },
-        };
         const modelParams = buildModelParams();
         if (modelParams) {
             inferencePayload.modelparams = modelParams;
@@ -152,8 +139,14 @@ async function resolveAnalysisDocumentUrl(filing: IpoFiling) {
 }
 
 function resolveTimeoutSeconds() {
-    const raw = Number.parseInt(process.env.OPENARENA_TIMEOUT_SECONDS || '', 10);
-    return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_OPENARENA_TIMEOUT_SECONDS;
+    const raw = Number.parseInt(
+        process.env.OPENARENA_IPO_TIMEOUT_SECONDS || process.env.OPENARENA_TIMEOUT_SECONDS || '',
+        10
+    );
+    const requested = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_OPENARENA_TIMEOUT_SECONDS;
+    const maxRaw = Number.parseInt(process.env.OPENARENA_IPO_MAX_TIMEOUT_SECONDS || '', 10);
+    const max = Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : DEFAULT_OPENARENA_TIMEOUT_SECONDS;
+    return Math.min(requested, max);
 }
 
 function cleanFilingText(html: string) {
@@ -195,6 +188,123 @@ function buildUploadHtml(filing: IpoFiling, filingText: string) {
         '</body>',
         '</html>',
     ].join('');
+}
+
+async function buildInferencePayload({
+    analysisFiling,
+    baseUrl,
+    bearerToken,
+    filingText,
+    timeoutSeconds,
+    workflowId,
+}: {
+    analysisFiling: IpoFiling;
+    baseUrl: string;
+    bearerToken: string;
+    filingText: string;
+    timeoutSeconds: number;
+    workflowId: string;
+}): Promise<Record<string, unknown>> {
+    const mode = (process.env.OPENARENA_IPO_ANALYSIS_MODE || 'direct').trim().toLowerCase();
+
+    if (mode === 'upload') {
+        const fileName = buildUploadFilename(analysisFiling);
+        const uploadHtml = buildUploadHtml(analysisFiling, filingText);
+        const fileUuid = await uploadFilingToOpenArena({
+            baseUrl,
+            bearerToken,
+            workflowId,
+            timeoutSeconds,
+            fileName,
+            uploadHtml,
+        });
+
+        return {
+            workflow_id: workflowId,
+            query: buildIpoIntelligencePrompt(analysisFiling),
+            is_persistence_allowed: false,
+            input_variables: {},
+            conversation_id: null,
+            context: {
+                input_type: 'file_uuid',
+                value: [fileUuid],
+            },
+        };
+    }
+
+    return {
+        workflow_id: workflowId,
+        query: buildIpoIntelligencePrompt(analysisFiling, buildDirectFilingContext(filingText)),
+        is_persistence_allowed: false,
+        input_variables: {},
+        conversation_id: null,
+    };
+}
+
+function buildDirectFilingContext(filingText: string) {
+    const maxChars = resolveDirectContextChars();
+    if (filingText.length <= maxChars) return filingText;
+
+    const normalized = filingText.replace(/\s+/g, ' ').trim();
+    const chunks: Array<{ label: string; start: number; end: number }> = [];
+
+    pushChunk(chunks, 'opening summary and offering front matter', 0, Math.min(22_000, normalized.length));
+
+    const needles = [
+        'prospectus summary',
+        'the offering',
+        'risk factors',
+        'summary risk factors',
+        'use of proceeds',
+        'dividend policy',
+        'capitalization',
+        'dilution',
+        'selected consolidated financial data',
+        'management discussion and analysis',
+        'business',
+        'customers',
+        'suppliers',
+        'competition',
+        'regulation',
+        'management',
+        'executive compensation',
+        'principal stockholders',
+        'related party transactions',
+        'certain relationships',
+        'material weakness',
+        'going concern',
+        'underwriting',
+    ];
+    const lower = normalized.toLowerCase();
+
+    for (const needle of needles) {
+        const index = lower.indexOf(needle);
+        if (index === -1) continue;
+        pushChunk(chunks, needle, Math.max(0, index - 2_000), Math.min(normalized.length, index + 7_000));
+    }
+
+    let output = '';
+    for (const chunk of chunks) {
+        const next = [
+            `--- Filing context: ${chunk.label} ---`,
+            normalized.slice(chunk.start, chunk.end),
+        ].join('\n');
+        if (output.length + next.length + 2 > maxChars) break;
+        output += `${output ? '\n\n' : ''}${next}`;
+    }
+
+    return output || normalized.slice(0, maxChars);
+}
+
+function pushChunk(chunks: Array<{ label: string; start: number; end: number }>, label: string, start: number, end: number) {
+    if (end <= start) return;
+    const overlaps = chunks.some((chunk) => start < chunk.end && end > chunk.start);
+    if (!overlaps) chunks.push({ label, start, end });
+}
+
+function resolveDirectContextChars() {
+    const raw = Number.parseInt(process.env.OPENARENA_IPO_DIRECT_CONTEXT_CHARS || '', 10);
+    return Number.isFinite(raw) && raw > 10_000 ? raw : DEFAULT_DIRECT_CONTEXT_CHARS;
 }
 
 async function uploadFilingToOpenArena({
@@ -350,6 +460,11 @@ async function fetchWithTimeout(input: string, init: RequestInit, timeoutSeconds
 
     try {
         return await fetch(input, { ...init, signal: controller.signal });
+    } catch (error) {
+        if (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError') {
+            throw new Error(`Request timed out after ${timeoutSeconds} seconds: ${input}`);
+        }
+        throw error;
     } finally {
         clearTimeout(timeout);
     }
@@ -371,11 +486,11 @@ function buildModelParams(): Record<string, unknown> | null {
     }
 }
 
-function buildIpoIntelligencePrompt(filing: IpoFiling) {
+function buildIpoIntelligencePrompt(filing: IpoFiling, filingContext?: string) {
     return `
 You are an investigative IPO filing analyst.
 
-Read the uploaded S-1, S-1/A, F-1, or F-1/A filing and produce a useful, reportable, story-driven analyst report.
+Read the provided S-1, S-1/A, F-1, or F-1/A filing material and produce a useful, reportable, story-driven analyst report.
 
 Do not limit yourself to oddities. Surface any detail that could help a journalist, analyst, investor, or researcher understand the company's story, risks, incentives, business quality, market positioning, or IPO structure.
 
@@ -388,6 +503,8 @@ Filing date: ${filing.filingDate}
 CIK: ${filing.cik}
 Accession number: ${filing.accessionNumber}
 SEC URL: ${filing.reportUrl}
+
+${filingContext ? `Filing context:\n${filingContext}\n` : 'Use the uploaded filing document as the source text.\n'}
 
 Return strictly valid JSON with this exact shape:
 {
