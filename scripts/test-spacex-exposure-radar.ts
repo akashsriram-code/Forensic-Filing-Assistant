@@ -141,13 +141,15 @@ async function run() {
         'SEC_REQUEST_SPACING_MS',
         'OPENARENA_BEARER_TOKEN',
         'OPENARENA_SPACEX_EXPOSURE_WORKFLOW_ID',
-        'OPENARENA_API_URL',
+        'OPENARENA_BASE_URL',
+        'OPENARENA_SPACEX_EXPOSURE_TIMEOUT_SECONDS',
     ]);
     try {
         process.env.SEC_REQUEST_SPACING_MS = '0';
         process.env.OPENARENA_BEARER_TOKEN = 'test-token';
         process.env.OPENARENA_SPACEX_EXPOSURE_WORKFLOW_ID = 'workflow-id';
-        process.env.OPENARENA_API_URL = 'https://openarena.test/workflows/workflow-id/runs';
+        process.env.OPENARENA_BASE_URL = 'https://openarena.test';
+        process.env.OPENARENA_SPACEX_EXPOSURE_TIMEOUT_SECONDS = '2';
 
         const result = await runSpaceXExposureRadar(
             {
@@ -241,7 +243,7 @@ function searchHit(term: string, overrides: Partial<TestSearchHit> = {}) {
 }
 
 function fakeFetch(sourceDocument: string): typeof fetch {
-    return async (input: string | URL | Request) => {
+    return async (input: string | URL | Request, init?: RequestInit) => {
         const url = typeof input === 'string'
             ? input
             : input instanceof URL
@@ -249,12 +251,21 @@ function fakeFetch(sourceDocument: string): typeof fetch {
                 : input.url;
 
         if (url.includes('openarena.test')) {
+            assert.equal(url, 'https://openarena.test/v3/inference');
+            const body = JSON.parse(String(init?.body || '{}'));
+            assert.equal(body.workflow_id, 'workflow-id');
+            assert.equal(typeof body.query, 'string');
+            assert.equal(body.query.includes('Compact SEC facts JSON'), true);
             return new Response(JSON.stringify({
-                relationship_type: 'portfolio_schedule_holding',
-                verification_status: 'verified',
-                confidence: 0.81,
-                notes: 'Looks like portfolio context.',
-                evidence_terms: ['SpaceX'],
+                result: {
+                    answer: JSON.stringify({
+                        relationship_type: 'portfolio_schedule_holding',
+                        verification_status: 'verified',
+                        confidence: 0.81,
+                        notes: 'Looks like portfolio context.',
+                        evidence_terms: ['SpaceX'],
+                    }),
+                },
             }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
 

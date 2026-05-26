@@ -135,6 +135,8 @@ const DEFAULT_MAX_DISCOVERY_HITS = 200;
 const DEFAULT_MAX_FILINGS = 5;
 const DEFAULT_HARD_MAX_FILINGS = 8;
 const DEFAULT_OPENARENA_REVIEW_LIMIT = 3;
+const DEFAULT_OPENARENA_BASE_URL = 'https://aiopenarena.thomsonreuters.com';
+const DEFAULT_OPENARENA_TIMEOUT_SECONDS = 20;
 const DEFAULT_SEC_REQUEST_SPACING_MS = 120;
 const DEFAULT_SEC_FETCH_CONCURRENCY = 3;
 const SEC_SEARCH_PAGE_SIZE = 100;
@@ -662,8 +664,15 @@ async function verifyAmbiguousRowsWithOpenArena(
         warnings.push(`OpenArena verification was capped at ${reviewLimit} ambiguous row(s) for this synchronous run.`);
     }
     let reviewed = 0;
+    let stopReason = '';
 
     for (const row of ambiguousRows.slice(0, reviewLimit)) {
+        if (stopReason) {
+            row.openArenaStatus = 'error';
+            row.openArenaNotes = `OpenArena verification skipped after an earlier failure: ${stopReason}`;
+            continue;
+        }
+
         try {
             const result = await callOpenArenaVerification(row, workflowId, token, fetchImpl);
             reviewed += 1;
@@ -677,9 +686,10 @@ async function verifyAmbiguousRowsWithOpenArena(
             }
             row.matchedTerms = dedupeStrings([...row.matchedTerms, ...result.evidenceTerms]);
         } catch (error) {
+            stopReason = errorMessage(error);
             row.openArenaStatus = 'error';
-            row.openArenaNotes = errorMessage(error);
-            warnings.push(`OpenArena verification failed for ${row.accessionNumber}: ${errorMessage(error)}`);
+            row.openArenaNotes = stopReason;
+            warnings.push(`OpenArena verification unavailable: ${stopReason}. SEC-parsed rows were still returned.`);
         }
     }
 
@@ -692,8 +702,14 @@ async function callOpenArenaVerification(
     token: string,
     fetchImpl: typeof fetch
 ): Promise<OpenArenaVerificationResult> {
-    const apiUrl = process.env.OPENARENA_API_URL || `https://api.openarena.ai/v1/workflows/${workflowId}/runs`;
-    const response = await fetchImpl(apiUrl, {
+    const explicitApiUrl = process.env.OPENARENA_API_URL?.trim();
+    const baseUrl = process.env.OPENARENA_BASE_URL?.trim() || DEFAULT_OPENARENA_BASE_URL;
+    const apiUrl = explicitApiUrl || `${baseUrl.replace(/\/$/, '')}/v3/inference`;
+    const timeoutSeconds = getEnvInteger(
+        'OPENARENA_SPACEX_EXPOSURE_TIMEOUT_SECONDS',
+        getEnvInteger('OPENARENA_TIMEOUT_SECONDS', DEFAULT_OPENARENA_TIMEOUT_SECONDS)
+    );
+    const response = await fetchWithTimeout(apiUrl, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${token}`,
@@ -702,17 +718,45 @@ async function callOpenArenaVerification(
         },
         body: JSON.stringify({
             workflow_id: workflowId,
-            prompt: OPENARENA_PROMPT,
-            input: compactOpenArenaFacts(row),
+            query: buildOpenArenaVerificationQuery(row),
+            is_persistence_allowed: false,
+            input_variables: {},
+            conversation_id: null,
         }),
-    });
+    }, timeoutSeconds, fetchImpl);
 
     if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        const detail = await response.text().catch(() => response.statusText);
+        throw new Error(`HTTP ${response.status}${detail ? `: ${detail.slice(0, 240)}` : ''}`);
     }
 
     const json = await response.json();
     return parseOpenArenaResponse(json);
+}
+
+function buildOpenArenaVerificationQuery(row: SpaceXExposureRow): string {
+    return `${OPENARENA_PROMPT}\n\nCompact SEC facts JSON:\n${JSON.stringify(compactOpenArenaFacts(row), null, 2)}`;
+}
+
+async function fetchWithTimeout(
+    input: string,
+    init: RequestInit,
+    timeoutSeconds: number,
+    fetchImpl: typeof fetch
+) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+
+    try {
+        return await fetchImpl(input, { ...init, signal: controller.signal });
+    } catch (error) {
+        if (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError') {
+            throw new Error(`request timed out after ${timeoutSeconds} seconds`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+    }
 }
 
 function compactOpenArenaFacts(row: SpaceXExposureRow) {
@@ -752,6 +796,8 @@ function parseOpenArenaResponse(value: unknown): OpenArenaVerificationResult {
         : parseNumber(stringValue(record.confidence)) ?? undefined;
     const evidenceTerms = Array.isArray(record.evidence_terms)
         ? record.evidence_terms.map((item) => stringValue(item)).filter(Boolean)
+        : Array.isArray(record.evidenceTerms)
+            ? record.evidenceTerms.map((item) => stringValue(item)).filter(Boolean)
         : [];
 
     return {
@@ -764,26 +810,52 @@ function parseOpenArenaResponse(value: unknown): OpenArenaVerificationResult {
 }
 
 function extractJsonRecord(value: unknown): JsonRecord {
+    const candidates: unknown[] = [value];
     if (value && typeof value === 'object') {
         const record = value as JsonRecord;
-        const direct = normalizeJsonRecord(record);
-        if (direct) return direct;
         for (const key of ['output', 'result', 'response', 'data']) {
             const nested = record[key];
-            const parsed = normalizeJsonRecord(nested);
-            if (parsed) return parsed;
+            candidates.push(nested);
+            if (nested && typeof nested === 'object') {
+                const nestedRecord = nested as JsonRecord;
+                candidates.push(nestedRecord.answer, nestedRecord.output, nestedRecord.response, nestedRecord.data);
+            }
+        }
+        candidates.push(record.answer);
+    }
+
+    for (const candidate of candidates) {
+        const parsed = normalizeJsonRecord(candidate);
+        if (parsed && hasOpenArenaVerificationFields(parsed)) return parsed;
+    }
+
+    for (const candidate of candidates) {
+        const asText = typeof candidate === 'string' ? candidate : JSON.stringify(candidate || {});
+        const jsonMatch = asText.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) continue;
+        try {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (parsed && typeof parsed === 'object' && hasOpenArenaVerificationFields(parsed as JsonRecord)) {
+                return parsed as JsonRecord;
+            }
+        } catch {
+            // Try the next candidate.
         }
     }
 
-    const asText = typeof value === 'string' ? value : JSON.stringify(value || {});
-    const jsonMatch = asText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return {};
-    try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return parsed && typeof parsed === 'object' ? parsed as JsonRecord : {};
-    } catch {
-        return {};
-    }
+    return {};
+}
+
+function hasOpenArenaVerificationFields(record: JsonRecord): boolean {
+    return Boolean(
+        record.relationship_type ||
+        record.relationshipType ||
+        record.verification_status ||
+        record.verificationStatus ||
+        record.notes ||
+        record.evidence_terms ||
+        record.evidenceTerms
+    );
 }
 
 function normalizeJsonRecord(value: unknown): JsonRecord | null {
