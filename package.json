@@ -19,7 +19,8 @@
     "size:13f-neon": "tsx scripts/size-13f-neon.ts",
     "test:13f-ingestion": "tsx scripts/test-13f-ingestion.ts",
     "test:13f-radar": "tsx scripts/test-13f-radar.ts",
-    "test:spacex-exposure-radar": "tsx scripts/test-spacex-exposure-radar.ts"
+    "test:spacex-exposure-radar": "tsx scripts/test-spacex-exposure-radar.ts",
+    "spacex-exposure:bulk": "tsx scripts/spacex-exposure-bulk.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

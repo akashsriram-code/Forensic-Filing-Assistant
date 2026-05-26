@@ -85,6 +85,16 @@ interface SpaceXExposureRunOptions {
     fetchImpl?: typeof fetch;
     now?: Date;
     requestSpacingMs?: number;
+    onProgress?: (progress: SpaceXExposureProgress) => void;
+}
+
+export interface SpaceXExposureProgress {
+    phase: 'fetch_source_document';
+    fetchedCount: number;
+    totalFilings: number;
+    accessionNumber: string;
+    form: string;
+    documentName: string;
 }
 
 interface SecSearchHit {
@@ -250,12 +260,21 @@ export async function runSpaceXExposureRadar(
     const limitedHits = discoveredHits.slice(0, request.maxFilings);
     const rows: SpaceXExposureRow[] = [];
     let fetchedCount = 0;
+    const totalFilings = limitedHits.length;
 
     await mapWithConcurrency(limitedHits, getEnvInteger('SPACEX_EXPOSURE_FETCH_CONCURRENCY', DEFAULT_SEC_FETCH_CONCURRENCY), async (hit) => {
         try {
             await sleep(options.requestSpacingMs ?? getEnvInteger('SEC_REQUEST_SPACING_MS', DEFAULT_SEC_REQUEST_SPACING_MS));
             const content = await fetchTextWithRetry(hit.secDocumentUrl, fetchImpl);
             fetchedCount += 1;
+            options.onProgress?.({
+                phase: 'fetch_source_document',
+                fetchedCount,
+                totalFilings,
+                accessionNumber: hit.accessionNumber,
+                form: hit.form,
+                documentName: hit.documentName,
+            });
             rows.push(...await buildRowsForHit(hit, content));
         } catch (error) {
             warnings.push(`Could not fetch ${hit.form} ${hit.accessionNumber} ${hit.documentName}: ${errorMessage(error)}`);
