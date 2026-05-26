@@ -6,6 +6,7 @@ import {
     parse13FXmlForSpaceX,
     parseHtmlOrTextForSpaceX,
     parseNPortXmlForSpaceX,
+    normalizeFormsForSecFullText,
     runSpaceXExposureRadar,
 } from '../lib/spacex-exposure-radar';
 import {
@@ -75,6 +76,16 @@ async function run() {
     assert.equal(url.includes('q=%22Space+Exploration+Technologies%22'), true);
     assert.equal(url.includes('forms=NPORT-P%2C8-K'), true);
     assert.equal(url.includes('from=100'), true);
+    assert.deepEqual(normalizeFormsForSecFullText(['13F-HR', '13F-HR/A', 'S-1/A', '8-K']), ['13F-HR', 'S-1', '8-K']);
+
+    const amendmentSafeUrl = buildSecFullTextSearchUrl({
+        query: 'SpaceX',
+        forms: ['NPORT-P', '13F-HR', '13F-HR/A', '8-K'],
+        startDate: '2021-01-01',
+        endDate: '2026-05-26',
+    });
+    assert.equal(amendmentSafeUrl.includes('13F-HR%2FA'), false);
+    assert.equal(amendmentSafeUrl.includes('forms=NPORT-P%2C13F-HR%2C8-K'), true);
 
     const deduped = dedupeSecSearchHits([
         searchHit('SpaceX'),

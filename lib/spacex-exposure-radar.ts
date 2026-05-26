@@ -287,12 +287,22 @@ export function buildSecFullTextSearchUrl(params: {
     from?: number;
 }): string {
     const url = new URL(SEC_FULL_TEXT_SEARCH_URL);
+    const secForms = normalizeFormsForSecFullText(params.forms);
     url.searchParams.set('q', params.query);
-    url.searchParams.set('forms', params.forms.join(','));
+    if (secForms.length > 0) {
+        url.searchParams.set('forms', secForms.join(','));
+    }
     url.searchParams.set('startdt', params.startDate);
     url.searchParams.set('enddt', params.endDate);
     url.searchParams.set('from', String(params.from || 0));
     return url.toString();
+}
+
+export function normalizeFormsForSecFullText(forms: string[]): string[] {
+    return dedupeStrings(forms
+        .map((form) => form.trim().toUpperCase())
+        .filter(Boolean)
+        .map((form) => form.endsWith('/A') ? form.slice(0, -2) : form));
 }
 
 export function dedupeSecSearchHits(hits: SecSearchHit[]): SecSearchHit[] {
