@@ -56,9 +56,22 @@ async function main() {
     console.log(`Output folder: ${path.resolve(options.outDir)}`);
 
     let lastProgressLog = 0;
+    let lastDiscoveryLog = 0;
     const response = await runSpaceXExposureRadar(request, {
         requestSpacingMs: options.requestSpacingMs,
         onProgress: (progress) => {
+            if (progress.phase === 'discover_search_page') {
+                if (
+                    progress.from === 0 ||
+                    progress.discoveredCount >= lastDiscoveryLog + 1000 ||
+                    progress.discoveredCount >= progress.targetHits
+                ) {
+                    lastDiscoveryLog = progress.discoveredCount;
+                    console.log(`Discovered ${progress.discoveredCount}/${progress.targetHits} SEC search hits around "${progress.query}"`);
+                }
+                return;
+            }
+
             if (
                 progress.fetchedCount === progress.totalFilings ||
                 progress.fetchedCount === 1 ||
@@ -289,6 +302,7 @@ Usage:
 Examples:
   npm run spacex-exposure:bulk
   npm run spacex-exposure:bulk -- --max-filings 500 --no-openarena
+  npm run spacex-exposure:bulk -- --max-filings 2000 --max-discovery-hits 10000 --request-spacing-ms 500 --concurrency 3 --no-openarena
   npm run spacex-exposure:bulk -- --max-filings 150 --forms NPORT-P,N-CSR,13F-HR --openarena --openarena-limit 10
 
 Options:

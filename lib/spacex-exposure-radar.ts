@@ -88,14 +88,22 @@ interface SpaceXExposureRunOptions {
     onProgress?: (progress: SpaceXExposureProgress) => void;
 }
 
-export interface SpaceXExposureProgress {
-    phase: 'fetch_source_document';
-    fetchedCount: number;
-    totalFilings: number;
-    accessionNumber: string;
-    form: string;
-    documentName: string;
-}
+export type SpaceXExposureProgress =
+    | {
+        phase: 'discover_search_page';
+        query: string;
+        from: number;
+        discoveredCount: number;
+        targetHits: number;
+    }
+    | {
+        phase: 'fetch_source_document';
+        fetchedCount: number;
+        totalFilings: number;
+        accessionNumber: string;
+        form: string;
+        documentName: string;
+    };
 
 interface SecSearchHit {
     cik: string;
@@ -256,7 +264,8 @@ export async function runSpaceXExposureRadar(
     if (request.requestedMaxFilings && request.requestedMaxFilings > request.maxFilings) {
         warnings.push(`Max filings was capped at ${request.maxFilings} for this synchronous deployment-safe run. Set SPACEX_EXPOSURE_HARD_MAX_FILINGS to raise the server cap.`);
     }
-    const discoveredHits = await discoverSpaceXSearchHits(request, fetchImpl, warnings);
+    const secRequestSpacingMs = options.requestSpacingMs ?? getEnvInteger('SEC_REQUEST_SPACING_MS', DEFAULT_SEC_REQUEST_SPACING_MS);
+    const discoveredHits = await discoverSpaceXSearchHits(request, fetchImpl, warnings, secRequestSpacingMs, options.onProgress);
     const limitedHits = discoveredHits.slice(0, request.maxFilings);
     const rows: SpaceXExposureRow[] = [];
     let fetchedCount = 0;
@@ -264,7 +273,7 @@ export async function runSpaceXExposureRadar(
 
     await mapWithConcurrency(limitedHits, getEnvInteger('SPACEX_EXPOSURE_FETCH_CONCURRENCY', DEFAULT_SEC_FETCH_CONCURRENCY), async (hit) => {
         try {
-            await sleep(options.requestSpacingMs ?? getEnvInteger('SEC_REQUEST_SPACING_MS', DEFAULT_SEC_REQUEST_SPACING_MS));
+            await sleep(secRequestSpacingMs);
             const content = await fetchTextWithRetry(hit.secDocumentUrl, fetchImpl);
             fetchedCount += 1;
             options.onProgress?.({
@@ -525,7 +534,9 @@ export function buildSpaceXExposureWorkbookRows(response: SpaceXExposureResponse
 async function discoverSpaceXSearchHits(
     request: ReturnType<typeof normalizeSpaceXExposureRequest>,
     fetchImpl: typeof fetch,
-    warnings: string[]
+    warnings: string[],
+    requestSpacingMs: number,
+    onProgress?: (progress: SpaceXExposureProgress) => void
 ): Promise<SecSearchHit[]> {
     const hits: SecSearchHit[] = [];
     const queries = [...SPACEX_ALIASES];
@@ -533,8 +544,13 @@ async function discoverSpaceXSearchHits(
         request.maxDiscoveryHits,
         Math.max(SEC_SEARCH_PAGE_SIZE, request.maxFilings * 5)
     );
+    const perQueryTarget = Math.max(
+        SEC_SEARCH_PAGE_SIZE,
+        Math.ceil(targetHits / queries.length / SEC_SEARCH_PAGE_SIZE) * SEC_SEARCH_PAGE_SIZE
+    );
+
     for (const query of queries) {
-        for (let from = 0; from < targetHits; from += SEC_SEARCH_PAGE_SIZE) {
+        for (let from = 0; from < perQueryTarget; from += SEC_SEARCH_PAGE_SIZE) {
             const url = buildSecFullTextSearchUrl({
                 query: query.includes(' ') ? `"${query}"` : query,
                 forms: request.forms,
@@ -543,11 +559,19 @@ async function discoverSpaceXSearchHits(
                 from,
             });
             try {
+                await sleep(requestSpacingMs);
                 const json = await fetchJsonWithRetry<JsonRecord>(url, fetchImpl);
                 const pageHits = parseSearchHits(json, query);
                 hits.push(...pageHits);
+                onProgress?.({
+                    phase: 'discover_search_page',
+                    query,
+                    from,
+                    discoveredCount: hits.length,
+                    targetHits,
+                });
                 const total = readSearchTotal(json);
-                if (pageHits.length < SEC_SEARCH_PAGE_SIZE || from + SEC_SEARCH_PAGE_SIZE >= total || from + SEC_SEARCH_PAGE_SIZE >= targetHits) break;
+                if (pageHits.length < SEC_SEARCH_PAGE_SIZE || from + SEC_SEARCH_PAGE_SIZE >= total || from + SEC_SEARCH_PAGE_SIZE >= perQueryTarget) break;
             } catch (error) {
                 warnings.push(`SEC full-text search failed for ${query}: ${errorMessage(error)}`);
                 break;
