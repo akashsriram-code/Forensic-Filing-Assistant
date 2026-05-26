@@ -7,10 +7,15 @@ import {
     BookOpen,
     Database,
     Download,
+    ExternalLink,
+    FileSearch,
     Filter,
     Loader2,
     RefreshCw,
+    Rocket,
+    Search,
     Settings2,
+    ShieldCheck,
     TrendingDown,
     TrendingUp,
     X,
@@ -31,6 +36,96 @@ import {
 interface ThirteenFRadarProps {
     theme: 'light' | 'dark';
 }
+
+type RadarSubtab = 'trends' | 'spacex';
+type SpaceXFilter = 'holdings' | 'review' | 'narrative' | 'all';
+
+interface SpaceXExposureRow {
+    filerName: string;
+    cik: string;
+    form: string;
+    filingDate: string;
+    periodEnd: string | null;
+    accessionNumber: string;
+    documentName: string;
+    fileDescription: string | null;
+    relationshipType: string;
+    confidence: number;
+    matchedTerms: string[];
+    securityName: string | null;
+    issuerName: string | null;
+    cusip: string | null;
+    sharesOrBalance: number | null;
+    units: string | null;
+    valueUsd: number | null;
+    pctValue: number | null;
+    assetCategory: string | null;
+    issuerCategory: string | null;
+    investmentCountry: string | null;
+    snippet: string;
+    secDocumentUrl: string;
+    secFilingUrl: string;
+    openArenaStatus: string;
+    openArenaNotes: string;
+    notes: string;
+}
+
+interface SpaceXExposureResponse {
+    generatedAt: string;
+    startDate: string;
+    endDate: string;
+    forms: string[];
+    aliases: string[];
+    contextualTerms: string[];
+    summary: {
+        totalRows: number;
+        holdingRows: number;
+        narrativeRows: number;
+        reviewRows: number;
+        falsePositiveRows: number;
+        filingsSearched: number;
+        filingsFetched: number;
+        searchHitsDiscovered: number;
+        openArenaReviewed: number;
+    };
+    rows: SpaceXExposureRow[];
+    reviewRows: SpaceXExposureRow[];
+    warnings: string[];
+    sourceCoverage: {
+        forms: Record<string, number>;
+        filers: Record<string, number>;
+    };
+}
+
+const SPACEX_FORM_GROUPS = [
+    {
+        key: 'fund-holdings',
+        label: 'Fund Holdings',
+        forms: ['NPORT-P', 'N-PORT', 'N-CSR', 'N-CSRS', '497', '485BPOS', 'N-2'],
+    },
+    {
+        key: '13f',
+        label: '13F Check',
+        forms: ['13F-HR', '13F-HR/A'],
+    },
+    {
+        key: 'company-filings',
+        label: 'Company Filings',
+        forms: ['8-K', '10-K', '10-Q', '20-F', '6-K'],
+    },
+];
+
+const DEFAULT_SPACEX_FORMS = SPACEX_FORM_GROUPS.flatMap((group) => group.forms);
+
+const formatDateInput = (date: Date) => date.toISOString().slice(0, 10);
+
+const defaultSpaceXStartDate = () => {
+    const date = new Date();
+    date.setFullYear(date.getFullYear() - 5);
+    return formatDateInput(date);
+};
+
+const defaultSpaceXEndDate = () => formatDateInput(new Date());
 
 const buildWatchlistText = (watchlists: RadarWatchlist[]) =>
     Object.fromEntries(
@@ -75,6 +170,35 @@ const parseRadarResponse = async (res: Response): Promise<RadarApiResponse> => {
     return parsed as RadarApiResponse;
 };
 
+const parseSpaceXResponse = async (res: Response): Promise<SpaceXExposureResponse> => {
+    const contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+    let parsed: unknown = null;
+
+    if (contentType.includes('application/json') || text.trim().startsWith('{')) {
+        try {
+            parsed = JSON.parse(text);
+        } catch {
+            throw new Error(`SpaceX Exposure returned malformed JSON (${res.status}).`);
+        }
+    }
+
+    if (!res.ok) {
+        const errorMessage =
+            parsed && typeof parsed === 'object' && 'error' in parsed && typeof parsed.error === 'string'
+                ? parsed.error
+                : text.trim().slice(0, 220) || `HTTP ${res.status}`;
+        throw new Error(`SpaceX Exposure failed: ${errorMessage}`);
+    }
+
+    if (!parsed) {
+        const preview = text.trim().slice(0, 220);
+        throw new Error(`SpaceX Exposure returned a non-JSON response${preview ? `: ${preview}` : '.'}`);
+    }
+
+    return parsed as SpaceXExposureResponse;
+};
+
 const parseRadarErrorResponse = async (res: Response, fallback: string): Promise<string> => {
     const text = await res.text();
     if (text.trim().startsWith('{')) {
@@ -97,6 +221,7 @@ const getDownloadFilename = (res: Response, fallback: string): string => {
 
 export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
     const isDark = theme === 'dark';
+    const [activeRadarTab, setActiveRadarTab] = useState<RadarSubtab>('trends');
     const [data, setData] = useState<RadarApiResponse | null>(null);
     const [loading, setLoading] = useState(false);
     const [exporting, setExporting] = useState(false);
@@ -252,61 +377,85 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                             <h2 className="text-xl font-bold tracking-tight">13F Radar</h2>
                         </div>
                         <div className={`text-xs ${mutedText}`}>
-                            {data
+                            {activeRadarTab === 'trends' && data
                                 ? `${data.coverage.currentQuarter} vs ${data.coverage.previousQuarter}`
-                                : 'Loading comparable 13F quarters'}
+                                : activeRadarTab === 'trends'
+                                    ? 'Loading comparable 13F quarters'
+                                    : 'SEC full-text discovery for SpaceX holding evidence'}
+                        </div>
+                        <div className={`mt-3 inline-flex rounded-lg border p-1 ${isDark ? 'border-zinc-800 bg-zinc-950' : 'border-gray-200 bg-gray-50'}`}>
+                            <button
+                                onClick={() => setActiveRadarTab('trends')}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${activeRadarTab === 'trends'
+                                    ? isDark ? 'bg-zinc-800 text-white' : 'bg-white text-gray-900 shadow-sm'
+                                    : isDark ? 'text-zinc-500 hover:text-zinc-200' : 'text-gray-500 hover:text-gray-900'
+                                    }`}
+                            >
+                                13F Trends
+                            </button>
+                            <button
+                                onClick={() => setActiveRadarTab('spacex')}
+                                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${activeRadarTab === 'spacex'
+                                    ? isDark ? 'bg-zinc-800 text-white' : 'bg-white text-gray-900 shadow-sm'
+                                    : isDark ? 'text-zinc-500 hover:text-zinc-200' : 'text-gray-500 hover:text-gray-900'
+                                    }`}
+                            >
+                                SpaceX Exposure
+                            </button>
                         </div>
                     </div>
 
-                    <div className="flex flex-wrap items-end gap-3">
-                        <QuarterSelect
-                            label="Current"
-                            value={currentQuarter}
-                            quarters={availableQuarters}
-                            inputClass={inputClass}
-                            onChange={setCurrentQuarter}
-                        />
-                        <QuarterSelect
-                            label="Previous"
-                            value={previousQuarter}
-                            quarters={availableQuarters.filter((quarter) => quarter !== currentQuarter)}
-                            inputClass={inputClass}
-                            onChange={setPreviousQuarter}
-                        />
-                        <button
-                            onClick={refreshWithSelectedQuarters}
-                            disabled={loading}
-                            className={`flex h-10 items-center gap-2 rounded-lg px-4 text-sm font-medium transition-colors disabled:opacity-50 ${isDark ? 'bg-white text-black hover:bg-zinc-200' : 'bg-gray-900 text-white hover:bg-black'}`}
-                        >
-                            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                            Run
-                        </button>
-                        <button
-                            onClick={exportAuditWorkbook}
-                            disabled={exporting}
-                            className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium disabled:opacity-50 ${isDark ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
-                        >
-                            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                            {exporting ? 'Exporting...' : 'Export Audit Workbook'}
-                        </button>
-                        <button
-                            onClick={() => setMethodologyOpen((open) => !open)}
-                            className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium ${isDark ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
-                        >
-                            <BookOpen className="h-4 w-4" />
-                            Methodology
-                        </button>
-                        <button
-                            onClick={() => setEditorOpen((open) => !open)}
-                            className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium ${isDark ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
-                        >
-                            <Settings2 className="h-4 w-4" />
-                            Watchlists
-                        </button>
-                    </div>
+                    {activeRadarTab === 'trends' && (
+                        <div className="flex flex-wrap items-end gap-3">
+                            <QuarterSelect
+                                label="Current"
+                                value={currentQuarter}
+                                quarters={availableQuarters}
+                                inputClass={inputClass}
+                                onChange={setCurrentQuarter}
+                            />
+                            <QuarterSelect
+                                label="Previous"
+                                value={previousQuarter}
+                                quarters={availableQuarters.filter((quarter) => quarter !== currentQuarter)}
+                                inputClass={inputClass}
+                                onChange={setPreviousQuarter}
+                            />
+                            <button
+                                onClick={refreshWithSelectedQuarters}
+                                disabled={loading}
+                                className={`flex h-10 items-center gap-2 rounded-lg px-4 text-sm font-medium transition-colors disabled:opacity-50 ${isDark ? 'bg-white text-black hover:bg-zinc-200' : 'bg-gray-900 text-white hover:bg-black'}`}
+                            >
+                                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                                Run
+                            </button>
+                            <button
+                                onClick={exportAuditWorkbook}
+                                disabled={exporting}
+                                className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium disabled:opacity-50 ${isDark ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                            >
+                                {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                                {exporting ? 'Exporting...' : 'Export Audit Workbook'}
+                            </button>
+                            <button
+                                onClick={() => setMethodologyOpen((open) => !open)}
+                                className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium ${isDark ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                            >
+                                <BookOpen className="h-4 w-4" />
+                                Methodology
+                            </button>
+                            <button
+                                onClick={() => setEditorOpen((open) => !open)}
+                                className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium ${isDark ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                            >
+                                <Settings2 className="h-4 w-4" />
+                                Watchlists
+                            </button>
+                        </div>
+                    )}
                 </div>
 
-                <div className="mt-5 flex flex-wrap gap-2">
+                {activeRadarTab === 'trends' && <div className="mt-5 flex flex-wrap gap-2">
                     {watchlists.map((watchlist) => {
                         const selected = selectedCategorySet.has(watchlist.key);
                         return (
@@ -328,9 +477,9 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                             </button>
                         );
                     })}
-                </div>
+                </div>}
 
-                {editorOpen && (
+                {activeRadarTab === 'trends' && editorOpen && (
                     <div className={`mt-5 rounded-xl border p-4 ${softPanelClass}`}>
                         <div className="mb-4 flex items-center justify-between">
                             <div className="text-sm font-semibold">Editable Watchlists</div>
@@ -376,7 +525,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                     </div>
                 )}
 
-                {methodologyOpen && (
+                {activeRadarTab === 'trends' && methodologyOpen && (
                     <MethodologyPanel
                         theme={theme}
                         softPanelClass={softPanelClass}
@@ -386,20 +535,30 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                 )}
             </section>
 
-            {error && (
+            {activeRadarTab === 'trends' && error && (
                 <div className={`rounded-xl border px-4 py-3 text-sm ${isDark ? 'border-red-900/70 bg-red-950/30 text-red-200' : 'border-red-200 bg-red-50 text-red-700'}`}>
                     {error}
                 </div>
             )}
 
-            {loading && !data && (
+            {activeRadarTab === 'trends' && loading && !data && (
                 <div className={`rounded-xl border p-10 text-center ${panelClass}`}>
                     <Loader2 className="mx-auto mb-3 h-7 w-7 animate-spin text-emerald-500" />
                     <div className={`text-sm ${mutedText}`}>Scanning ingested 13F holdings...</div>
                 </div>
             )}
 
-            {data && (
+            {activeRadarTab === 'spacex' && (
+                <SpaceXExposurePanel
+                    theme={theme}
+                    panelClass={panelClass}
+                    softPanelClass={softPanelClass}
+                    inputClass={inputClass}
+                    mutedText={mutedText}
+                />
+            )}
+
+            {activeRadarTab === 'trends' && data && (
                 <>
                     <section className="grid grid-cols-1 gap-4 md:grid-cols-4">
                         <MetricCard
@@ -506,6 +665,281 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
     );
 }
 
+function SpaceXExposurePanel({
+    theme,
+    panelClass,
+    softPanelClass,
+    inputClass,
+    mutedText,
+}: {
+    theme: 'light' | 'dark';
+    panelClass: string;
+    softPanelClass: string;
+    inputClass: string;
+    mutedText: string;
+}) {
+    const isDark = theme === 'dark';
+    const [data, setData] = useState<SpaceXExposureResponse | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [exporting, setExporting] = useState(false);
+    const [error, setError] = useState('');
+    const [startDate, setStartDate] = useState(defaultSpaceXStartDate);
+    const [endDate, setEndDate] = useState(defaultSpaceXEndDate);
+    const [maxFilings, setMaxFilings] = useState(300);
+    const [selectedForms, setSelectedForms] = useState<string[]>(DEFAULT_SPACEX_FORMS);
+    const [aiVerify, setAiVerify] = useState(false);
+    const [filter, setFilter] = useState<SpaceXFilter>('holdings');
+
+    const payload = useMemo(() => ({
+        startDate,
+        endDate,
+        forms: selectedForms,
+        maxFilings,
+        aiVerify,
+    }), [aiVerify, endDate, maxFilings, selectedForms, startDate]);
+
+    const visibleRows = useMemo(() => {
+        const rows = data?.rows || [];
+        if (filter === 'all') return rows;
+        if (filter === 'holdings') return rows.filter((row) => isSpaceXHoldingRow(row));
+        if (filter === 'review') return rows.filter((row) => isSpaceXReviewRow(row));
+        return rows.filter((row) => row.relationshipType === 'commercial_context');
+    }, [data?.rows, filter]);
+
+    const runExposure = useCallback(async () => {
+        setLoading(true);
+        setError('');
+        try {
+            const res = await fetch('/api/spacex-exposure-radar', {
+                method: 'POST',
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const parsed = await parseSpaceXResponse(res);
+            setData(parsed);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'SpaceX Exposure failed');
+        } finally {
+            setLoading(false);
+        }
+    }, [payload]);
+
+    const exportWorkbook = useCallback(async () => {
+        setExporting(true);
+        setError('');
+        try {
+            const res = await fetch('/api/spacex-exposure-radar/export', {
+                method: 'POST',
+                headers: { 'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+
+            if (!res.ok) {
+                throw new Error(await parseRadarErrorResponse(res, 'SpaceX Exposure export failed'));
+            }
+
+            const blob = await res.blob();
+            const fallbackFilename = `spacex-exposure-radar-${startDate}-to-${endDate}.xlsx`;
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = getDownloadFilename(res, fallbackFilename);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'SpaceX Exposure export failed');
+        } finally {
+            setExporting(false);
+        }
+    }, [endDate, payload, startDate]);
+
+    const toggleFormGroup = (forms: string[]) => {
+        setSelectedForms((current) => {
+            const allSelected = forms.every((form) => current.includes(form));
+            if (allSelected && current.length > forms.length) {
+                return current.filter((form) => !forms.includes(form));
+            }
+            return Array.from(new Set([...current, ...forms]));
+        });
+    };
+
+    return (
+        <div className="space-y-6">
+            <section className={`rounded-xl border p-5 shadow-sm ${panelClass}`}>
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                        <label className="space-y-1">
+                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500">Start</span>
+                            <input
+                                type="date"
+                                value={startDate}
+                                onChange={(event) => setStartDate(event.target.value)}
+                                className={`h-10 w-full rounded-lg border px-3 text-sm outline-none ${inputClass}`}
+                            />
+                        </label>
+                        <label className="space-y-1">
+                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500">End</span>
+                            <input
+                                type="date"
+                                value={endDate}
+                                onChange={(event) => setEndDate(event.target.value)}
+                                className={`h-10 w-full rounded-lg border px-3 text-sm outline-none ${inputClass}`}
+                            />
+                        </label>
+                        <label className="space-y-1">
+                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500">Max Filings</span>
+                            <input
+                                type="number"
+                                min={1}
+                                max={1000}
+                                value={maxFilings}
+                                onChange={(event) => setMaxFilings(Math.max(1, Number.parseInt(event.target.value || '1', 10)))}
+                                className={`h-10 w-full rounded-lg border px-3 text-sm outline-none ${inputClass}`}
+                            />
+                        </label>
+                    </div>
+
+                    <div className="flex flex-wrap items-end justify-start gap-3 lg:justify-end">
+                        <label className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm ${isDark ? 'border-zinc-800 bg-zinc-900' : 'border-gray-200 bg-white'}`}>
+                            <input
+                                type="checkbox"
+                                checked={aiVerify}
+                                onChange={(event) => setAiVerify(event.target.checked)}
+                                className="h-4 w-4"
+                            />
+                            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+                            OpenArena
+                        </label>
+                        <button
+                            onClick={runExposure}
+                            disabled={loading || selectedForms.length === 0}
+                            className={`flex h-10 items-center gap-2 rounded-lg px-4 text-sm font-medium transition-colors disabled:opacity-50 ${isDark ? 'bg-white text-black hover:bg-zinc-200' : 'bg-gray-900 text-white hover:bg-black'}`}
+                        >
+                            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                            {loading ? 'Running...' : 'Run Exposure'}
+                        </button>
+                        <button
+                            onClick={exportWorkbook}
+                            disabled={exporting || loading}
+                            className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium disabled:opacity-50 ${isDark ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                        >
+                            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                            {exporting ? 'Exporting...' : 'Export Workbook'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                    {SPACEX_FORM_GROUPS.map((group) => {
+                        const selected = group.forms.every((form) => selectedForms.includes(form));
+                        return (
+                            <button
+                                key={group.key}
+                                onClick={() => toggleFormGroup(group.forms)}
+                                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${selected
+                                    ? isDark ? 'border-sky-500/40 bg-sky-500/10 text-sky-300' : 'border-sky-200 bg-sky-50 text-sky-700'
+                                    : isDark ? 'border-zinc-800 bg-zinc-950 text-zinc-500' : 'border-gray-200 bg-gray-50 text-gray-500'
+                                    }`}
+                            >
+                                <FileSearch className="h-3.5 w-3.5" />
+                                {group.label}
+                                <span className="font-mono opacity-60">{group.forms.length}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <div className={`mt-4 rounded-lg border px-3 py-2 text-xs ${isDark ? 'border-amber-900/60 bg-amber-950/20 text-amber-100' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                    13F Check is limited to SEC Section 13(f) reportable securities; private SpaceX holdings are more likely to appear in N-PORT and fund schedule disclosures.
+                </div>
+            </section>
+
+            {error && (
+                <div className={`rounded-xl border px-4 py-3 text-sm ${isDark ? 'border-red-900/70 bg-red-950/30 text-red-200' : 'border-red-200 bg-red-50 text-red-700'}`}>
+                    {error}
+                </div>
+            )}
+
+            {loading && !data && (
+                <div className={`rounded-xl border p-10 text-center ${panelClass}`}>
+                    <Loader2 className="mx-auto mb-3 h-7 w-7 animate-spin text-sky-500" />
+                    <div className={`text-sm ${mutedText}`}>Searching SEC filings for SpaceX exposure...</div>
+                </div>
+            )}
+
+            {data ? (
+                <>
+                    <section className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                        <MetricCard theme={theme} label="Holdings" value={formatNumber(data.summary.holdingRows)} sub={`${formatNumber(data.summary.totalRows)} total classified rows`} />
+                        <MetricCard theme={theme} label="Review" value={formatNumber(data.summary.reviewRows)} sub={`${formatNumber(data.summary.openArenaReviewed)} OpenArena checks`} />
+                        <MetricCard theme={theme} label="Narrative" value={formatNumber(data.summary.narrativeRows)} sub="Commercial and operational context" />
+                        <MetricCard theme={theme} label="Fetched" value={formatNumber(data.summary.filingsFetched)} sub={`${formatNumber(data.summary.searchHitsDiscovered)} SEC search hits`} />
+                    </section>
+
+                    {data.warnings.length > 0 && (
+                        <div className={`rounded-xl border p-4 text-xs ${isDark ? 'border-amber-900/60 bg-amber-950/20 text-amber-100' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                            <div className="mb-2 flex items-center gap-2 font-semibold">
+                                <AlertTriangle className="h-4 w-4" />
+                                Run Warnings
+                            </div>
+                            <div className="grid gap-1 md:grid-cols-2">
+                                {data.warnings.map((warning) => (
+                                    <div key={warning}>{warning}</div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <section className={`rounded-xl border ${panelClass}`}>
+                        <div className={`flex flex-col gap-3 border-b px-5 py-4 md:flex-row md:items-center md:justify-between ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                            <div>
+                                <h3 className="text-sm font-bold">SpaceX Evidence</h3>
+                                <div className={`mt-1 text-xs ${mutedText}`}>
+                                    {data.startDate} to {data.endDate}; {data.forms.length} forms searched
+                                </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {(['holdings', 'review', 'narrative', 'all'] as SpaceXFilter[]).map((option) => (
+                                    <button
+                                        key={option}
+                                        onClick={() => setFilter(option)}
+                                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold capitalize ${filter === option
+                                            ? isDark ? 'border-sky-500/40 bg-sky-500/10 text-sky-300' : 'border-sky-200 bg-sky-50 text-sky-700'
+                                            : isDark ? 'border-zinc-800 bg-zinc-950 text-zinc-500' : 'border-gray-200 bg-gray-50 text-gray-500'
+                                            }`}
+                                    >
+                                        {option}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <SpaceXRowsTable theme={theme} rows={visibleRows} />
+                    </section>
+
+                    <section className={`rounded-xl border p-4 ${softPanelClass}`}>
+                        <div className="mb-3 flex items-center gap-2 text-sm font-bold">
+                            <Rocket className="h-4 w-4 text-sky-500" />
+                            Source Coverage
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <CoverageList title="Forms" values={data.sourceCoverage.forms} mutedText={mutedText} />
+                            <CoverageList title="Top Filers" values={data.sourceCoverage.filers} mutedText={mutedText} />
+                        </div>
+                    </section>
+                </>
+            ) : !loading && (
+                <div className={`rounded-xl border p-10 text-center ${panelClass}`}>
+                    <Rocket className="mx-auto mb-3 h-7 w-7 text-sky-500" />
+                    <div className="text-sm font-semibold">Ready to search SpaceX exposure</div>
+                    <div className={`mt-1 text-xs ${mutedText}`}>Run the default five-year scan or narrow the filing groups first.</div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 function QuarterSelect({
     label,
     value,
@@ -535,6 +969,111 @@ function QuarterSelect({
                 ))}
             </select>
         </label>
+    );
+}
+
+function SpaceXRowsTable({ theme, rows }: { theme: 'light' | 'dark'; rows: SpaceXExposureRow[] }) {
+    const isDark = theme === 'dark';
+    const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
+    const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
+
+    if (rows.length === 0) {
+        return (
+            <div className={`px-5 py-8 text-center text-sm ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                No rows match this filter.
+            </div>
+        );
+    }
+
+    return (
+        <div className="max-h-[620px] overflow-auto">
+            <table className="w-full min-w-[1120px] text-left text-sm">
+                <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
+                    <tr>
+                        <th className="px-5 py-3">Filer</th>
+                        <th className="px-5 py-3">Evidence</th>
+                        <th className="px-5 py-3">Security</th>
+                        <th className="px-5 py-3 text-right">Value</th>
+                        <th className="px-5 py-3 text-right">Balance</th>
+                        <th className="px-5 py-3">Snippet</th>
+                        <th className="px-5 py-3">Source</th>
+                    </tr>
+                </thead>
+                <tbody className={`divide-y ${tableDivide}`}>
+                    {rows.slice(0, 120).map((row) => (
+                        <tr key={`${row.accessionNumber}-${row.documentName}-${row.relationshipType}-${row.securityName || row.snippet.slice(0, 32)}`}>
+                            <td className="px-5 py-3 align-top">
+                                <div className="max-w-56 font-medium">{row.filerName}</div>
+                                <div className="mt-1 font-mono text-[11px] opacity-50">CIK {row.cik}</div>
+                                <div className="mt-1 text-[11px] opacity-60">{row.form} filed {row.filingDate}</div>
+                            </td>
+                            <td className="px-5 py-3 align-top">
+                                <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${spaceXRelationshipClass(row.relationshipType, isDark)}`}>
+                                    {formatRelationship(row.relationshipType)}
+                                </span>
+                                <div className="mt-2 font-mono text-[11px] opacity-60">{formatConfidence(row.confidence)}</div>
+                                {row.openArenaStatus !== 'not_requested' && (
+                                    <div className="mt-1 text-[11px] text-sky-500">OpenArena: {row.openArenaStatus}</div>
+                                )}
+                            </td>
+                            <td className="px-5 py-3 align-top">
+                                <div className="max-w-56 font-medium">{row.securityName || row.issuerName || 'N/A'}</div>
+                                <div className="mt-1 font-mono text-[11px] opacity-50">{row.cusip || 'No CUSIP'}</div>
+                                <div className="mt-1 text-[11px] opacity-60">
+                                    {[row.assetCategory, row.issuerCategory, row.investmentCountry].filter(Boolean).join(' / ') || row.matchedTerms.join(', ')}
+                                </div>
+                            </td>
+                            <td className="px-5 py-3 text-right align-top font-mono text-xs">
+                                {row.valueUsd !== null ? formatMoney(row.valueUsd) : 'N/A'}
+                                {row.pctValue !== null && <div className="mt-1 opacity-60">{formatPct(row.pctValue)}</div>}
+                            </td>
+                            <td className="px-5 py-3 text-right align-top font-mono text-xs">
+                                {row.sharesOrBalance !== null ? formatNumber(row.sharesOrBalance) : 'N/A'}
+                                {row.units && <div className="mt-1 opacity-60">{row.units}</div>}
+                            </td>
+                            <td className="max-w-md px-5 py-3 align-top text-xs opacity-80">
+                                {row.snippet || row.notes || 'N/A'}
+                                {row.openArenaNotes && <div className="mt-2 text-sky-500">{row.openArenaNotes}</div>}
+                            </td>
+                            <td className="px-5 py-3 align-top text-xs">
+                                <div className="flex flex-col gap-2">
+                                    <a className="inline-flex items-center gap-1 text-sky-500 hover:underline" href={row.secDocumentUrl} target="_blank" rel="noreferrer">
+                                        Document <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                    <a className="inline-flex items-center gap-1 text-sky-500 hover:underline" href={row.secFilingUrl} target="_blank" rel="noreferrer">
+                                        Filing <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                </div>
+                            </td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+            {rows.length > 120 && (
+                <div className={`border-t px-5 py-3 text-xs ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-100 text-gray-500'}`}>
+                    Showing first 120 of {formatNumber(rows.length)} rows. Use the workbook export for the full set.
+                </div>
+            )}
+        </div>
+    );
+}
+
+function CoverageList({ title, values, mutedText }: { title: string; values: Record<string, number>; mutedText: string }) {
+    const entries = Object.entries(values).slice(0, 8);
+    return (
+        <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">{title}</div>
+            <div className={`mt-2 space-y-2 text-sm ${mutedText}`}>
+                {entries.length > 0 ? entries.map(([label, count]) => (
+                    <div key={label} className="flex items-center justify-between gap-4">
+                        <span className="truncate">{label}</span>
+                        <span className="font-mono">{formatNumber(count)}</span>
+                    </div>
+                )) : (
+                    <div>No coverage yet.</div>
+                )}
+            </div>
+        </div>
     );
 }
 
@@ -921,6 +1460,38 @@ function formatSignedMoney(value: number) {
 
 function formatMoney(value: number) {
     return `$${new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value || 0)}`;
+}
+
+function isSpaceXHoldingRow(row: SpaceXExposureRow) {
+    return row.relationshipType === 'direct_holding' || row.relationshipType === 'portfolio_schedule_holding';
+}
+
+function isSpaceXReviewRow(row: SpaceXExposureRow) {
+    return row.relationshipType === 'ambiguous_review' ||
+        row.relationshipType === 'spv_or_fund_name' ||
+        row.openArenaStatus === 'review' ||
+        row.openArenaStatus === 'error';
+}
+
+function formatRelationship(value: string) {
+    return value.replace(/_/g, ' ');
+}
+
+function formatConfidence(value: number) {
+    return `${Math.round((value || 0) * 100)}% confidence`;
+}
+
+function spaceXRelationshipClass(value: string, isDark: boolean) {
+    if (value === 'direct_holding' || value === 'portfolio_schedule_holding') {
+        return isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700';
+    }
+    if (value === 'commercial_context') {
+        return isDark ? 'bg-sky-500/10 text-sky-300' : 'bg-sky-50 text-sky-700';
+    }
+    if (value === 'false_positive') {
+        return isDark ? 'bg-zinc-800 text-zinc-400' : 'bg-gray-100 text-gray-500';
+    }
+    return isDark ? 'bg-amber-500/10 text-amber-300' : 'bg-amber-50 text-amber-700';
 }
 
 function actionClass(action: string, isDark: boolean) {
