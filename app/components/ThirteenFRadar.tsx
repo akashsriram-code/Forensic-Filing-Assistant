@@ -116,6 +116,7 @@ const SPACEX_FORM_GROUPS = [
 ];
 
 const DEFAULT_SPACEX_FORMS = SPACEX_FORM_GROUPS.flatMap((group) => group.forms);
+const SPACEX_UI_MAX_FILINGS = 8;
 
 const formatDateInput = (date: Date) => date.toISOString().slice(0, 10);
 
@@ -685,7 +686,7 @@ function SpaceXExposurePanel({
     const [error, setError] = useState('');
     const [startDate, setStartDate] = useState(defaultSpaceXStartDate);
     const [endDate, setEndDate] = useState(defaultSpaceXEndDate);
-    const [maxFilings, setMaxFilings] = useState(300);
+    const [maxFilings, setMaxFilings] = useState(5);
     const [selectedForms, setSelectedForms] = useState<string[]>(DEFAULT_SPACEX_FORMS);
     const [aiVerify, setAiVerify] = useState(false);
     const [filter, setFilter] = useState<SpaceXFilter>('holdings');
@@ -789,13 +790,13 @@ function SpaceXExposurePanel({
                             />
                         </label>
                         <label className="space-y-1">
-                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500">Max Filings</span>
+                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500">SEC Fetch Cap</span>
                             <input
                                 type="number"
                                 min={1}
-                                max={1000}
+                                max={SPACEX_UI_MAX_FILINGS}
                                 value={maxFilings}
-                                onChange={(event) => setMaxFilings(Math.max(1, Number.parseInt(event.target.value || '1', 10)))}
+                                onChange={(event) => setMaxFilings(Math.min(SPACEX_UI_MAX_FILINGS, Math.max(1, Number.parseInt(event.target.value || '1', 10))))}
                                 className={`h-10 w-full rounded-lg border px-3 text-sm outline-none ${inputClass}`}
                             />
                         </label>
@@ -852,7 +853,7 @@ function SpaceXExposurePanel({
                 </div>
 
                 <div className={`mt-4 rounded-lg border px-3 py-2 text-xs ${isDark ? 'border-amber-900/60 bg-amber-950/20 text-amber-100' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-                    13F Check is limited to SEC Section 13(f) reportable securities; private SpaceX holdings are more likely to appear in N-PORT and fund schedule disclosures.
+                    This synchronous deployment run fetches up to {SPACEX_UI_MAX_FILINGS} SEC source documents. 13F Check is limited to Section 13(f) reportable securities; private SpaceX holdings are more likely in N-PORT and fund schedule disclosures.
                 </div>
             </section>
 

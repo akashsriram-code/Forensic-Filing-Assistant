@@ -131,8 +131,10 @@ type JsonRecord = Record<string, unknown>;
 
 const SEC_FULL_TEXT_SEARCH_URL = 'https://efts.sec.gov/LATEST/search-index';
 const SEC_ARCHIVES_BASE_URL = 'https://www.sec.gov/Archives/edgar/data';
-const DEFAULT_MAX_DISCOVERY_HITS = 1000;
-const DEFAULT_MAX_FILINGS = 300;
+const DEFAULT_MAX_DISCOVERY_HITS = 200;
+const DEFAULT_MAX_FILINGS = 5;
+const DEFAULT_HARD_MAX_FILINGS = 8;
+const DEFAULT_OPENARENA_REVIEW_LIMIT = 3;
 const DEFAULT_SEC_REQUEST_SPACING_MS = 120;
 const DEFAULT_SEC_FETCH_CONCURRENCY = 3;
 const SEC_SEARCH_PAGE_SIZE = 100;
@@ -213,7 +215,10 @@ export function normalizeSpaceXExposureRequest(
     const startDate = normalizeDateInput(body.startDate, defaultSpaceXExposureStartDate(now));
     const endDate = normalizeDateInput(body.endDate, defaultSpaceXExposureEndDate(now));
     const forms = normalizeForms(body.forms);
-    const maxFilings = normalizePositiveInteger(body.maxFilings, getEnvInteger('SPACEX_EXPOSURE_MAX_FILINGS', DEFAULT_MAX_FILINGS));
+    const requestedMaxFilings = parsePositiveInteger(body.maxFilings);
+    const hardMaxFilings = getEnvInteger('SPACEX_EXPOSURE_HARD_MAX_FILINGS', DEFAULT_HARD_MAX_FILINGS);
+    const configuredDefault = Math.min(getEnvInteger('SPACEX_EXPOSURE_MAX_FILINGS', DEFAULT_MAX_FILINGS), hardMaxFilings);
+    const maxFilings = Math.min(requestedMaxFilings || configuredDefault, hardMaxFilings);
     const aiVerify = body.aiVerify === true || String(body.aiVerify).toLowerCase() === 'true';
 
     return {
@@ -221,6 +226,8 @@ export function normalizeSpaceXExposureRequest(
         endDate,
         forms,
         maxFilings,
+        requestedMaxFilings,
+        hardMaxFilings,
         aiVerify,
         maxDiscoveryHits: getEnvInteger('SPACEX_EXPOSURE_MAX_DISCOVERY_HITS', DEFAULT_MAX_DISCOVERY_HITS),
     };
@@ -234,6 +241,9 @@ export async function runSpaceXExposureRadar(
     const request = normalizeSpaceXExposureRequest(body, now);
     const fetchImpl = options.fetchImpl || fetch;
     const warnings: string[] = [];
+    if (request.requestedMaxFilings && request.requestedMaxFilings > request.maxFilings) {
+        warnings.push(`Max filings was capped at ${request.maxFilings} for this synchronous deployment-safe run. Set SPACEX_EXPOSURE_HARD_MAX_FILINGS to raise the server cap.`);
+    }
     const discoveredHits = await discoverSpaceXSearchHits(request, fetchImpl, warnings);
     const limitedHits = discoveredHits.slice(0, request.maxFilings);
     const rows: SpaceXExposureRow[] = [];
@@ -319,10 +329,20 @@ export function dedupeSecSearchHits(hits: SecSearchHit[]): SecSearchHit[] {
     }
 
     return Array.from(byDocument.values()).sort((a, b) =>
+        secSearchHitFetchRank(a) - secSearchHitFetchRank(b) ||
         b.filingDate.localeCompare(a.filingDate) ||
         a.filerName.localeCompare(b.filerName) ||
         a.documentName.localeCompare(b.documentName)
     );
+}
+
+function secSearchHitFetchRank(hit: SecSearchHit): number {
+    const form = hit.form.toUpperCase();
+    if (form.includes('NPORT') || form.includes('N-PORT')) return 0;
+    if (form === 'N-CSR' || form === 'N-CSRS') return 1;
+    if (form.startsWith('13F')) return 2;
+    if (form === '497' || form === '485BPOS' || form === 'N-2') return 3;
+    return 4;
 }
 
 export async function parseNPortXmlForSpaceX(content: string): Promise<ParsedHoldingCandidate[]> {
@@ -488,8 +508,12 @@ async function discoverSpaceXSearchHits(
 ): Promise<SecSearchHit[]> {
     const hits: SecSearchHit[] = [];
     const queries = [...SPACEX_ALIASES];
+    const targetHits = Math.min(
+        request.maxDiscoveryHits,
+        Math.max(SEC_SEARCH_PAGE_SIZE, request.maxFilings * 5)
+    );
     for (const query of queries) {
-        for (let from = 0; from < request.maxDiscoveryHits; from += SEC_SEARCH_PAGE_SIZE) {
+        for (let from = 0; from < targetHits; from += SEC_SEARCH_PAGE_SIZE) {
             const url = buildSecFullTextSearchUrl({
                 query: query.includes(' ') ? `"${query}"` : query,
                 forms: request.forms,
@@ -502,7 +526,7 @@ async function discoverSpaceXSearchHits(
                 const pageHits = parseSearchHits(json, query);
                 hits.push(...pageHits);
                 const total = readSearchTotal(json);
-                if (pageHits.length < SEC_SEARCH_PAGE_SIZE || from + SEC_SEARCH_PAGE_SIZE >= total) break;
+                if (pageHits.length < SEC_SEARCH_PAGE_SIZE || from + SEC_SEARCH_PAGE_SIZE >= total || from + SEC_SEARCH_PAGE_SIZE >= targetHits) break;
             } catch (error) {
                 warnings.push(`SEC full-text search failed for ${query}: ${errorMessage(error)}`);
                 break;
@@ -510,7 +534,7 @@ async function discoverSpaceXSearchHits(
         }
     }
 
-    return dedupeSecSearchHits(hits).slice(0, request.maxDiscoveryHits);
+    return dedupeSecSearchHits(hits).slice(0, targetHits);
 }
 
 function parseSearchHits(json: unknown, matchedTerm: string): SecSearchHit[] {
@@ -633,9 +657,13 @@ async function verifyAmbiguousRowsWithOpenArena(
         row.relationshipType === 'ambiguous_review' ||
         (row.relationshipType === 'portfolio_schedule_holding' && row.confidence < 0.8)
     );
+    const reviewLimit = getEnvInteger('OPENARENA_SPACEX_EXPOSURE_REVIEW_LIMIT', DEFAULT_OPENARENA_REVIEW_LIMIT);
+    if (ambiguousRows.length > reviewLimit) {
+        warnings.push(`OpenArena verification was capped at ${reviewLimit} ambiguous row(s) for this synchronous run.`);
+    }
     let reviewed = 0;
 
-    for (const row of ambiguousRows) {
+    for (const row of ambiguousRows.slice(0, reviewLimit)) {
         try {
             const result = await callOpenArenaVerification(row, workflowId, token, fetchImpl);
             reviewed += 1;
@@ -1115,10 +1143,9 @@ function normalizeDateInput(value: unknown, fallback: string): string {
     return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : fallback;
 }
 
-function normalizePositiveInteger(value: unknown, fallback: number): number {
+function parsePositiveInteger(value: unknown): number | null {
     const parsed = Number.parseInt(stringValue(value), 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-    return Math.min(parsed, getEnvInteger('SPACEX_EXPOSURE_HARD_MAX_FILINGS', DEFAULT_MAX_DISCOVERY_HITS));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function getEnvInteger(name: string, fallback: number): number {

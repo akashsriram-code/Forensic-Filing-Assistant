@@ -7,6 +7,7 @@ import {
     parseHtmlOrTextForSpaceX,
     parseNPortXmlForSpaceX,
     normalizeFormsForSecFullText,
+    normalizeSpaceXExposureRequest,
     runSpaceXExposureRadar,
 } from '../lib/spacex-exposure-radar';
 import {
@@ -86,6 +87,9 @@ async function run() {
     });
     assert.equal(amendmentSafeUrl.includes('13F-HR%2FA'), false);
     assert.equal(amendmentSafeUrl.includes('forms=NPORT-P%2C13F-HR%2C8-K'), true);
+    const normalizedLargeRun = normalizeSpaceXExposureRequest({ maxFilings: 2000 }, new Date('2026-05-26T12:00:00.000Z'));
+    assert.equal(normalizedLargeRun.maxFilings, 8);
+    assert.equal(normalizedLargeRun.requestedMaxFilings, 2000);
 
     const deduped = dedupeSecSearchHits([
         searchHit('SpaceX'),
@@ -93,6 +97,21 @@ async function run() {
     ]);
     assert.equal(deduped.length, 1);
     assert.deepEqual(deduped[0].matchedTerms.sort(), ['Space Exploration Technologies', 'SpaceX'].sort());
+    const prioritizedHits = dedupeSecSearchHits([
+        searchHit('SpaceX', {
+            form: '8-K',
+            filingDate: '2026-05-26',
+            accessionNumber: '0000000000-26-000001',
+            documentName: 'narrative.htm',
+        }),
+        searchHit('Space Exploration Technologies', {
+            form: 'NPORT-P',
+            filingDate: '2024-05-29',
+            accessionNumber: '0001752724-24-124763',
+            documentName: 'primary_doc.xml',
+        }),
+    ]);
+    assert.equal(prioritizedHits[0].form, 'NPORT-P');
 
     const nportRows = await parseNPortXmlForSpaceX(NPORT_XML);
     assert.equal(nportRows.length, 1);
@@ -195,7 +214,7 @@ async function run() {
     console.log('SpaceX Exposure Radar unit tests passed.');
 }
 
-function searchHit(term: string) {
+function baseSearchHit(term: string) {
     return {
         cik: '1217673',
         filerName: 'BARON SELECT FUNDS',
@@ -208,6 +227,16 @@ function searchHit(term: string) {
         secDocumentUrl: 'https://www.sec.gov/Archives/edgar/data/1217673/000175272424124763/primary_doc.xml',
         secFilingUrl: 'https://www.sec.gov/Archives/edgar/data/1217673/000175272424124763/0001752724-24-124763-index.html',
         matchedTerms: [term],
+    };
+}
+
+type TestSearchHit = ReturnType<typeof baseSearchHit>;
+
+function searchHit(term: string, overrides: Partial<TestSearchHit> = {}) {
+    return {
+        ...baseSearchHit(term),
+        ...overrides,
+        matchedTerms: overrides.matchedTerms || [term],
     };
 }
 
