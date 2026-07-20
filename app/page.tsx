@@ -280,7 +280,7 @@ export default function Home() {
         ) : activeTab === 'intel' ? (
           <IntelligenceDashboard ticker={primaryEntity} theme={theme} />
         ) : (
-          <div className="max-w-5xl mx-auto space-y-8">
+          <div className="space-y-8">
             <div className={`p-8 rounded-2xl border transition-all duration-300 ${theme === 'dark' ? 'bg-zinc-900/50 border-zinc-800 shadow-2xl' : 'bg-white border-gray-200 shadow-sm'}`}>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="space-y-2">
