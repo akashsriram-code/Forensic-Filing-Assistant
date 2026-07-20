@@ -103,6 +103,7 @@ export default function Home() {
   };
 
   const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
+  const [downloadFormat, setDownloadFormat] = useState<'html' | 'pdf'>('html');
 
   const handleDownloadAll = async () => {
     if (!results || results.length === 0) return;
@@ -112,6 +113,17 @@ export default function Home() {
     try {
       const zip = new JSZip();
       let processed = 0;
+
+      // For PDF, dynamically import html2pdf
+      const html2pdf = downloadFormat === 'pdf' ? (await import('html2pdf.js')).default : null;
+      
+      // Create hidden container for PDF rendering
+      let hiddenContainer: HTMLDivElement | null = null;
+      if (downloadFormat === 'pdf') {
+        hiddenContainer = document.createElement('div');
+        hiddenContainer.style.cssText = 'position: fixed; left: 0; top: 0; width: 900px; background: white; z-index: -9999; visibility: hidden;';
+        document.body.appendChild(hiddenContainer);
+      }
 
       for (let i = 0; i < results.length; i++) {
         const item = results[i];
@@ -124,7 +136,7 @@ export default function Home() {
           let htmlContent = await response.text();
           const readerStyles = `
             <style>
-              body { font-family: 'Times New Roman', Times, serif; line-height: 1.5; color: #333; max-width: 900px; margin: 40px auto; padding: 20px; }
+              body { font-family: 'Times New Roman', Times, serif; line-height: 1.5; color: #333; max-width: 900px; margin: 40px auto; padding: 20px; background: white; }
               table { width: 100% !important; border-collapse: collapse; margin-bottom: 20px; }
               td, th { padding: 4px; vertical-align: top; }
               img { max-width: 100%; height: auto; }
@@ -140,18 +152,48 @@ export default function Home() {
             htmlContent = `<!DOCTYPE html><html><head>${readerStyles}</head><body>${htmlContent}</body></html>`;
           }
 
-          const filename = `${item.filingDate}_${item.companyTicker}_${item.form.replace(/\//g, '-')}_${item.accessionNumber}.html`;
-          zip.file(filename, htmlContent);
+          if (downloadFormat === 'pdf' && html2pdf && hiddenContainer) {
+            // Render HTML and convert to PDF
+            hiddenContainer.innerHTML = htmlContent;
+            hiddenContainer.style.visibility = 'visible';
+            
+            // Wait for images to load
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            const pdfBlob = await html2pdf()
+              .set({
+                margin: [10, 10, 10, 10],
+                image: { type: 'jpeg', quality: 0.85 },
+                html2canvas: { scale: 1.5, useCORS: true, allowTaint: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+              })
+              .from(hiddenContainer)
+              .outputPdf('blob');
+            
+            hiddenContainer.style.visibility = 'hidden';
+            
+            const filename = `${item.filingDate}_${item.companyTicker}_${item.form.replace(/\//g, '-')}_${item.accessionNumber}.pdf`;
+            zip.file(filename, pdfBlob);
+          } else {
+            const filename = `${item.filingDate}_${item.companyTicker}_${item.form.replace(/\//g, '-')}_${item.accessionNumber}.html`;
+            zip.file(filename, htmlContent);
+          }
           processed++;
         } catch (err) {
           console.error("Failed to download file", item.accessionNumber, err);
         }
       }
 
+      // Cleanup
+      if (hiddenContainer) {
+        document.body.removeChild(hiddenContainer);
+      }
+
       if (processed > 0) {
         const content = await zip.generateAsync({ type: "blob" });
         const label = parsedEntities.length === 1 ? parsedEntities[0] : 'multi_entity';
-        saveAs(content, `${label}_SEC_Filings.zip`);
+        const ext = downloadFormat === 'pdf' ? 'PDF' : 'HTML';
+        saveAs(content, `${label}_SEC_Filings_${ext}.zip`);
       } else {
         alert("Failed to download any files for zipping.");
       }
@@ -352,20 +394,31 @@ export default function Home() {
                     Found <span className={theme === 'dark' ? 'text-zinc-300' : 'text-gray-900'}>{results.length}</span> filings
                   </span>
                   {results.length > 0 && (
-                    <button
-                      onClick={handleDownloadAll}
-                      disabled={downloading}
-                      className={`flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-md transition-all ${theme === 'dark' ? 'bg-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-700' : 'bg-white border border-gray-200 text-gray-600 hover:text-gray-900 hover:border-gray-300 shadow-sm'}`}
-                    >
-                      {downloading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FolderDown className="h-3 w-3" />}
-                      {downloading 
-                        ? `Downloading... ${downloadProgress.current}/${downloadProgress.total}` 
-                        : `Download All (${results.length})`}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={downloadFormat}
+                        onChange={(e) => setDownloadFormat(e.target.value as 'html' | 'pdf')}
+                        disabled={downloading}
+                        className={`text-xs font-medium px-2 py-1.5 rounded-md border transition-all ${theme === 'dark' ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-white border-gray-200 text-gray-600'}`}
+                      >
+                        <option value="html">HTML</option>
+                        <option value="pdf">PDF (slower)</option>
+                      </select>
+                      <button
+                        onClick={handleDownloadAll}
+                        disabled={downloading}
+                        className={`flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-md transition-all ${theme === 'dark' ? 'bg-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-700' : 'bg-white border border-gray-200 text-gray-600 hover:text-gray-900 hover:border-gray-300 shadow-sm'}`}
+                      >
+                        {downloading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FolderDown className="h-3 w-3" />}
+                        {downloading 
+                          ? `${downloadFormat === 'pdf' ? 'Converting' : 'Downloading'}... ${downloadProgress.current}/${downloadProgress.total}` 
+                          : `Download All (${results.length})`}
+                      </button>
+                    </div>
                   )}
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm text-left">
+                <div className="overflow-x-auto" style={{ maxWidth: '100%' }}>
+                  <table className="w-full text-sm text-left" style={{ minWidth: '1000px' }}>
                     <thead className={`${theme === 'dark' ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500'} text-xs uppercase font-medium`}>
                       <tr>
                         <th className="px-6 py-4">Date</th>
