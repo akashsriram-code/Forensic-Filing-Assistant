@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import { fetchCIK, fetchFilingContent, fetchSubmission, generateSecUrl } from '@/lib/sec-client';
 
-const MAX_RESULTS = 50;
+// No limit on results - return all matching filings
 const MAX_KEYWORD_SCAN_FILINGS = 30;
 const MAX_SNIPPETS_PER_FILING = 3;
 const SNIPPET_RADIUS = 90;
@@ -131,8 +131,7 @@ export async function searchFilings({
       if (companyCompare !== 0) return companyCompare;
 
       return a.form.localeCompare(b.form);
-    })
-    .slice(0, MAX_RESULTS);
+    });
 
   if (sorted.length === 0) {
     return {
