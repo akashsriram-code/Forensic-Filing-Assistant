@@ -111,13 +111,7 @@ export default function Home() {
 
     try {
       const zip = new JSZip();
-      const html2pdf = (await import('html2pdf.js')).default;
       let processed = 0;
-
-      // Create a hidden container for rendering HTML to PDF
-      const hiddenContainer = document.createElement('div');
-      hiddenContainer.style.cssText = 'position: absolute; left: -9999px; top: 0; width: 900px;';
-      document.body.appendChild(hiddenContainer);
 
       for (let i = 0; i < results.length; i++) {
         const item = results[i];
@@ -130,11 +124,12 @@ export default function Home() {
           let htmlContent = await response.text();
           const readerStyles = `
             <style>
-              body { font-family: 'Times New Roman', Times, serif; line-height: 1.5; color: #333; padding: 20px; }
+              body { font-family: 'Times New Roman', Times, serif; line-height: 1.5; color: #333; max-width: 900px; margin: 40px auto; padding: 20px; }
               table { width: 100% !important; border-collapse: collapse; margin-bottom: 20px; }
               td, th { padding: 4px; vertical-align: top; }
               img { max-width: 100%; height: auto; }
               .sec-header { display: none; }
+              @media print { body { margin: 0; padding: 0; max-width: none; } }
             </style>
             <base href="https://www.sec.gov/Archives/edgar/data/">
           `;
@@ -145,35 +140,18 @@ export default function Home() {
             htmlContent = `<!DOCTYPE html><html><head>${readerStyles}</head><body>${htmlContent}</body></html>`;
           }
 
-          // Render HTML in hidden container
-          hiddenContainer.innerHTML = htmlContent;
-
-          // Convert to PDF blob
-          const pdfBlob = await html2pdf()
-            .set({
-              margin: [10, 10, 10, 10],
-              image: { type: 'jpeg', quality: 0.9 },
-              html2canvas: { scale: 1, useCORS: true },
-              jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-            })
-            .from(hiddenContainer)
-            .outputPdf('blob');
-
-          const filename = `${item.filingDate}_${item.companyTicker}_${item.form}_${item.accessionNumber}.pdf`;
-          zip.file(filename, pdfBlob);
+          const filename = `${item.filingDate}_${item.companyTicker}_${item.form.replace(/\//g, '-')}_${item.accessionNumber}.html`;
+          zip.file(filename, htmlContent);
           processed++;
         } catch (err) {
-          console.error("Failed to convert file to PDF", item.accessionNumber, err);
+          console.error("Failed to download file", item.accessionNumber, err);
         }
       }
-
-      // Cleanup hidden container
-      document.body.removeChild(hiddenContainer);
 
       if (processed > 0) {
         const content = await zip.generateAsync({ type: "blob" });
         const label = parsedEntities.length === 1 ? parsedEntities[0] : 'multi_entity';
-        saveAs(content, `${label}_SEC_Filings_PDF.zip`);
+        saveAs(content, `${label}_SEC_Filings.zip`);
       } else {
         alert("Failed to download any files for zipping.");
       }
@@ -381,8 +359,8 @@ export default function Home() {
                     >
                       {downloading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FolderDown className="h-3 w-3" />}
                       {downloading 
-                        ? `Converting to PDF... ${downloadProgress.current}/${downloadProgress.total}` 
-                        : `Download All as PDF`}
+                        ? `Downloading... ${downloadProgress.current}/${downloadProgress.total}` 
+                        : `Download All (${results.length})`}
                     </button>
                   )}
                 </div>
