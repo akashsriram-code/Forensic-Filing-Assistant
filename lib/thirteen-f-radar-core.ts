@@ -582,6 +582,24 @@ export const DEFAULT_RADAR_WATCHLISTS: RadarWatchlist[] = [
             { ticker: 'PWR', label: 'Quanta Services', aliases: ['QUANTA SERVICES'] },
         ],
     },
+    {
+        key: 'spcx',
+        label: 'SpaceX',
+        description: 'Space Exploration Technologies Corp. (IPO June 12, 2026). CUSIP 84615Q103.',
+        items: [
+            {
+                ticker: 'SPCX',
+                label: 'Space Exploration Technologies',
+                aliases: [
+                    'SPACE EXPLORATION TECHNOLOGIES',
+                    'SPACE EXPLORATION TECHNOLOGIES CORP',
+                    'SPACEX',
+                    'SPC EXPLORATION TECHNOLOGIES',
+                    'SPACE EXPLORATION TECH',
+                ],
+            },
+        ],
+    },
 ];
 
 export function normalizeIssuerName(value: string): string {

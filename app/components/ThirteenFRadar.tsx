@@ -236,6 +236,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
     const [selectedCategories, setSelectedCategories] = useState<string[]>(
         DEFAULT_RADAR_WATCHLISTS.map((watchlist) => watchlist.key)
     );
+    const [selectedDetailCategory, setSelectedDetailCategory] = useState<string | null>(null);
     const initialLoadRef = useRef(false);
 
     const panelClass = isDark ? 'border-zinc-800 bg-zinc-900/45' : 'border-gray-200 bg-white';
@@ -609,12 +610,28 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                     <section className={`rounded-xl border ${panelClass}`}>
                         <div className={`border-b px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
                             <h3 className="text-sm font-bold">Overview</h3>
+                            <div className={`mt-1 text-xs ${mutedText}`}>Click a category card to see holders sorted by shares</div>
                         </div>
                         <div className="grid grid-cols-1 divide-y md:grid-cols-2 md:divide-x md:divide-y-0 lg:grid-cols-3 lg:divide-x">
                             {data.categorySummaries.map((summary) => (
-                                <ConsensusCard key={summary.key} theme={theme} summary={summary} />
+                                <ConsensusCard 
+                                    key={summary.key} 
+                                    theme={theme} 
+                                    summary={summary}
+                                    isSelected={selectedDetailCategory === summary.key}
+                                    onClick={() => setSelectedDetailCategory(selectedDetailCategory === summary.key ? null : summary.key)}
+                                />
                             ))}
                         </div>
+                        {selectedDetailCategory && (
+                            <CategoryHoldersPanel
+                                theme={theme}
+                                categoryKey={selectedDetailCategory}
+                                categoryLabel={data.categorySummaries.find((cat) => cat.key === selectedDetailCategory)?.label || selectedDetailCategory}
+                                moves={data.topFilerMoves.filter((move) => move.categoryKey === selectedDetailCategory)}
+                                onClose={() => setSelectedDetailCategory(null)}
+                            />
+                        )}
                     </section>
 
                     <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
@@ -1089,10 +1106,13 @@ function MetricCard({ theme, label, value, sub }: { theme: 'light' | 'dark'; lab
     );
 }
 
-function ConsensusCard({ theme, summary }: { theme: 'light' | 'dark'; summary: CategorySummary }) {
+function ConsensusCard({ theme, summary, onClick, isSelected }: { theme: 'light' | 'dark'; summary: CategorySummary; onClick?: () => void; isSelected?: boolean }) {
     const isDark = theme === 'dark';
     return (
-        <div className={`p-5 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+        <div 
+            className={`p-5 cursor-pointer transition-colors ${isDark ? 'border-zinc-800' : 'border-gray-100'} ${isSelected ? (isDark ? 'bg-zinc-800/50 ring-2 ring-emerald-500/40' : 'bg-emerald-50/50 ring-2 ring-emerald-200') : (isDark ? 'hover:bg-zinc-800/30' : 'hover:bg-gray-50')}`}
+            onClick={onClick}
+        >
             <div className="flex items-center justify-between gap-3">
                 <div>
                     <div className="text-sm font-bold">{summary.label}</div>
@@ -1371,6 +1391,99 @@ function PrivateCreditTable({ theme, summaries }: { theme: 'light' | 'dark'; sum
                     ))}
                 </tbody>
             </table>
+        </div>
+    );
+}
+
+function CategoryHoldersPanel({
+    theme,
+    categoryKey,
+    categoryLabel,
+    moves,
+    onClose,
+}: {
+    theme: 'light' | 'dark';
+    categoryKey: string;
+    categoryLabel: string;
+    moves: FilerMove[];
+    onClose: () => void;
+}) {
+    const isDark = theme === 'dark';
+    const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
+    const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
+    
+    // Sort by current shares descending
+    const sortedMoves = useMemo(() => {
+        return [...moves].sort((a, b) => b.currentShares - a.currentShares);
+    }, [moves]);
+
+    return (
+        <div className={`border-t ${isDark ? 'border-zinc-800 bg-zinc-950/50' : 'border-gray-100 bg-gray-50/50'}`}>
+            <div className={`flex items-center justify-between gap-3 px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div>
+                    <div className="text-sm font-bold">{categoryLabel} Holders</div>
+                    <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                        {formatNumber(sortedMoves.length)} filers sorted by current shares held
+                    </div>
+                </div>
+                <button
+                    onClick={onClose}
+                    className={`rounded-md p-2 ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'}`}
+                >
+                    <X className="h-4 w-4" />
+                </button>
+            </div>
+            {sortedMoves.length > 0 ? (
+                <div className="max-h-[400px] overflow-auto">
+                    <table className="w-full text-left text-sm">
+                        <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
+                            <tr>
+                                <th className="px-5 py-3">Fund Name</th>
+                                <th className="px-5 py-3">CIK</th>
+                                <th className="px-5 py-3">Action</th>
+                                <th className="px-5 py-3 text-right">Current Shares</th>
+                                <th className="px-5 py-3 text-right">Previous Shares</th>
+                                <th className="px-5 py-3 text-right">Current Value</th>
+                                <th className="px-5 py-3 text-right">Value Delta</th>
+                            </tr>
+                        </thead>
+                        <tbody className={`divide-y ${tableDivide}`}>
+                            {sortedMoves.slice(0, 100).map((move) => (
+                                <tr key={`${move.cik}-${move.categoryKey}`}>
+                                    <td className="px-5 py-3 font-medium">{move.fundName}</td>
+                                    <td className="px-5 py-3 font-mono text-xs opacity-60">{move.cik}</td>
+                                    <td className="px-5 py-3">
+                                        <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${actionClass(move.action, isDark)}`}>
+                                            {move.action}
+                                        </span>
+                                    </td>
+                                    <td className="px-5 py-3 text-right font-mono text-sm font-bold">
+                                        {formatNumber(move.currentShares)}
+                                    </td>
+                                    <td className="px-5 py-3 text-right font-mono text-xs opacity-70">
+                                        {formatNumber(move.previousShares)}
+                                    </td>
+                                    <td className="px-5 py-3 text-right font-mono text-xs">
+                                        {formatMoney(move.currentValue)}
+                                    </td>
+                                    <td className={`px-5 py-3 text-right font-mono text-xs ${move.valueDelta >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                        {formatSignedMoney(move.valueDelta)}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                    {sortedMoves.length > 100 && (
+                        <div className={`border-t px-5 py-3 text-xs ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-100 text-gray-500'}`}>
+                            Showing top 100 of {formatNumber(sortedMoves.length)} holders. Use the workbook export for the full list.
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <div className={`px-5 py-8 text-center text-sm ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                    No holders found for {categoryLabel}.
+                </div>
+            )}
         </div>
     );
 }
