@@ -18,9 +18,12 @@ export const maxDuration = 300;
 export async function POST(req: Request) {
     try {
         const body = await readRadarRequestBody(req);
-        if (isRadarCacheOnlyEnabled()) {
-            const request = await resolveRadarRequestFromCache(body);
-            const { comparison: cachedComparison } = await loadRadarComparisonFromCache(request);
+
+        // Hybrid approach: Try cache first, fall back to DB on miss
+        try {
+            const cacheRequest = await resolveRadarRequestFromCache(body);
+            const { comparison: cachedComparison } = await loadRadarComparisonFromCache(cacheRequest);
+            console.log('[13F Radar] Cache hit for', cacheRequest.currentQuarter, 'vs', cacheRequest.previousQuarter);
 
             return NextResponse.json({
                 ...cachedComparison,
@@ -28,10 +31,16 @@ export async function POST(req: Request) {
                 initiations: cachedComparison.initiations.slice(0, 50),
                 liquidations: cachedComparison.liquidations.slice(0, 50),
                 topFilerMoves: cachedComparison.topFilerMoves.slice(0, 100),
-                availableQuarters: request.availableQuarters,
-                watchlists: request.watchlists,
-                notes: buildRadarNotes(request.dbShape),
+                availableQuarters: cacheRequest.availableQuarters,
+                watchlists: cacheRequest.watchlists,
+                notes: buildRadarNotes(cacheRequest.dbShape),
             });
+        } catch (cacheError) {
+            // Cache miss or cache-only mode without valid cache - fall back to DB
+            if (isRadarCacheOnlyEnabled()) {
+                throw cacheError; // No DB fallback in cache-only mode
+            }
+            console.log('[13F Radar] Cache miss, falling back to DB');
         }
 
         const db = createRadarClientFromEnv();
