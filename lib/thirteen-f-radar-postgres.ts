@@ -180,13 +180,31 @@ export async function ensurePostgres13FSchema(db: PostgresExecutor) {
 }
 
 export async function ensurePostgres13FIndexes(db: PostgresExecutor) {
+    // Required indexes - these must succeed
     await db.query('CREATE INDEX IF NOT EXISTS idx_pg_filings_quarter_cik ON filings(quarter, cik)');
-    await db.query('CREATE INDEX IF NOT EXISTS idx_pg_filings_source ON filings(source)');
     await db.query('CREATE INDEX IF NOT EXISTS idx_pg_holdings_accession ON holdings(accession_number)');
-    await db.query('CREATE INDEX IF NOT EXISTS idx_pg_holdings_security ON holdings(security_key)');
-    await db.query('CREATE INDEX IF NOT EXISTS idx_pg_securities_issuer_search ON securities(issuer_search)');
-    await db.query('CREATE INDEX IF NOT EXISTS idx_pg_securities_cusip ON securities(cusip)');
-    await db.query('CREATE INDEX IF NOT EXISTS idx_pg_ingestion_runs_status ON ingestion_runs(quarter, source, status)');
+    
+    // Optional indexes - may fail on space-constrained free tier databases
+    const optionalIndexes = [
+        'CREATE INDEX IF NOT EXISTS idx_pg_filings_source ON filings(source)',
+        'CREATE INDEX IF NOT EXISTS idx_pg_holdings_security ON holdings(security_key)',
+        'CREATE INDEX IF NOT EXISTS idx_pg_securities_issuer_search ON securities(issuer_search)',
+        'CREATE INDEX IF NOT EXISTS idx_pg_securities_cusip ON securities(cusip)',
+        'CREATE INDEX IF NOT EXISTS idx_pg_ingestion_runs_status ON ingestion_runs(quarter, source, status)',
+    ];
+    
+    for (const sql of optionalIndexes) {
+        try {
+            await db.query(sql);
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            // Silently skip if database is at size limit
+            if (message.includes('size limit') || message.includes('53100')) {
+                continue;
+            }
+            throw err;
+        }
+    }
 }
 
 export async function listPostgres13FIndexes(db: PostgresExecutor): Promise<string[]> {
