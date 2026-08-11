@@ -192,3 +192,35 @@ jobs:
             steps.schedule.outputs.bulk_active == 'true'
           )
         run: npm run verify:13f -- --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --github-summary --require-indexes
+        continue-on-error: true
+
+      - name: Merge new filings into cache
+        id: merge_cache
+        if: |
+          env.THIRTEEN_F_DB_PROVIDER == 'postgres' &&
+          (
+            steps.live_ingest.outcome == 'success' ||
+            steps.bulk_ingest.outcome == 'success'
+          )
+        run: |
+          npx tsx scripts/merge-13f-cache.ts --quarter "${{ steps.schedule.outputs.quarter }}"
+
+      - name: Trim DB after merge
+        if: steps.merge_cache.outcome == 'success'
+        run: |
+          npx tsx scripts/trim-13f-db.ts --quarter "${{ steps.schedule.outputs.quarter }}"
+          echo "Trimmed Q${{ steps.schedule.outputs.quarter }} data from DB to free space for next run." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit and push updated cache
+        if: steps.merge_cache.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/13f-radar-cache/
+          if git diff --staged --quiet; then
+            echo "No cache changes to commit."
+          else
+            git commit -m "Update 13F radar cache (${{ steps.schedule.outputs.quarter }})"
+            git push
+            echo "Pushed updated 13F radar cache to repository." >> "$GITHUB_STEP_SUMMARY"
+          fi

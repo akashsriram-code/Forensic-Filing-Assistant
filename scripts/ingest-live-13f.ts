@@ -1,5 +1,7 @@
 import { createClient, type InValue } from '@libsql/client';
 import * as dotenv from 'dotenv';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import {
     assertPostgresWritable,
     completePostgresIngestionRun,
@@ -79,6 +81,29 @@ type LiveDbTarget =
     | { provider: 'turso'; client: ReturnType<typeof createClient> }
     | { provider: 'postgres'; pool: ReturnType<typeof createPostgresPool> };
 
+const CACHE_ROOT = path.join(process.cwd(), 'data', '13f-radar-cache');
+
+/** Load accession numbers from existing cache to avoid re-ingesting already-cached filings */
+async function loadCacheAccessions(quarter: string, previousQuarter: string): Promise<Set<string>> {
+    const accessions = new Set<string>();
+    try {
+        const cacheDir = path.join(CACHE_ROOT, `${quarter}-vs-${previousQuarter}`);
+        const cachePath = path.join(cacheDir, 'matched-holdings.json');
+        const content = await fs.readFile(cachePath, 'utf8');
+        const cache = JSON.parse(content);
+        if (Array.isArray(cache.filings)) {
+            for (const filing of cache.filings) {
+                if (filing.accessionNumber) {
+                    accessions.add(filing.accessionNumber);
+                }
+            }
+        }
+    } catch {
+        // Cache doesn't exist or is invalid - that's fine
+    }
+    return accessions;
+}
+
 async function main() {
     const quarter = getArg('--quarter');
     const targetProvider = resolveIngestionTargetProvider();
@@ -150,8 +175,13 @@ async function main() {
         if (rebuildSearchIndexes) await dropLiveTargetIndexes(target);
         else await ensureLiveTargetIndexes(target);
         if (!refreshExisting) {
+            // Load accessions from both DB and cache
             existingAccessions = await queryExistingAccessions(target, quarter);
-            console.log(`[13F Live EDGAR] ${existingAccessions.size} existing accessions for ${quarter}; use --refresh-existing to replace them.`);
+            const cacheAccessions = await loadCacheAccessions(quarter, previousReportQuarter(quarter));
+            for (const accession of cacheAccessions) {
+                existingAccessions.add(accession);
+            }
+            console.log(`[13F Live EDGAR] ${existingAccessions.size} existing accessions for ${quarter} (DB + cache); use --refresh-existing to replace them.`);
         }
         runId = await startLiveIngestionRun(target, quarter, masterIndexUrl);
     }
