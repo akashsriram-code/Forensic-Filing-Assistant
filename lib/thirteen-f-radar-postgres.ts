@@ -1,12 +1,12 @@
 import { Pool, type PoolClient, type PoolConfig, type QueryResult, type QueryResultRow } from 'pg';
 
 export const POSTGRES_13F_SIZE_TARGET_BYTES = 480 * 1024 * 1024;
+// Core indexes required for basic operation (cache-first mode)
+// Additional indexes (holdings_security, securities_issuer_search, securities_cusip)
+// are optional and may be omitted on space-constrained free tier databases
 export const REQUIRED_POSTGRES_13F_INDEXES = [
     'idx_pg_filings_quarter_cik',
     'idx_pg_holdings_accession',
-    'idx_pg_holdings_security',
-    'idx_pg_securities_issuer_search',
-    'idx_pg_securities_cusip',
 ] as const;
 
 export type PostgresExecutor = Pool | PoolClient;
