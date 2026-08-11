@@ -40,6 +40,8 @@ concurrency:
 jobs:
   ingest-13f:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
       TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
