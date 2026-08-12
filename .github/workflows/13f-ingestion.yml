@@ -223,6 +223,7 @@ jobs:
             echo "No cache changes to commit."
           else
             git commit -m "Update 13F radar cache (${{ steps.schedule.outputs.quarter }})"
+            git pull --rebase origin main
             git push
             echo "Pushed updated 13F radar cache to repository." >> "$GITHUB_STEP_SUMMARY"
           fi
