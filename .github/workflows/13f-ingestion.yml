@@ -223,7 +223,18 @@ jobs:
             echo "No cache changes to commit."
           else
             git commit -m "Update 13F radar cache (${{ steps.schedule.outputs.quarter }})"
-            git pull --rebase origin main
-            git push
-            echo "Pushed updated 13F radar cache to repository." >> "$GITHUB_STEP_SUMMARY"
+            # Retry push with rebase, fallback to force-with-lease if conflicts
+            for attempt in 1 2 3; do
+              if git pull --rebase origin main && git push origin main; then
+                echo "Pushed updated 13F radar cache to repository." >> "$GITHUB_STEP_SUMMARY"
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "Rebase failed, using force-with-lease..."
+                git rebase --abort 2>/dev/null || true
+                git push --force-with-lease origin main
+                echo "Force-pushed updated 13F radar cache to repository." >> "$GITHUB_STEP_SUMMARY"
+              fi
+              sleep 2
+            done
           fi
