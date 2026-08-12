@@ -146,6 +146,8 @@ export interface RadarComparison {
     initiations: SecurityMovement[];
     liquidations: SecurityMovement[];
     topFilerMoves: FilerMove[];
+    /** All current-quarter holders by category (including non-comparable filers), sorted by shares desc, top 100 per category */
+    currentHoldersByCategory: Record<string, FilerMove[]>;
 }
 
 export interface RadarApiResponse extends RadarComparison {
@@ -1077,6 +1079,67 @@ export function buildRadarComparison(params: {
     const filerTypeSummaries = buildFilerTypeSummaries(Array.from(categoryByFilerMap.values()));
     const privateCreditInstitutionSummaries = buildPrivateCreditInstitutionSummaries(Array.from(categoryByFilerMap.values()));
 
+    // Build currentHoldersByCategory: ALL current-quarter holders (not just comparable), per category
+    const currentHolderStates = new Map<string, FilerCategoryState>();
+    for (const row of normalizedHoldings) {
+        // Include all current-quarter holders, not just comparable
+        const currentFiling = currentByCik.get(row.cik);
+        if (!currentFiling) continue;
+        if (row.quarter !== currentQuarter || row.accessionNumber !== currentFiling.accessionNumber) continue;
+
+        const matches = matchIssuerToWatchlists(row.issuer, selectedWatchlists, selectedCategories);
+        if (matches.length === 0) continue;
+
+        for (const match of matches) {
+            const categoryKey = `${row.cik}|${match.category.key}`;
+            const state = currentHolderStates.get(categoryKey) || {
+                cik: row.cik,
+                fundName: filerNameByCik.get(row.cik) || currentFiling.fundName || row.fundName || row.cik,
+                categoryKey: match.category.key,
+                categoryLabel: match.category.label,
+                currentShares: 0,
+                previousShares: 0,
+                currentValue: 0,
+                previousValue: 0,
+                itemStates: new Map<string, FilerMoveDetailState>(),
+            };
+            state.currentShares += safeNumber(row.shares);
+            state.currentValue += estimateActualValue(row.value, row.shares);
+            currentHolderStates.set(categoryKey, state);
+        }
+    }
+
+    // Group by category and sort by current shares descending
+    const currentHoldersByCategory: Record<string, FilerMove[]> = {};
+    const holdersByCategoryKey = new Map<string, FilerMove[]>();
+    for (const state of currentHolderStates.values()) {
+        if (state.currentShares <= 0) continue;
+        const move: FilerMove = {
+            cik: state.cik,
+            fundName: state.fundName,
+            categoryKey: state.categoryKey,
+            categoryLabel: state.categoryLabel,
+            action: 'initiated', // All are "initiated" since we're only looking at current quarter
+            currentShares: state.currentShares,
+            previousShares: 0,
+            currentValue: state.currentValue,
+            previousValue: 0,
+            valueDelta: state.currentValue,
+            securityCount: 1,
+            initiatedCount: 1,
+            liquidatedCount: 0,
+            details: [],
+        };
+        const existing = holdersByCategoryKey.get(state.categoryKey) || [];
+        existing.push(move);
+        holdersByCategoryKey.set(state.categoryKey, existing);
+    }
+    for (const [categoryKey, moves] of holdersByCategoryKey) {
+        currentHoldersByCategory[categoryKey] = moves
+            .sort((a, b) => b.currentShares - a.currentShares)
+            .slice(0, 100);
+    }
+
     return {
         movementBasis,
         coverage: {
@@ -1100,6 +1163,7 @@ export function buildRadarComparison(params: {
             .filter((movement) => movement.liquidatedFilers > 0)
             .sort((a, b) => b.liquidatedFilers - a.liquidatedFilers || b.previousValue - a.previousValue),
         topFilerMoves,
+        currentHoldersByCategory,
     };
 }
 

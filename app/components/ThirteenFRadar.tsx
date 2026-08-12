@@ -628,7 +628,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                                 theme={theme}
                                 categoryKey={selectedDetailCategory}
                                 categoryLabel={data.categorySummaries.find((cat) => cat.key === selectedDetailCategory)?.label || selectedDetailCategory}
-                                moves={data.topFilerMoves.filter((move) => move.categoryKey === selectedDetailCategory)}
+                                moves={data.currentHoldersByCategory?.[selectedDetailCategory] || data.topFilerMoves.filter((move) => move.categoryKey === selectedDetailCategory)}
                                 onClose={() => setSelectedDetailCategory(null)}
                             />
                         )}
