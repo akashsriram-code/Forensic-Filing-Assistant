@@ -5,6 +5,7 @@ import {
     AlertTriangle,
     BarChart3,
     BookOpen,
+    Copy,
     Database,
     Download,
     ExternalLink,
@@ -18,8 +19,10 @@ import {
     ShieldCheck,
     TrendingDown,
     TrendingUp,
+    Users,
     X,
 } from 'lucide-react';
+import { classifyFiler } from '@/lib/filer-classification';
 import {
     DEFAULT_RADAR_WATCHLISTS,
     hydrateEditableWatchlists,
@@ -1408,6 +1411,11 @@ function CategoryHoldersPanel({
     moves: FilerMove[];
     onClose: () => void;
 }) {
+    // For SpaceX, use the enhanced story panel
+    if (categoryKey === 'spcx') {
+        return <SpaceXStoryPanel theme={theme} moves={moves} onClose={onClose} />;
+    }
+
     const isDark = theme === 'dark';
     const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
     const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
@@ -1484,6 +1492,322 @@ function CategoryHoldersPanel({
                     No holders found for {categoryLabel}.
                 </div>
             )}
+        </div>
+    );
+}
+
+function SpaceXStoryPanel({
+    theme,
+    moves,
+    onClose,
+}: {
+    theme: 'light' | 'dark';
+    moves: FilerMove[];
+    onClose: () => void;
+}) {
+    const isDark = theme === 'dark';
+    const [copied, setCopied] = useState(false);
+    const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
+    const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
+
+    // Sort by current shares descending and enrich with filer type
+    const enrichedMoves = useMemo(() => {
+        return [...moves]
+            .map((move) => ({
+                ...move,
+                filerType: classifyFiler(move.cik, move.fundName).type,
+            }))
+            .sort((a, b) => b.currentShares - a.currentShares);
+    }, [moves]);
+
+    // Aggregate stats
+    const stats = useMemo(() => {
+        const totalShares = enrichedMoves.reduce((sum, m) => sum + m.currentShares, 0);
+        const totalValue = enrichedMoves.reduce((sum, m) => sum + m.currentValue, 0);
+        const holderCount = enrichedMoves.length;
+        const top1 = enrichedMoves[0];
+        const top5Shares = enrichedMoves.slice(0, 5).reduce((sum, m) => sum + m.currentShares, 0);
+        const top10Shares = enrichedMoves.slice(0, 10).reduce((sum, m) => sum + m.currentShares, 0);
+        const top25Shares = enrichedMoves.slice(0, 25).reduce((sum, m) => sum + m.currentShares, 0);
+
+        // Filer type breakdown
+        const byType = new Map<string, { count: number; shares: number; value: number }>();
+        for (const move of enrichedMoves) {
+            const existing = byType.get(move.filerType) || { count: 0, shares: 0, value: 0 };
+            existing.count++;
+            existing.shares += move.currentShares;
+            existing.value += move.currentValue;
+            byType.set(move.filerType, existing);
+        }
+        const filerTypeBreakdown = Array.from(byType.entries())
+            .map(([type, data]) => ({ type, ...data, pct: totalShares > 0 ? (data.shares / totalShares) * 100 : 0 }))
+            .sort((a, b) => b.shares - a.shares);
+
+        return {
+            totalShares,
+            totalValue,
+            holderCount,
+            top1,
+            top1Pct: totalShares > 0 && top1 ? (top1.currentShares / totalShares) * 100 : 0,
+            top5Pct: totalShares > 0 ? (top5Shares / totalShares) * 100 : 0,
+            top10Pct: totalShares > 0 ? (top10Shares / totalShares) * 100 : 0,
+            top25Pct: totalShares > 0 ? (top25Shares / totalShares) * 100 : 0,
+            filerTypeBreakdown,
+            maxBarShares: enrichedMoves[0]?.currentShares || 1,
+        };
+    }, [enrichedMoves]);
+
+    // Generate story text
+    const generateStoryText = useCallback(() => {
+        const lines: string[] = [
+            `SpaceX (SPCX) — Institutional 13F Ownership, Q2 2026`,
+            `=`.repeat(54),
+            ``,
+            `Institutional holders: ${formatNumber(stats.holderCount)} filers`,
+            `Total reported shares: ${formatNumber(stats.totalShares)}`,
+            `Total estimated value: ${formatMoney(stats.totalValue)}`,
+            ``,
+            `TOP 10 HOLDERS`,
+        ];
+
+        enrichedMoves.slice(0, 10).forEach((move, idx) => {
+            const pct = stats.totalShares > 0 ? (move.currentShares / stats.totalShares) * 100 : 0;
+            lines.push(`${idx + 1}. ${move.fundName} — ${formatNumber(move.currentShares)} shares (~${formatMoney(move.currentValue)}, ${pct.toFixed(1)}% of reported)`);
+        });
+
+        lines.push(``);
+        lines.push(`CONCENTRATION`);
+        lines.push(`Top 5 funds: ${stats.top5Pct.toFixed(1)}% of reported institutional shares`);
+        lines.push(`Top 10 funds: ${stats.top10Pct.toFixed(1)}%`);
+        lines.push(`Top 25 funds: ${stats.top25Pct.toFixed(1)}%`);
+        lines.push(``);
+        lines.push(`BY INVESTOR TYPE`);
+        for (const breakdown of stats.filerTypeBreakdown.slice(0, 8)) {
+            lines.push(`${breakdown.type} (${breakdown.count} filers): ${breakdown.pct.toFixed(1)}% of shares`);
+        }
+        lines.push(``);
+        lines.push(`---`);
+        lines.push(`Source: SEC 13F filings, Forensic Filing Assistant`);
+
+        return lines.join('\n');
+    }, [enrichedMoves, stats]);
+
+    // Copy to clipboard
+    const copyStoryText = useCallback(async () => {
+        const text = generateStoryText();
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    }, [generateStoryText]);
+
+    // Download CSV
+    const downloadCSV = useCallback(() => {
+        const headers = ['Rank', 'Fund Name', 'CIK', 'Filer Type', 'Shares', 'Estimated Value', '% of Total'];
+        const rows = enrichedMoves.map((move, idx) => {
+            const pct = stats.totalShares > 0 ? (move.currentShares / stats.totalShares) * 100 : 0;
+            return [
+                idx + 1,
+                `"${move.fundName.replace(/"/g, '""')}"`,
+                move.cik,
+                move.filerType,
+                move.currentShares,
+                move.currentValue,
+                pct.toFixed(2),
+            ].join(',');
+        });
+        const csv = [headers.join(','), ...rows].join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'spacex-institutional-holders.csv';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }, [enrichedMoves, stats.totalShares]);
+
+    return (
+        <div className={`border-t ${isDark ? 'border-zinc-800 bg-zinc-950/50' : 'border-gray-100 bg-gray-50/50'}`}>
+            {/* Header */}
+            <div className={`flex flex-col gap-4 px-5 py-5 md:flex-row md:items-center md:justify-between ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-3">
+                    <Rocket className="h-6 w-6 text-sky-500" />
+                    <div>
+                        <div className="text-lg font-bold">SpaceX Institutional Ownership</div>
+                        <div className={`mt-0.5 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                            {formatNumber(stats.holderCount)} institutional filers • Q2 2026 13F filings
+                        </div>
+                    </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                    <button
+                        onClick={copyStoryText}
+                        className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors ${
+                            copied
+                                ? isDark ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                : isDark ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700' : 'border-gray-200 bg-white hover:bg-gray-50'
+                        }`}
+                    >
+                        <Copy className="h-4 w-4" />
+                        {copied ? 'Copied!' : 'Copy Story Text'}
+                    </button>
+                    <button
+                        onClick={downloadCSV}
+                        className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-medium ${isDark ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                    >
+                        <Download className="h-4 w-4" />
+                        Download CSV
+                    </button>
+                    <button
+                        onClick={onClose}
+                        className={`rounded-md p-2 ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'}`}
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
+            </div>
+
+            {/* Hero Stats */}
+            <div className={`grid grid-cols-2 gap-3 border-t px-5 py-4 md:grid-cols-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div className={`rounded-lg border p-3 ${isDark ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-200 bg-white'}`}>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Total Shares</div>
+                    <div className="mt-1 font-mono text-xl font-bold">{formatNumber(stats.totalShares)}</div>
+                </div>
+                <div className={`rounded-lg border p-3 ${isDark ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-200 bg-white'}`}>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Total Value</div>
+                    <div className="mt-1 font-mono text-xl font-bold text-emerald-500">{formatMoney(stats.totalValue)}</div>
+                </div>
+                <div className={`rounded-lg border p-3 ${isDark ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-200 bg-white'}`}>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Holders</div>
+                    <div className="mt-1 font-mono text-xl font-bold">{formatNumber(stats.holderCount)}</div>
+                </div>
+                <div className={`rounded-lg border p-3 ${isDark ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-200 bg-white'}`}>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Largest Holder</div>
+                    <div className="mt-1 truncate text-sm font-bold">{stats.top1?.fundName || 'N/A'}</div>
+                    <div className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{stats.top1Pct.toFixed(1)}% of reported</div>
+                </div>
+            </div>
+
+            {/* Concentration */}
+            <div className={`grid gap-4 border-t px-5 py-4 md:grid-cols-2 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div>
+                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+                        <BarChart3 className="h-4 w-4 text-sky-500" />
+                        Concentration
+                    </div>
+                    <div className="space-y-2">
+                        {[
+                            { label: 'Top 5', pct: stats.top5Pct },
+                            { label: 'Top 10', pct: stats.top10Pct },
+                            { label: 'Top 25', pct: stats.top25Pct },
+                        ].map((item) => (
+                            <div key={item.label} className="flex items-center gap-3">
+                                <div className="w-16 text-xs font-medium">{item.label}</div>
+                                <div className={`h-4 flex-1 overflow-hidden rounded ${isDark ? 'bg-zinc-800' : 'bg-gray-200'}`}>
+                                    <div
+                                        className="h-full rounded bg-sky-500"
+                                        style={{ width: `${Math.min(item.pct, 100)}%` }}
+                                    />
+                                </div>
+                                <div className="w-14 text-right font-mono text-xs font-bold">{item.pct.toFixed(1)}%</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <div>
+                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+                        <Users className="h-4 w-4 text-sky-500" />
+                        By Investor Type
+                    </div>
+                    <div className="space-y-2">
+                        {stats.filerTypeBreakdown.slice(0, 5).map((breakdown) => (
+                            <div key={breakdown.type} className="flex items-center gap-3">
+                                <div className="w-32 truncate text-xs font-medium">{breakdown.type}</div>
+                                <div className={`h-4 flex-1 overflow-hidden rounded ${isDark ? 'bg-zinc-800' : 'bg-gray-200'}`}>
+                                    <div
+                                        className="h-full rounded bg-emerald-500"
+                                        style={{ width: `${Math.min(breakdown.pct, 100)}%` }}
+                                    />
+                                </div>
+                                <div className="w-20 text-right font-mono text-xs">
+                                    <span className="font-bold">{breakdown.pct.toFixed(1)}%</span>
+                                    <span className={`ml-1 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>({breakdown.count})</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+
+            {/* Top 25 Bar Chart */}
+            <div className={`border-t px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div className="mb-3 text-sm font-semibold">Top 25 Holders by Shares</div>
+                <div className="space-y-1">
+                    {enrichedMoves.slice(0, 25).map((move, idx) => {
+                        const pct = stats.totalShares > 0 ? (move.currentShares / stats.totalShares) * 100 : 0;
+                        const barWidth = stats.maxBarShares > 0 ? (move.currentShares / stats.maxBarShares) * 100 : 0;
+                        return (
+                            <div key={move.cik} className="flex items-center gap-2">
+                                <div className="w-6 text-right font-mono text-[11px] text-gray-500">{idx + 1}</div>
+                                <div className="w-48 truncate text-xs font-medium">{move.fundName}</div>
+                                <div className={`h-5 flex-1 overflow-hidden rounded ${isDark ? 'bg-zinc-800' : 'bg-gray-200'}`}>
+                                    <div
+                                        className={`flex h-full items-center rounded px-2 text-[11px] font-medium text-white ${idx < 5 ? 'bg-sky-500' : idx < 10 ? 'bg-sky-400' : 'bg-zinc-500'}`}
+                                        style={{ width: `${barWidth}%` }}
+                                    >
+                                        {barWidth > 15 && formatNumber(move.currentShares)}
+                                    </div>
+                                </div>
+                                <div className="w-20 text-right font-mono text-xs">
+                                    <span className="font-bold">{pct.toFixed(1)}%</span>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* Full Table */}
+            <div className={`border-t ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div className="max-h-[400px] overflow-auto">
+                    <table className="w-full text-left text-sm">
+                        <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
+                            <tr>
+                                <th className="px-5 py-3 text-center">Rank</th>
+                                <th className="px-5 py-3">Fund Name</th>
+                                <th className="px-5 py-3">CIK</th>
+                                <th className="px-5 py-3">Type</th>
+                                <th className="px-5 py-3 text-right">Shares</th>
+                                <th className="px-5 py-3 text-right">Value</th>
+                                <th className="px-5 py-3 text-right">% of Total</th>
+                            </tr>
+                        </thead>
+                        <tbody className={`divide-y ${tableDivide}`}>
+                            {enrichedMoves.slice(0, 50).map((move, idx) => {
+                                const pct = stats.totalShares > 0 ? (move.currentShares / stats.totalShares) * 100 : 0;
+                                return (
+                                    <tr key={`${move.cik}-row`}>
+                                        <td className="px-5 py-3 text-center font-mono text-xs text-gray-500">{idx + 1}</td>
+                                        <td className="px-5 py-3 font-medium">{move.fundName}</td>
+                                        <td className="px-5 py-3 font-mono text-xs opacity-60">{move.cik}</td>
+                                        <td className="px-5 py-3 text-xs">{move.filerType}</td>
+                                        <td className="px-5 py-3 text-right font-mono text-sm font-bold">{formatNumber(move.currentShares)}</td>
+                                        <td className="px-5 py-3 text-right font-mono text-xs text-emerald-500">{formatMoney(move.currentValue)}</td>
+                                        <td className="px-5 py-3 text-right font-mono text-xs font-bold">{pct.toFixed(2)}%</td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                    {enrichedMoves.length > 50 && (
+                        <div className={`border-t px-5 py-3 text-xs ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-100 text-gray-500'}`}>
+                            Showing top 50 of {formatNumber(enrichedMoves.length)} holders. Download the CSV for the complete list.
+                        </div>
+                    )}
+                </div>
+            </div>
         </div>
     );
 }
