@@ -574,14 +574,27 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                 </div>
             )}
 
-            {activeRadarTab === 'spacex' && (
-                <SpaceXExposurePanel
+            {activeRadarTab === 'spacex' && data && (
+                <Q2WatchPanel
                     theme={theme}
+                    moves={data.topFilerMoves}
                     panelClass={panelClass}
-                    softPanelClass={softPanelClass}
-                    inputClass={inputClass}
-                    mutedText={mutedText}
                 />
+            )}
+
+            {activeRadarTab === 'spacex' && !data && !loading && (
+                <div className={`rounded-xl border p-10 text-center ${panelClass}`}>
+                    <Users className="mx-auto mb-3 h-7 w-7 text-sky-500" />
+                    <div className="text-sm font-semibold">Q2 Filer Watch</div>
+                    <div className={`mt-1 text-xs ${mutedText}`}>Run the 13F Trends scan first to load filer data.</div>
+                </div>
+            )}
+
+            {activeRadarTab === 'spacex' && loading && !data && (
+                <div className={`rounded-xl border p-10 text-center ${panelClass}`}>
+                    <Loader2 className="mx-auto mb-3 h-7 w-7 animate-spin text-sky-500" />
+                    <div className={`text-sm ${mutedText}`}>Loading filer data...</div>
+                </div>
             )}
 
             {activeRadarTab === 'trends' && data && (
@@ -702,12 +715,6 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                             <PrivateCreditTable theme={theme} summaries={data.privateCreditInstitutionSummaries} />
                         </section>
                     </div>
-
-                    <Q2WatchPanel
-                        theme={theme}
-                        moves={data.topFilerMoves}
-                        panelClass={panelClass}
-                    />
                 </>
             )}
         </div>
