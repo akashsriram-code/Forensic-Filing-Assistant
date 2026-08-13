@@ -2,7 +2,8 @@ name: 13F Ingestion
 
 on:
   schedule:
-    - cron: '15 11 * * *'
+    - cron: '15 11 * * *'  # Daily at 11:15 UTC (permanent)
+    - cron: '15 * * * *'   # Hourly at :15 (sprint mode, gated below)
   workflow_dispatch:
     inputs:
       quarter:
@@ -58,16 +59,34 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Sprint mode date gate
+        id: sprint_gate
+        run: |
+          SPRINT_END_DATE="2026-08-15"
+          CURRENT_DATE=$(date -u +%Y-%m-%d)
+          TRIGGER_HOUR=$(date -u +%H)
+          
+          # After sprint end date, only allow the daily 11 UTC run
+          if [[ "$CURRENT_DATE" > "$SPRINT_END_DATE" ]] && [[ "$TRIGGER_HOUR" != "11" ]]; then
+            echo "Sprint window ended ($SPRINT_END_DATE). Hourly run suppressed." >> "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Node.js
+        if: steps.sprint_gate.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
       - name: Install dependencies
+        if: steps.sprint_gate.outputs.skip != 'true'
         run: npm ci
 
       - name: Resolve ingestion schedule
+        if: steps.sprint_gate.outputs.skip != 'true'
         id: schedule
         run: |
           if [ -n "$REQUESTED_QUARTER" ]; then
@@ -77,6 +96,7 @@ jobs:
           fi
 
       - name: Validate database target configuration
+        if: steps.sprint_gate.outputs.skip != 'true'
         run: |
           if [ "$THIRTEEN_F_DB_PROVIDER" = "postgres" ] && [ -z "$DATABASE_URL" ] && [ -z "$POSTGRES_URL" ]; then
             echo "::error title=Missing Postgres database secret::Set a repository secret named AIVEN_DATABASE_URL, DATABASE_URL, or POSTGRES_URL, or run this workflow with target=turso."
@@ -88,27 +108,30 @@ jobs:
           fi
 
       - name: Check official bulk status
+        if: steps.sprint_gate.outputs.skip != 'true'
         id: bulk_status
         run: npx tsx scripts/check-13f-ingestion-status.ts --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --source sec-bulk --github-output
 
       - name: Check live EDGAR status
+        if: steps.sprint_gate.outputs.skip != 'true'
         id: live_status
         run: npx tsx scripts/check-13f-ingestion-status.ts --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --source live-edgar --github-output
 
       - name: Turso write quota guard
-        if: env.THIRTEEN_F_DB_PROVIDER == 'turso' && env.ALLOW_TURSO_13F_WRITES != 'true'
+        if: steps.sprint_gate.outputs.skip != 'true' && env.THIRTEEN_F_DB_PROVIDER == 'turso' && env.ALLOW_TURSO_13F_WRITES != 'true'
         run: |
           echo "Turso 13F writes are disabled because ALLOW_TURSO_13F_WRITES is not true." >> "$GITHUB_STEP_SUMMARY"
           echo "Scheduled runs will not ingest, bulk-load, or repair Turso indexes while the write quota is exhausted." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Postgres write target
-        if: env.THIRTEEN_F_DB_PROVIDER == 'postgres'
+        if: steps.sprint_gate.outputs.skip != 'true' && env.THIRTEEN_F_DB_PROVIDER == 'postgres'
         run: |
           echo "13F ingestion target: Aiven/Postgres." >> "$GITHUB_STEP_SUMMARY"
           echo "Turso is not used for ingestion writes in this run." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Repair required indexes
         if: |
+          steps.sprint_gate.outputs.skip != 'true' &&
           env.REQUESTED_MODE == 'repair-indexes' &&
           (
             env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
@@ -119,6 +142,7 @@ jobs:
       - name: Run live EDGAR ingestion
         id: live_ingest
         if: |
+          steps.sprint_gate.outputs.skip != 'true' &&
           (
             env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
             env.ALLOW_TURSO_13F_WRITES == 'true'
@@ -154,6 +178,7 @@ jobs:
       - name: Resolve SEC bulk ZIP
         id: sec_dataset
         if: |
+          steps.sprint_gate.outputs.skip != 'true' &&
           (
             env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
             env.ALLOW_TURSO_13F_WRITES == 'true'
@@ -177,12 +202,13 @@ jobs:
 
       - name: Run official SEC bulk ingestion
         id: bulk_ingest
-        if: steps.sec_dataset.outputs.sec_zip_url != ''
+        if: steps.sprint_gate.outputs.skip != 'true' && steps.sec_dataset.outputs.sec_zip_url != ''
         run: npm run ingest:13f-sec -- --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --url "${{ steps.sec_dataset.outputs.sec_zip_url }}" --rebuild-search-indexes
 
       - name: Verify quarter ingestion
         if: |
           always() &&
+          steps.sprint_gate.outputs.skip != 'true' &&
           (
             env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
             env.ALLOW_TURSO_13F_WRITES == 'true'
@@ -199,6 +225,7 @@ jobs:
       - name: Merge new filings into cache
         id: merge_cache
         if: |
+          steps.sprint_gate.outputs.skip != 'true' &&
           env.THIRTEEN_F_DB_PROVIDER == 'postgres' &&
           (
             steps.live_ingest.outcome == 'success' ||
@@ -208,13 +235,13 @@ jobs:
           npx tsx scripts/merge-13f-cache.ts --quarter "${{ steps.schedule.outputs.quarter }}"
 
       - name: Trim DB after merge
-        if: steps.merge_cache.outcome == 'success'
+        if: steps.sprint_gate.outputs.skip != 'true' && steps.merge_cache.outcome == 'success'
         run: |
           npx tsx scripts/trim-13f-db.ts --quarter "${{ steps.schedule.outputs.quarter }}"
           echo "Trimmed Q${{ steps.schedule.outputs.quarter }} data from DB to free space for next run." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit and push updated cache
-        if: steps.merge_cache.outcome == 'success'
+        if: steps.sprint_gate.outputs.skip != 'true' && steps.merge_cache.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

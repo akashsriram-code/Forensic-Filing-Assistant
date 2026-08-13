@@ -100,6 +100,27 @@ interface SpaceXExposureResponse {
     };
 }
 
+// Q2 Watch — Named funds to track for SpaceX and other watchlist activity
+const Q2_WATCH_FUNDS = [
+    { label: 'Citadel Advisors', patterns: ['citadel', 'citadel advisors'] },
+    { label: 'Millennium Management', patterns: ['millennium', 'millennium management'] },
+    { label: 'Point72', patterns: ['point72', 'point 72'] },
+    { label: 'D.E. Shaw', patterns: ['d.e. shaw', 'de shaw', 'd e shaw'] },
+    { label: 'Pershing Square', patterns: ['pershing square'] },
+    { label: 'Third Point', patterns: ['third point'] },
+    { label: 'Starboard Value', patterns: ['starboard'] },
+    { label: 'Berkshire Hathaway', patterns: ['berkshire hathaway'] },
+    { label: 'Carl Icahn', patterns: ['icahn', 'icahn capital', 'carl icahn'] },
+    { label: 'Coatue Management', patterns: ['coatue'] },
+    { label: 'Jana Partners', patterns: ['jana partners'] },
+    { label: 'Lone Pine Capital', patterns: ['lone pine'] },
+    { label: 'Tiger Global', patterns: ['tiger global'] },
+    { label: 'Trian Fund Management', patterns: ['trian fund', 'trian partners'] },
+    { label: 'ValueAct', patterns: ['valueact'] },
+    { label: 'Viking Global', patterns: ['viking global'] },
+    { label: 'Situational Awareness', patterns: ['situational awareness'] },
+];
+
 const SPACEX_FORM_GROUPS = [
     {
         key: 'fund-holdings',
@@ -681,6 +702,12 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                             <PrivateCreditTable theme={theme} summaries={data.privateCreditInstitutionSummaries} />
                         </section>
                     </div>
+
+                    <Q2WatchPanel
+                        theme={theme}
+                        moves={data.topFilerMoves}
+                        panelClass={panelClass}
+                    />
                 </>
             )}
         </div>
@@ -1958,6 +1985,193 @@ function SpaceXStoryPanel({
                 </div>
             </div>
         </div>
+    );
+}
+
+// Helper to match fund names against Q2 Watch patterns
+function matchQ2WatchFund(fundName: string, patterns: string[]): boolean {
+    const normalizedName = fundName.toLowerCase();
+    return patterns.some((pattern) => normalizedName.includes(pattern.toLowerCase()));
+}
+
+function Q2WatchPanel({
+    theme,
+    moves,
+    panelClass,
+}: {
+    theme: 'light' | 'dark';
+    moves: FilerMove[];
+    panelClass: string;
+}) {
+    const isDark = theme === 'dark';
+    const [expanded, setExpanded] = useState(true);
+    const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
+    const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
+
+    // Match each Q2 Watch fund against topFilerMoves
+    const fundMatches = useMemo(() => {
+        const results: Array<{
+            label: string;
+            patterns: string[];
+            matches: FilerMove[];
+            found: boolean;
+        }> = [];
+
+        for (const fund of Q2_WATCH_FUNDS) {
+            const matches = moves.filter((move) => matchQ2WatchFund(move.fundName, fund.patterns));
+            results.push({
+                label: fund.label,
+                patterns: fund.patterns,
+                matches,
+                found: matches.length > 0,
+            });
+        }
+
+        // Sort: found funds first, then by match count
+        return results.sort((a, b) => {
+            if (a.found !== b.found) return a.found ? -1 : 1;
+            return b.matches.length - a.matches.length;
+        });
+    }, [moves]);
+
+    const foundCount = fundMatches.filter((f) => f.found).length;
+    const totalCount = Q2_WATCH_FUNDS.length;
+
+    // Group matches by category for display
+    const aggregateMatchesByCategory = (matches: FilerMove[]) => {
+        const byCategory = new Map<string, { label: string; moves: FilerMove[] }>();
+        for (const move of matches) {
+            const existing = byCategory.get(move.categoryKey) || { label: move.categoryLabel, moves: [] };
+            existing.moves.push(move);
+            byCategory.set(move.categoryKey, existing);
+        }
+        return Array.from(byCategory.entries()).map(([key, data]) => ({
+            categoryKey: key,
+            categoryLabel: data.label,
+            moves: data.moves,
+            totalValue: data.moves.reduce((sum, m) => sum + m.currentValue, 0),
+            totalDelta: data.moves.reduce((sum, m) => sum + m.valueDelta, 0),
+        }));
+    };
+
+    return (
+        <section className={`rounded-xl border ${panelClass}`}>
+            <button
+                onClick={() => setExpanded(!expanded)}
+                className={`flex w-full items-center justify-between px-5 py-4 text-left ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}
+            >
+                <div>
+                    <h3 className="text-sm font-bold">Q2 Watch</h3>
+                    <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                        {foundCount} of {totalCount} named funds found in filings
+                    </div>
+                </div>
+                <div className={`flex items-center gap-2 text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                    {expanded ? 'Collapse' : 'Expand'}
+                    <span className={`transition-transform ${expanded ? 'rotate-180' : ''}`}>▼</span>
+                </div>
+            </button>
+
+            {expanded && (
+                <div className={`border-t ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                    <div className="max-h-[600px] overflow-auto">
+                        <table className="w-full text-left text-sm">
+                            <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
+                                <tr>
+                                    <th className="px-5 py-3">Fund</th>
+                                    <th className="px-5 py-3">Status</th>
+                                    <th className="px-5 py-3">Categories Held</th>
+                                    <th className="px-5 py-3 text-right">Total Value</th>
+                                    <th className="px-5 py-3 text-right">Value Delta</th>
+                                </tr>
+                            </thead>
+                            <tbody className={`divide-y ${tableDivide}`}>
+                                {fundMatches.map((fund) => {
+                                    const categoryBreakdown = aggregateMatchesByCategory(fund.matches);
+                                    const totalValue = categoryBreakdown.reduce((sum, c) => sum + c.totalValue, 0);
+                                    const totalDelta = categoryBreakdown.reduce((sum, c) => sum + c.totalDelta, 0);
+                                    const actions = fund.matches.map((m) => m.action);
+                                    const hasBuyer = actions.includes('initiated') || actions.includes('increased');
+                                    const hasSeller = actions.includes('liquidated') || actions.includes('decreased');
+
+                                    return (
+                                        <tr
+                                            key={fund.label}
+                                            className={!fund.found ? (isDark ? 'opacity-40' : 'opacity-50') : ''}
+                                        >
+                                            <td className="px-5 py-3">
+                                                <div className="font-medium">{fund.label}</div>
+                                                {fund.found && fund.matches.length > 0 && (
+                                                    <div className={`mt-1 text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                                                        {fund.matches[0].fundName}
+                                                        {fund.matches.length > 1 && ` (+${fund.matches.length - 1} more)`}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td className="px-5 py-3">
+                                                {fund.found ? (
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {hasBuyer && (
+                                                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700'}`}>
+                                                                Buyer
+                                                            </span>
+                                                        )}
+                                                        {hasSeller && (
+                                                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700'}`}>
+                                                                Seller
+                                                            </span>
+                                                        )}
+                                                        {!hasBuyer && !hasSeller && (
+                                                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isDark ? 'bg-zinc-800 text-zinc-400' : 'bg-gray-100 text-gray-500'}`}>
+                                                                Unchanged
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <span className={`text-xs ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>
+                                                        Not in Q2 filings
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td className="max-w-64 px-5 py-3">
+                                                {fund.found ? (
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {categoryBreakdown.slice(0, 5).map((cat) => (
+                                                            <span
+                                                                key={cat.categoryKey}
+                                                                className={`rounded px-2 py-0.5 text-[10px] font-medium ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-gray-100 text-gray-600'}`}
+                                                            >
+                                                                {cat.categoryLabel}
+                                                            </span>
+                                                        ))}
+                                                        {categoryBreakdown.length > 5 && (
+                                                            <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                                                                +{categoryBreakdown.length - 5} more
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <span className={`text-xs ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>—</span>
+                                                )}
+                                            </td>
+                                            <td className="px-5 py-3 text-right font-mono text-xs">
+                                                {fund.found ? formatMoney(totalValue) : '—'}
+                                            </td>
+                                            <td className={`px-5 py-3 text-right font-mono text-xs ${fund.found ? (totalDelta >= 0 ? 'text-emerald-500' : 'text-red-500') : ''}`}>
+                                                {fund.found ? formatSignedMoney(totalDelta) : '—'}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div className={`border-t px-5 py-3 text-[11px] ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-100 text-gray-500'}`}>
+                        Fund matching uses name-pattern search against 13F filer names. Some funds may file under different legal entity names.
+                    </div>
+                </div>
+            )}
+        </section>
     );
 }
 
