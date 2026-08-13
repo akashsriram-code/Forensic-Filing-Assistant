@@ -633,6 +633,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                                 categoryLabel={data.categorySummaries.find((cat) => cat.key === selectedDetailCategory)?.label || selectedDetailCategory}
                                 moves={data.currentHoldersByCategory?.[selectedDetailCategory] || data.topFilerMoves.filter((move) => move.categoryKey === selectedDetailCategory)}
                                 onClose={() => setSelectedDetailCategory(null)}
+                                allCategoryHolders={data.currentHoldersByCategory}
                             />
                         )}
                     </section>
@@ -1404,16 +1405,18 @@ function CategoryHoldersPanel({
     categoryLabel,
     moves,
     onClose,
+    allCategoryHolders,
 }: {
     theme: 'light' | 'dark';
     categoryKey: string;
     categoryLabel: string;
     moves: FilerMove[];
     onClose: () => void;
+    allCategoryHolders?: Record<string, FilerMove[]>;
 }) {
     // For SpaceX, use the enhanced story panel
     if (categoryKey === 'spcx') {
-        return <SpaceXStoryPanel theme={theme} moves={moves} onClose={onClose} />;
+        return <SpaceXStoryPanel theme={theme} moves={moves} onClose={onClose} allCategoryHolders={allCategoryHolders} />;
     }
 
     const isDark = theme === 'dark';
@@ -1496,14 +1499,34 @@ function CategoryHoldersPanel({
     );
 }
 
+// Calculate Herfindahl-Hirschman Index for ownership concentration
+function calculateHHI(shares: number[]): number {
+    const total = shares.reduce((sum, s) => sum + s, 0);
+    if (total === 0) return 0;
+    const sumSquares = shares.reduce((sum, s) => {
+        const marketShare = (s / total) * 100;
+        return sum + marketShare * marketShare;
+    }, 0);
+    return Math.round(sumSquares);
+}
+
+// Get HHI classification label
+function getHHILabel(hhi: number): { label: string; color: string } {
+    if (hhi >= 2500) return { label: 'Highly Concentrated', color: 'text-red-500' };
+    if (hhi >= 1500) return { label: 'Moderately Concentrated', color: 'text-amber-500' };
+    return { label: 'Competitive', color: 'text-emerald-500' };
+}
+
 function SpaceXStoryPanel({
     theme,
     moves,
     onClose,
+    allCategoryHolders,
 }: {
     theme: 'light' | 'dark';
     moves: FilerMove[];
     onClose: () => void;
+    allCategoryHolders?: Record<string, FilerMove[]>;
 }) {
     const isDark = theme === 'dark';
     const [copied, setCopied] = useState(false);
@@ -1529,6 +1552,8 @@ function SpaceXStoryPanel({
         const top5Shares = enrichedMoves.slice(0, 5).reduce((sum, m) => sum + m.currentShares, 0);
         const top10Shares = enrichedMoves.slice(0, 10).reduce((sum, m) => sum + m.currentShares, 0);
         const top25Shares = enrichedMoves.slice(0, 25).reduce((sum, m) => sum + m.currentShares, 0);
+        const top50Shares = enrichedMoves.slice(0, 50).reduce((sum, m) => sum + m.currentShares, 0);
+        const top100Shares = enrichedMoves.slice(0, 100).reduce((sum, m) => sum + m.currentShares, 0);
 
         // Filer type breakdown
         const byType = new Map<string, { count: number; shares: number; value: number }>();
@@ -1543,6 +1568,20 @@ function SpaceXStoryPanel({
             .map(([type, data]) => ({ type, ...data, pct: totalShares > 0 ? (data.shares / totalShares) * 100 : 0 }))
             .sort((a, b) => b.shares - a.shares);
 
+        // Calculate HHI for SpaceX
+        const spaceXHHI = calculateHHI(enrichedMoves.map((m) => m.currentShares));
+
+        // Cumulative ownership curve
+        const cumulativeCurve = [
+            { label: 'Top 1', count: 1, pct: totalShares > 0 && top1 ? (top1.currentShares / totalShares) * 100 : 0 },
+            { label: 'Top 5', count: 5, pct: totalShares > 0 ? (top5Shares / totalShares) * 100 : 0 },
+            { label: 'Top 10', count: 10, pct: totalShares > 0 ? (top10Shares / totalShares) * 100 : 0 },
+            { label: 'Top 25', count: 25, pct: totalShares > 0 ? (top25Shares / totalShares) * 100 : 0 },
+            { label: 'Top 50', count: 50, pct: totalShares > 0 ? (top50Shares / totalShares) * 100 : 0 },
+            { label: 'Top 100', count: 100, pct: totalShares > 0 ? (top100Shares / totalShares) * 100 : 0 },
+            { label: 'All', count: holderCount, pct: 100 },
+        ];
+
         return {
             totalShares,
             totalValue,
@@ -1554,8 +1593,47 @@ function SpaceXStoryPanel({
             top25Pct: totalShares > 0 ? (top25Shares / totalShares) * 100 : 0,
             filerTypeBreakdown,
             maxBarShares: enrichedMoves[0]?.currentShares || 1,
+            hhi: spaceXHHI,
+            hhiLabel: getHHILabel(spaceXHHI),
+            cumulativeCurve,
         };
     }, [enrichedMoves]);
+
+    // Calculate HHI for peer categories (for comparison)
+    const peerHHI = useMemo(() => {
+        if (!allCategoryHolders) return [];
+        
+        const categoryLabels: Record<string, string> = {
+            'mag7': 'Mag 7',
+            'palantir': 'Palantir',
+            'strategy': 'Strategy',
+            'energy': 'Energy',
+            'bdc': 'BDC / Alt-Credit',
+            'blue-owl': 'Blue Owl',
+            'software': 'Software / SaaS',
+            'semiconductors': 'Semiconductors',
+            'ai-infra': 'AI Infrastructure',
+            'utilities-power': 'Utilities / Power',
+            'data-centers': 'Data Centers',
+            'spcx': 'SpaceX',
+        };
+
+        const results: { key: string; label: string; hhi: number; holders: number }[] = [];
+        
+        for (const [key, holders] of Object.entries(allCategoryHolders)) {
+            if (holders.length === 0) continue;
+            const shares = holders.map((h) => h.currentShares);
+            const hhi = calculateHHI(shares);
+            results.push({
+                key,
+                label: categoryLabels[key] || key,
+                hhi,
+                holders: holders.length,
+            });
+        }
+        
+        return results.sort((a, b) => b.hhi - a.hhi);
+    }, [allCategoryHolders]);
 
     // Generate story text
     const generateStoryText = useCallback(() => {
@@ -1683,11 +1761,82 @@ function SpaceXStoryPanel({
                     <div className="mt-1 font-mono text-xl font-bold">{formatNumber(stats.holderCount)}</div>
                 </div>
                 <div className={`rounded-lg border p-3 ${isDark ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-200 bg-white'}`}>
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Largest Holder</div>
-                    <div className="mt-1 truncate text-sm font-bold">{stats.top1?.fundName || 'N/A'}</div>
-                    <div className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{stats.top1Pct.toFixed(1)}% of reported</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">HHI Score</div>
+                    <div className="mt-1 font-mono text-xl font-bold">{formatNumber(stats.hhi)}</div>
+                    <div className={`text-xs font-semibold ${stats.hhiLabel.color}`}>{stats.hhiLabel.label}</div>
                 </div>
             </div>
+
+            {/* Cumulative Ownership Curve */}
+            <div className={`border-t px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div className="mb-3 flex items-center justify-between">
+                    <div className="text-sm font-semibold">Cumulative Ownership Curve</div>
+                    <div className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                        How quickly does ownership concentrate?
+                    </div>
+                </div>
+                <div className="flex items-end gap-1" style={{ height: '120px' }}>
+                    {stats.cumulativeCurve.map((point, idx) => (
+                        <div key={point.label} className="flex flex-1 flex-col items-center gap-1">
+                            <div
+                                className={`w-full rounded-t transition-all ${idx === stats.cumulativeCurve.length - 1 ? (isDark ? 'bg-zinc-600' : 'bg-gray-300') : 'bg-sky-500'}`}
+                                style={{ height: `${point.pct}%`, minHeight: '4px' }}
+                            />
+                            <div className="text-center">
+                                <div className="font-mono text-[10px] font-bold">{point.pct.toFixed(0)}%</div>
+                                <div className={`text-[9px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{point.label}</div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+                <div className={`mt-3 text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                    Steeper curve = more concentrated ownership. The top {stats.cumulativeCurve[1]?.count || 5} holders control {stats.cumulativeCurve[1]?.pct.toFixed(1) || 0}% of reported institutional shares.
+                </div>
+            </div>
+
+            {/* HHI Peer Comparison */}
+            {peerHHI.length > 1 && (
+                <div className={`border-t px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                    <div className="mb-3 flex items-center justify-between">
+                        <div className="text-sm font-semibold">HHI vs. Peer Categories</div>
+                        <div className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                            Higher = more concentrated ownership
+                        </div>
+                    </div>
+                    <div className="space-y-1">
+                        {peerHHI.slice(0, 8).map((peer) => {
+                            const maxHHI = Math.max(...peerHHI.map((p) => p.hhi), 1);
+                            const barWidth = (peer.hhi / maxHHI) * 100;
+                            const isSpaceX = peer.key === 'spcx';
+                            const hhiClass = getHHILabel(peer.hhi);
+                            return (
+                                <div key={peer.key} className={`flex items-center gap-2 ${isSpaceX ? 'font-semibold' : ''}`}>
+                                    <div className={`w-28 truncate text-xs ${isSpaceX ? 'text-sky-400' : ''}`}>{peer.label}</div>
+                                    <div className={`h-5 flex-1 overflow-hidden rounded ${isDark ? 'bg-zinc-800' : 'bg-gray-200'}`}>
+                                        <div
+                                            className={`flex h-full items-center rounded px-2 text-[11px] font-medium text-white ${
+                                                peer.hhi >= 2500 ? 'bg-red-500' : peer.hhi >= 1500 ? 'bg-amber-500' : 'bg-emerald-500'
+                                            }`}
+                                            style={{ width: `${barWidth}%` }}
+                                        >
+                                            {barWidth > 20 && formatNumber(peer.hhi)}
+                                        </div>
+                                    </div>
+                                    <div className="w-16 text-right font-mono text-xs">
+                                        <span className={hhiClass.color}>{formatNumber(peer.hhi)}</span>
+                                    </div>
+                                    <div className={`w-12 text-right text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                                        {peer.holders}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    <div className={`mt-3 text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                        HHI scale: &lt;1,500 = Competitive, 1,500–2,500 = Moderately Concentrated, &gt;2,500 = Highly Concentrated. SpaceX {stats.hhi >= peerHHI[0]?.hhi ? 'has the most concentrated' : 'is less concentrated than the most concentrated'} institutional ownership in this watchlist.
+                    </div>
+                </div>
+            )}
 
             {/* Concentration */}
             <div className={`grid gap-4 border-t px-5 py-4 md:grid-cols-2 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
