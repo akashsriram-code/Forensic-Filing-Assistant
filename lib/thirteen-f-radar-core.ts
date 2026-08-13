@@ -146,7 +146,7 @@ export interface RadarComparison {
     initiations: SecurityMovement[];
     liquidations: SecurityMovement[];
     topFilerMoves: FilerMove[];
-    /** All current-quarter holders by category (including non-comparable filers), sorted by shares desc, top 100 per category */
+    /** All current-quarter holders by category (including non-comparable filers), sorted by shares desc */
     currentHoldersByCategory: Record<string, FilerMove[]>;
 }
 
@@ -1136,8 +1136,7 @@ export function buildRadarComparison(params: {
     }
     for (const [categoryKey, moves] of holdersByCategoryKey) {
         currentHoldersByCategory[categoryKey] = moves
-            .sort((a, b) => b.currentShares - a.currentShares)
-            .slice(0, 100);
+            .sort((a, b) => b.currentShares - a.currentShares);
     }
 
     return {
