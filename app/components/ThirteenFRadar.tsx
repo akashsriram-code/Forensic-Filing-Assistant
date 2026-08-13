@@ -426,7 +426,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                                     : isDark ? 'text-zinc-500 hover:text-zinc-200' : 'text-gray-500 hover:text-gray-900'
                                     }`}
                             >
-                                SpaceX Exposure
+                                Q2 Filer Watch
                             </button>
                         </div>
                     </div>
