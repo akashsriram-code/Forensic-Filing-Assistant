@@ -222,13 +222,28 @@ async function findUsableCache(
     const requestedCategorySet = new Set(selectedCategories);
     const caches = await listRadarMatchedRowsCaches(options);
 
-    return caches.find((cache) => {
-        if (cache.watchlistHash !== watchlistHash) return false;
+    // Find cache with matching quarters - be lenient on watchlist hash (warn, don't reject)
+    const candidate = caches.find((cache) => {
         if (requestedCurrent && cache.currentQuarter !== requestedCurrent) return false;
         if (requestedPrevious && cache.previousQuarter !== requestedPrevious) return false;
-        const cachedCategorySet = new Set(cache.matchedCategoryKeys);
-        return Array.from(requestedCategorySet).every((category) => cachedCategorySet.has(category));
-    }) || null;
+        return true;
+    });
+    
+    if (!candidate) return null;
+    
+    // Warn if watchlist hash differs (new tickers won't have data until regeneration)
+    if (candidate.watchlistHash !== watchlistHash) {
+        console.warn(`[13F Radar Cache] Watchlist hash mismatch: cache=${candidate.watchlistHash.slice(0, 8)} current=${watchlistHash.slice(0, 8)}. New tickers may show no data.`);
+    }
+    
+    // Warn if requested categories are missing (new categories won't have data)
+    const cachedCategorySet = new Set(candidate.matchedCategoryKeys);
+    const missingCategories = Array.from(requestedCategorySet).filter((cat) => !cachedCategorySet.has(cat));
+    if (missingCategories.length > 0) {
+        console.warn(`[13F Radar Cache] Categories not in cache: ${missingCategories.join(', ')}. They will show no data.`);
+    }
+    
+    return candidate;
 }
 
 export async function loadRadarComparison(
