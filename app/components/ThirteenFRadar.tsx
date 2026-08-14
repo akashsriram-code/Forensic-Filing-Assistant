@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertTriangle,
     BarChart3,
@@ -2012,6 +2012,7 @@ function Q2WatchPanel({
 }) {
     const isDark = theme === 'dark';
     const [expanded, setExpanded] = useState(true);
+    const [selectedFund, setSelectedFund] = useState<string | null>(null);
     const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
     const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
 
@@ -2022,15 +2023,36 @@ function Q2WatchPanel({
             patterns: string[];
             matches: FilerMove[];
             found: boolean;
+            filerType: string;
+            cik: string;
+            totalShares: number;
+            previousValue: number;
+            distinctSecurities: number;
         }> = [];
 
         for (const fund of Q2_WATCH_FUNDS) {
             const matches = moves.filter((move) => matchQ2WatchFund(move.fundName, fund.patterns));
+            // Aggregate stats across all matches for this fund
+            const totalShares = matches.reduce((sum, m) => sum + m.currentShares, 0);
+            const previousValue = matches.reduce((sum, m) => sum + m.previousValue, 0);
+            // Count distinct securities from details
+            const allDetails = matches.flatMap((m) => m.details || []);
+            const distinctSecurities = new Set(allDetails.map((d) => (d.cusips && d.cusips[0]) || d.label)).size;
+            // Get filer type and CIK from first match
+            const firstMatch = matches[0];
+            const filerType = firstMatch ? classifyFiler(firstMatch.cik, firstMatch.fundName).type : 'Unknown';
+            const cik = firstMatch?.cik || '';
+            
             results.push({
                 label: fund.label,
                 patterns: fund.patterns,
                 matches,
                 found: matches.length > 0,
+                filerType,
+                cik,
+                totalShares,
+                previousValue,
+                distinctSecurities,
             });
         }
 
@@ -2061,6 +2083,19 @@ function Q2WatchPanel({
         }));
     };
 
+    // Get all securities for a fund from its matches
+    const getAllSecurities = (matches: FilerMove[]) => {
+        const allDetails = matches.flatMap((m) => 
+            (m.details || []).map((d) => ({
+                ...d,
+                categoryKey: m.categoryKey,
+                categoryLabel: m.categoryLabel,
+            }))
+        );
+        // Sort by current value descending
+        return allDetails.sort((a, b) => (b.currentValue || 0) - (a.currentValue || 0));
+    };
+
     return (
         <section className={`rounded-xl border ${panelClass}`}>
             <button
@@ -2068,9 +2103,9 @@ function Q2WatchPanel({
                 className={`flex w-full items-center justify-between px-5 py-4 text-left ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}
             >
                 <div>
-                    <h3 className="text-sm font-bold">Q2 Watch</h3>
+                    <h3 className="text-sm font-bold">Q2 Filer Watch</h3>
                     <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                        {foundCount} of {totalCount} named funds found in filings
+                        {foundCount} of {totalCount} named funds found in filings — click a row for full detail
                     </div>
                 </div>
                 <div className={`flex items-center gap-2 text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
@@ -2081,15 +2116,18 @@ function Q2WatchPanel({
 
             {expanded && (
                 <div className={`border-t ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-                    <div className="max-h-[600px] overflow-auto">
-                        <table className="w-full text-left text-sm">
+                    <div className="overflow-auto">
+                        <table className="w-full min-w-[900px] text-left text-sm">
                             <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
                                 <tr>
                                     <th className="px-5 py-3">Fund</th>
+                                    <th className="px-5 py-3">Type</th>
                                     <th className="px-5 py-3">Status</th>
-                                    <th className="px-5 py-3">Categories Held</th>
+                                    <th className="px-5 py-3 text-right"># Securities</th>
+                                    <th className="px-5 py-3 text-right">Shares</th>
                                     <th className="px-5 py-3 text-right">Total Value</th>
                                     <th className="px-5 py-3 text-right">Value Delta</th>
+                                    <th className="px-5 py-3 text-right">% Chg</th>
                                 </tr>
                             </thead>
                             <tbody className={`divide-y ${tableDivide}`}>
@@ -2097,77 +2135,98 @@ function Q2WatchPanel({
                                     const categoryBreakdown = aggregateMatchesByCategory(fund.matches);
                                     const totalValue = categoryBreakdown.reduce((sum, c) => sum + c.totalValue, 0);
                                     const totalDelta = categoryBreakdown.reduce((sum, c) => sum + c.totalDelta, 0);
+                                    const pctChange = fund.previousValue > 0 ? ((totalDelta / fund.previousValue) * 100) : (totalValue > 0 ? 100 : 0);
                                     const actions = fund.matches.map((m) => m.action);
                                     const hasBuyer = actions.includes('initiated') || actions.includes('increased');
                                     const hasSeller = actions.includes('liquidated') || actions.includes('decreased');
+                                    const isSelected = selectedFund === fund.label;
+                                    const allSecurities = getAllSecurities(fund.matches);
 
                                     return (
-                                        <tr
-                                            key={fund.label}
-                                            className={!fund.found ? (isDark ? 'opacity-40' : 'opacity-50') : ''}
-                                        >
-                                            <td className="px-5 py-3">
-                                                <div className="font-medium">{fund.label}</div>
-                                                {fund.found && fund.matches.length > 0 && (
-                                                    <div className={`mt-1 text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
-                                                        {fund.matches[0].fundName}
-                                                        {fund.matches.length > 1 && ` (+${fund.matches.length - 1} more)`}
+                                        <React.Fragment key={fund.label}>
+                                            <tr
+                                                onClick={() => fund.found && setSelectedFund(isSelected ? null : fund.label)}
+                                                className={`${fund.found ? 'cursor-pointer' : ''} ${!fund.found ? (isDark ? 'opacity-40' : 'opacity-50') : ''} ${isSelected ? (isDark ? 'bg-zinc-800/50' : 'bg-sky-50') : (fund.found ? (isDark ? 'hover:bg-zinc-800/30' : 'hover:bg-gray-50') : '')}`}
+                                            >
+                                                <td className="px-5 py-3">
+                                                    <div className="flex items-center gap-2">
+                                                        {fund.found && (
+                                                            <span className={`transition-transform ${isSelected ? 'rotate-90' : ''}`}>▶</span>
+                                                        )}
+                                                        <div>
+                                                            <div className="font-medium">{fund.label}</div>
+                                                            {fund.found && fund.cik && (
+                                                                <a 
+                                                                    href={`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${fund.cik}&type=13F`}
+                                                                    target="_blank"
+                                                                    rel="noreferrer"
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                    className={`mt-0.5 inline-flex items-center gap-1 font-mono text-[10px] text-sky-500 hover:underline`}
+                                                                >
+                                                                    CIK {fund.cik} <ExternalLink className="h-2.5 w-2.5" />
+                                                                </a>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                )}
-                                            </td>
-                                            <td className="px-5 py-3">
-                                                {fund.found ? (
-                                                    <div className="flex flex-wrap gap-1">
-                                                        {hasBuyer && (
-                                                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700'}`}>
-                                                                Buyer
-                                                            </span>
-                                                        )}
-                                                        {hasSeller && (
-                                                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700'}`}>
-                                                                Seller
-                                                            </span>
-                                                        )}
-                                                        {!hasBuyer && !hasSeller && (
-                                                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isDark ? 'bg-zinc-800 text-zinc-400' : 'bg-gray-100 text-gray-500'}`}>
-                                                                Unchanged
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                ) : (
-                                                    <span className={`text-xs ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>
-                                                        Not in Q2 filings
-                                                    </span>
-                                                )}
-                                            </td>
-                                            <td className="max-w-64 px-5 py-3">
-                                                {fund.found ? (
-                                                    <div className="flex flex-wrap gap-1">
-                                                        {categoryBreakdown.slice(0, 5).map((cat) => (
-                                                            <span
-                                                                key={cat.categoryKey}
-                                                                className={`rounded px-2 py-0.5 text-[10px] font-medium ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-gray-100 text-gray-600'}`}
-                                                            >
-                                                                {cat.categoryLabel}
-                                                            </span>
-                                                        ))}
-                                                        {categoryBreakdown.length > 5 && (
-                                                            <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
-                                                                +{categoryBreakdown.length - 5} more
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                ) : (
-                                                    <span className={`text-xs ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>—</span>
-                                                )}
-                                            </td>
-                                            <td className="px-5 py-3 text-right font-mono text-xs">
-                                                {fund.found ? formatMoney(totalValue) : '—'}
-                                            </td>
-                                            <td className={`px-5 py-3 text-right font-mono text-xs ${fund.found ? (totalDelta >= 0 ? 'text-emerald-500' : 'text-red-500') : ''}`}>
-                                                {fund.found ? formatSignedMoney(totalDelta) : '—'}
-                                            </td>
-                                        </tr>
+                                                </td>
+                                                <td className="px-5 py-3 text-xs">{fund.found ? fund.filerType : '—'}</td>
+                                                <td className="px-5 py-3">
+                                                    {fund.found ? (
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {hasBuyer && (
+                                                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700'}`}>
+                                                                    Buyer
+                                                                </span>
+                                                            )}
+                                                            {hasSeller && (
+                                                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700'}`}>
+                                                                    Seller
+                                                                </span>
+                                                            )}
+                                                            {!hasBuyer && !hasSeller && (
+                                                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isDark ? 'bg-zinc-800 text-zinc-400' : 'bg-gray-100 text-gray-500'}`}>
+                                                                    Unchanged
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    ) : (
+                                                        <span className={`text-xs ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>
+                                                            Not in Q2
+                                                        </span>
+                                                    )}
+                                                </td>
+                                                <td className="px-5 py-3 text-right font-mono text-xs">
+                                                    {fund.found ? formatNumber(fund.distinctSecurities) : '—'}
+                                                </td>
+                                                <td className="px-5 py-3 text-right font-mono text-xs">
+                                                    {fund.found ? formatNumber(fund.totalShares) : '—'}
+                                                </td>
+                                                <td className="px-5 py-3 text-right font-mono text-xs font-semibold">
+                                                    {fund.found ? formatMoney(totalValue) : '—'}
+                                                </td>
+                                                <td className={`px-5 py-3 text-right font-mono text-xs ${fund.found ? (totalDelta >= 0 ? 'text-emerald-500' : 'text-red-500') : ''}`}>
+                                                    {fund.found ? formatSignedMoney(totalDelta) : '—'}
+                                                </td>
+                                                <td className={`px-5 py-3 text-right font-mono text-xs font-semibold ${fund.found ? (pctChange >= 0 ? 'text-emerald-500' : 'text-red-500') : ''}`}>
+                                                    {fund.found ? `${pctChange >= 0 ? '+' : ''}${pctChange.toFixed(1)}%` : '—'}
+                                                </td>
+                                            </tr>
+                                            {/* Detail card - inline expansion */}
+                                            {isSelected && fund.found && (
+                                                <tr>
+                                                    <td colSpan={8} className={`p-0 ${isDark ? 'bg-zinc-900/50' : 'bg-gray-50'}`}>
+                                                        <Q2FundDetailCard
+                                                            theme={theme}
+                                                            fund={fund}
+                                                            categoryBreakdown={categoryBreakdown}
+                                                            allSecurities={allSecurities}
+                                                            totalValue={totalValue}
+                                                            onClose={() => setSelectedFund(null)}
+                                                        />
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </React.Fragment>
                                     );
                                 })}
                             </tbody>
@@ -2179,6 +2238,175 @@ function Q2WatchPanel({
                 </div>
             )}
         </section>
+    );
+}
+
+// Detail card component for Q2 Watch fund expansion
+function Q2FundDetailCard({
+    theme,
+    fund,
+    categoryBreakdown,
+    allSecurities,
+    totalValue,
+    onClose,
+}: {
+    theme: 'light' | 'dark';
+    fund: {
+        label: string;
+        cik: string;
+        filerType: string;
+        matches: FilerMove[];
+    };
+    categoryBreakdown: Array<{
+        categoryKey: string;
+        categoryLabel: string;
+        totalValue: number;
+        totalDelta: number;
+    }>;
+    allSecurities: Array<{
+        label: string;
+        cusip?: string;
+        action: string;
+        currentShares: number;
+        previousShares: number;
+        currentValue?: number;
+        previousValue?: number;
+        categoryKey?: string;
+        categoryLabel?: string;
+    }>;
+    totalValue: number;
+    onClose: () => void;
+}) {
+    const isDark = theme === 'dark';
+    const tableHead = isDark ? 'bg-zinc-800 text-zinc-500' : 'bg-gray-100 text-gray-500';
+    const tableDivide = isDark ? 'divide-zinc-700 text-zinc-300' : 'divide-gray-200 text-gray-700';
+
+    // Get the first match for SEC link
+    const firstMatch = fund.matches[0];
+    const edgarUrl = fund.cik 
+        ? `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${fund.cik}&type=13F-HR&dateb=&owner=include&count=40`
+        : null;
+
+    return (
+        <div className={`border-t ${isDark ? 'border-zinc-700' : 'border-gray-200'}`}>
+            {/* Header */}
+            <div className="flex items-start justify-between gap-4 px-5 py-4">
+                <div className="flex items-center gap-3">
+                    <Users className="h-5 w-5 text-sky-500" />
+                    <div>
+                        <div className="text-sm font-bold">{fund.label}</div>
+                        <div className={`mt-0.5 flex flex-wrap items-center gap-2 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                            <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-gray-200 text-gray-600'}`}>
+                                {fund.filerType}
+                            </span>
+                            {fund.cik && (
+                                <span className="font-mono">CIK {fund.cik}</span>
+                            )}
+                            {firstMatch && (
+                                <span>Q2 2026</span>
+                            )}
+                        </div>
+                    </div>
+                </div>
+                <div className="flex items-center gap-2">
+                    {edgarUrl && (
+                        <a
+                            href={edgarUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${isDark ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                        >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                            SEC 13F Filings
+                        </a>
+                    )}
+                    <button
+                        onClick={onClose}
+                        className={`rounded-md p-1.5 ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-200'}`}
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
+            </div>
+
+            {/* Category breakdown bars */}
+            <div className={`border-t px-5 py-4 ${isDark ? 'border-zinc-700' : 'border-gray-200'}`}>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Category Breakdown</div>
+                <div className="space-y-2">
+                    {categoryBreakdown.map((cat) => {
+                        const pct = totalValue > 0 ? (cat.totalValue / totalValue) * 100 : 0;
+                        return (
+                            <div key={cat.categoryKey} className="flex items-center gap-3">
+                                <div className="w-28 truncate text-xs font-medium">{cat.categoryLabel}</div>
+                                <div className={`h-5 flex-1 overflow-hidden rounded ${isDark ? 'bg-zinc-800' : 'bg-gray-200'}`}>
+                                    <div
+                                        className={`flex h-full items-center rounded px-2 text-[11px] font-medium text-white ${cat.totalDelta >= 0 ? 'bg-sky-500' : 'bg-red-500'}`}
+                                        style={{ width: `${Math.min(pct, 100)}%` }}
+                                    >
+                                        {pct > 15 && formatMoney(cat.totalValue)}
+                                    </div>
+                                </div>
+                                <div className="w-16 text-right font-mono text-xs font-bold">{pct.toFixed(1)}%</div>
+                                <div className={`w-20 text-right font-mono text-xs ${cat.totalDelta >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                    {formatSignedMoney(cat.totalDelta)}
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* Securities table */}
+            {allSecurities.length > 0 && (
+                <div className={`border-t ${isDark ? 'border-zinc-700' : 'border-gray-200'}`}>
+                    <div className="px-5 py-3">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            Securities Held ({allSecurities.length})
+                        </div>
+                    </div>
+                    <div className="max-h-[300px] overflow-auto">
+                        <table className="w-full text-left text-sm">
+                            <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
+                                <tr>
+                                    <th className="px-5 py-2">Security</th>
+                                    <th className="px-5 py-2">Category</th>
+                                    <th className="px-5 py-2">Action</th>
+                                    <th className="px-5 py-2 text-right">Shares</th>
+                                    <th className="px-5 py-2 text-right">Prev Shares</th>
+                                    <th className="px-5 py-2 text-right">Value</th>
+                                </tr>
+                            </thead>
+                            <tbody className={`divide-y ${tableDivide}`}>
+                                {allSecurities.slice(0, 50).map((sec, idx) => (
+                                    <tr key={`${sec.cusip || sec.label}-${idx}`}>
+                                        <td className="px-5 py-2">
+                                            <div className="font-medium">{sec.label}</div>
+                                            {sec.cusip && <div className="font-mono text-[10px] opacity-50">{sec.cusip}</div>}
+                                        </td>
+                                        <td className="px-5 py-2 text-xs">{sec.categoryLabel || '—'}</td>
+                                        <td className="px-5 py-2">
+                                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${actionClass(sec.action, isDark)}`}>
+                                                {sec.action}
+                                            </span>
+                                        </td>
+                                        <td className="px-5 py-2 text-right font-mono text-xs">{formatNumber(sec.currentShares)}</td>
+                                        <td className="px-5 py-2 text-right font-mono text-xs opacity-60">{formatNumber(sec.previousShares)}</td>
+                                        <td className="px-5 py-2 text-right font-mono text-xs text-emerald-500">
+                                            {sec.currentValue ? formatMoney(sec.currentValue) : '—'}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        {allSecurities.length > 50 && (
+                            <div className={`border-t px-5 py-2 text-xs ${isDark ? 'border-zinc-700 text-zinc-500' : 'border-gray-200 text-gray-500'}`}>
+                                Showing first 50 of {allSecurities.length} securities.
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
     );
 }
 
