@@ -148,10 +148,19 @@ export async function readRadarMatchedRowsCache(
     const cache = normalizeRadarMatchedRowsCache(parsed);
     if (!cache) return null;
     if (cache.currentQuarter !== request.currentQuarter || cache.previousQuarter !== request.previousQuarter) return null;
-    if (cache.watchlistHash !== getRadarWatchlistHash(request.watchlists)) return null;
+    
+    // Warn on watchlist hash mismatch but accept cache (new tickers won't have data until regeneration)
+    const currentHash = getRadarWatchlistHash(request.watchlists);
+    if (cache.watchlistHash !== currentHash) {
+        console.warn(`[13F Radar Cache] Watchlist hash mismatch: cache=${cache.watchlistHash.slice(0, 8)} current=${currentHash.slice(0, 8)}. New tickers may show no data.`);
+    }
 
     const cachedCategories = new Set(cache.matchedCategoryKeys);
-    if (!getRequestedCategoryKeys(request).every((category) => cachedCategories.has(category))) return null;
+    const requestedCategories = getRequestedCategoryKeys(request);
+    const missingCategories = requestedCategories.filter((cat) => !cachedCategories.has(cat));
+    if (missingCategories.length > 0) {
+        console.warn(`[13F Radar Cache] Categories not in cache: ${missingCategories.join(', ')}. They will show no data.`);
+    }
 
     return cache;
 }
