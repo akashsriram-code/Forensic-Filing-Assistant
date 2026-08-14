@@ -1114,21 +1114,30 @@ export function buildRadarComparison(params: {
     const holdersByCategoryKey = new Map<string, FilerMove[]>();
     for (const state of currentHolderStates.values()) {
         if (state.currentShares <= 0) continue;
+        
+        // Look up comparable filer state to get real previous-quarter data
+        const comparableKey = `${state.cik}|${state.categoryKey}`;
+        const comparableState = categoryByFilerMap.get(comparableKey);
+        
+        const previousShares = comparableState?.previousShares ?? 0;
+        const previousValue = comparableState?.previousValue ?? 0;
+        const action = classifyMovement(previousShares, state.currentShares);
+        
         const move: FilerMove = {
             cik: state.cik,
             fundName: state.fundName,
             categoryKey: state.categoryKey,
             categoryLabel: state.categoryLabel,
-            action: 'initiated', // All are "initiated" since we're only looking at current quarter
+            action,
             currentShares: state.currentShares,
-            previousShares: 0,
+            previousShares,
             currentValue: state.currentValue,
-            previousValue: 0,
-            valueDelta: state.currentValue,
-            securityCount: 1,
-            initiatedCount: 1,
+            previousValue,
+            valueDelta: state.currentValue - previousValue,
+            securityCount: comparableState?.itemStates?.size ?? 1,
+            initiatedCount: action === 'initiated' ? 1 : 0,
             liquidatedCount: 0,
-            details: [],
+            details: comparableState ? buildFilerMoveDetails(comparableState.itemStates) : [],
         };
         const existing = holdersByCategoryKey.get(state.categoryKey) || [];
         existing.push(move);
@@ -1559,4 +1568,22 @@ function sortRawHoldings(rows: MatchedRawHoldingRow[]): MatchedRawHoldingRow[] {
         a.issuer.localeCompare(b.issuer) ||
         a.fundName.localeCompare(b.fundName)
     );
+}
+
+function buildFilerMoveDetails(itemStates: Map<string, FilerMoveDetailState>): FilerMoveDetail[] {
+    return Array.from(itemStates.values())
+        .map((detail) => ({
+            itemKey: detail.itemKey,
+            ticker: detail.ticker,
+            label: detail.label,
+            action: classifyMovement(detail.previousShares, detail.currentShares),
+            currentShares: detail.currentShares,
+            previousShares: detail.previousShares,
+            currentValue: detail.currentValue,
+            previousValue: detail.previousValue,
+            issuerSamples: detail.issuerSamples,
+            cusips: Array.from(detail.cusips).sort(),
+        }))
+        .filter((detail) => detail.action !== 'absent')
+        .sort((a, b) => Math.abs(b.currentValue - b.previousValue) - Math.abs(a.currentValue - a.previousValue));
 }
