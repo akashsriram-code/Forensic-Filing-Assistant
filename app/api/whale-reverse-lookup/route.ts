@@ -8,6 +8,11 @@ import {
 } from '@/lib/thirteen-f-radar-core';
 import { searchHoldingsByIssuer } from '@/lib/thirteen-f-radar-cache-query';
 
+// Stub for backwards compatibility with test scripts
+export function resolveReverseLookupDbProviderFromEnv(): 'postgres' | 'turso' {
+    return 'postgres';
+}
+
 const CACHE_REVALIDATE = 3600;
 const MAX_RESULT_LIMIT = 1000;
 type ReverseMovementAction = Exclude<MovementAction, 'absent'> | 'no_prior';
