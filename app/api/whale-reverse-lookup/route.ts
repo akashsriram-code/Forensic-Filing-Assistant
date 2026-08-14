@@ -6,12 +6,7 @@ import {
     normalizeCik,
     type MovementAction,
 } from '@/lib/thirteen-f-radar-core';
-import {
-    createRadarClientFromEnv,
-    type RadarDbClient,
-    type RadarDbProvider,
-} from '@/lib/thirteen-f-radar-data';
-import { queryPostgresRows } from '@/lib/thirteen-f-radar-postgres';
+import { searchHoldingsByIssuer } from '@/lib/thirteen-f-radar-cache-query';
 
 const CACHE_REVALIDATE = 3600;
 const MAX_RESULT_LIMIT = 1000;
@@ -30,7 +25,6 @@ interface SecCompanyTickerEntry {
     title: string;
 }
 
-type DbRow = Record<string, unknown>;
 
 export interface ReverseHoldingRow {
     fundName: string;
@@ -123,11 +117,31 @@ export async function POST(req: NextRequest) {
 
         console.log(`[ReverseLookup] Searching for holders of: ${ticker} (${companyName})`);
 
-        const db = createRadarClientFromEnv(resolveReverseLookupDbProviderFromEnv());
-        const searchPattern = `${buildIssuerSearchPrefix(companyName)}%`;
-        const matchedHoldings = await queryMatchedHoldings(db, searchPattern);
-        const matchedCiks = uniqueStrings(matchedHoldings.map((row) => row.cik));
-        const filings = matchedCiks.length > 0 ? await queryFilingsForCiks(db, matchedCiks) : [];
+        // Query cache instead of database
+        const searchPrefix = buildIssuerSearchPrefix(companyName);
+        const cacheResult = await searchHoldingsByIssuer(searchPrefix);
+        
+        // Convert cache format to reverse lookup format
+        const matchedHoldings: ReverseHoldingRow[] = cacheResult.holdings.map(h => ({
+            fundName: h.fundName,
+            cik: h.cik,
+            accessionNumber: h.accessionNumber,
+            filingDate: h.filingDate,
+            quarter: h.quarter,
+            issuer: h.issuer,
+            cusip: h.cusip,
+            value: h.value,
+            shares: h.shares,
+        }));
+        
+        const filings: ReverseFilingRow[] = cacheResult.filings.map(f => ({
+            fundName: f.fundName,
+            cik: f.cik,
+            accessionNumber: f.accessionNumber,
+            filingDate: f.filingDate,
+            quarter: f.quarter,
+        }));
+        
         const result = buildReverseLookupFunds({ matchedHoldings, filings, limit });
 
         return NextResponse.json({
@@ -144,12 +158,6 @@ export async function POST(req: NextRequest) {
             { status: 500 }
         );
     }
-}
-
-export function resolveReverseLookupDbProviderFromEnv(): RadarDbProvider {
-    const explicit = process.env.THIRTEEN_F_DB_PROVIDER?.trim().toLowerCase();
-    if (explicit === 'turso') return 'turso';
-    return 'postgres';
 }
 
 export function buildReverseLookupFunds(params: {
@@ -234,102 +242,6 @@ function classifyReverseMovement(
     return classifyMovement(previous.shares, current.shares);
 }
 
-async function queryMatchedHoldings(db: RadarDbClient, searchPattern: string): Promise<ReverseHoldingRow[]> {
-    if (db.provider === 'postgres') {
-        const result = await queryPostgresRows<DbRow>(
-            db.pool,
-            `
-                SELECT
-                    COALESCE(f.name, fil.cik) AS "fundName",
-                    fil.cik AS cik,
-                    fil.accession_number AS "accessionNumber",
-                    fil.filing_date AS "filingDate",
-                    fil.quarter AS quarter,
-                    s.issuer AS issuer,
-                    s.cusip AS cusip,
-                    h.value AS value,
-                    h.shares AS shares
-                FROM holdings h
-                JOIN filings fil ON h.accession_number = fil.accession_number
-                LEFT JOIN funds f ON fil.cik = f.cik
-                JOIN securities s ON h.security_key = s.security_key
-                WHERE s.issuer_search LIKE ?
-                ORDER BY fil.cik ASC, fil.filing_date ASC, fil.accession_number ASC
-            `,
-            [searchPattern]
-        );
-        return result.rows.map(normalizeHoldingRow);
-    }
-
-    const result = await db.client.execute({
-        sql: `
-            SELECT
-                COALESCE(f.name, fil.cik) AS fundName,
-                fil.cik AS cik,
-                fil.accession_number AS accessionNumber,
-                fil.filing_date AS filingDate,
-                fil.quarter AS quarter,
-                h.issuer AS issuer,
-                h.cusip AS cusip,
-                h.value AS value,
-                h.shares AS shares
-            FROM holdings h
-            JOIN filings fil ON h.accession_number = fil.accession_number
-            LEFT JOIN funds f ON fil.cik = f.cik
-            WHERE UPPER(h.issuer) LIKE ?
-            ORDER BY fil.cik ASC, fil.filing_date ASC, fil.accession_number ASC
-        `,
-        args: [searchPattern],
-    });
-
-    return result.rows.map((row) => normalizeHoldingRow(row as DbRow));
-}
-
-async function queryFilingsForCiks(db: RadarDbClient, ciks: string[]): Promise<ReverseFilingRow[]> {
-    const rows: ReverseFilingRow[] = [];
-    for (const chunk of chunkArray(ciks, 500)) {
-        const placeholders = chunk.map(() => '?').join(', ');
-        if (db.provider === 'postgres') {
-            const result = await queryPostgresRows<DbRow>(
-                db.pool,
-                `
-                    SELECT
-                        COALESCE(f.name, fil.cik) AS "fundName",
-                        fil.cik AS cik,
-                        fil.accession_number AS "accessionNumber",
-                        fil.filing_date AS "filingDate",
-                        fil.quarter AS quarter
-                    FROM filings fil
-                    LEFT JOIN funds f ON fil.cik = f.cik
-                    WHERE fil.cik IN (${placeholders})
-                    ORDER BY fil.cik ASC, fil.filing_date ASC, fil.accession_number ASC
-                `,
-                chunk
-            );
-            rows.push(...result.rows.map(normalizeFilingRow));
-        } else {
-            const result = await db.client.execute({
-                sql: `
-                    SELECT
-                        COALESCE(f.name, fil.cik) AS fundName,
-                        fil.cik AS cik,
-                        fil.accession_number AS accessionNumber,
-                        fil.filing_date AS filingDate,
-                        fil.quarter AS quarter
-                    FROM filings fil
-                    LEFT JOIN funds f ON fil.cik = f.cik
-                    WHERE fil.cik IN (${placeholders})
-                    ORDER BY fil.cik ASC, fil.filing_date ASC, fil.accession_number ASC
-                `,
-                args: chunk,
-            });
-            rows.push(...result.rows.map((row) => normalizeFilingRow(row as DbRow)));
-        }
-    }
-
-    return rows;
-}
-
 function aggregateHoldingsByAccession(rows: ReverseHoldingRow[]) {
     const holdings = new Map<string, { shares: number; value: number; issuerSamples: string[]; cusips: string[] }>();
 
@@ -408,30 +320,6 @@ function compareFilingsAsc(a: ReverseFilingRow, b: ReverseFilingRow): number {
     return a.accessionNumber.localeCompare(b.accessionNumber);
 }
 
-function normalizeHoldingRow(row: DbRow): ReverseHoldingRow {
-    return {
-        fundName: stringValue(row.fundName),
-        cik: normalizeCik(stringValue(row.cik)),
-        accessionNumber: stringValue(row.accessionNumber),
-        filingDate: stringValue(row.filingDate),
-        quarter: stringValue(row.quarter),
-        issuer: stringValue(row.issuer),
-        cusip: nullableStringValue(row.cusip),
-        value: numberValue(row.value),
-        shares: numberValue(row.shares),
-    };
-}
-
-function normalizeFilingRow(row: DbRow): ReverseFilingRow {
-    return {
-        fundName: stringValue(row.fundName),
-        cik: normalizeCik(stringValue(row.cik)),
-        accessionNumber: stringValue(row.accessionNumber),
-        filingDate: stringValue(row.filingDate),
-        quarter: stringValue(row.quarter),
-    };
-}
-
 function buildIssuerSearchPrefix(companyName: string): string {
     return companyName.toUpperCase().split(' ')[0].replace(/[^A-Z0-9]/g, '');
 }
@@ -451,33 +339,8 @@ function resolveLimit(value: unknown): number | undefined {
     return Math.min(parsed, MAX_RESULT_LIMIT);
 }
 
-function stringValue(value: unknown): string {
-    return String(value || '');
-}
-
-function nullableStringValue(value: unknown): string | null {
-    const text = String(value || '').trim();
-    return text || null;
-}
-
-function numberValue(value: unknown): number {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function uniqueStrings(values: string[]): string[] {
-    return Array.from(new Set(values.filter(Boolean))).sort();
-}
-
 function pushUnique(values: string[], value: string, limit: number) {
     if (!value || values.includes(value) || values.length >= limit) return;
     values.push(value);
 }
 
-function chunkArray<T>(items: T[], size: number): T[][] {
-    const chunks: T[][] = [];
-    for (let index = 0; index < items.length; index += size) {
-        chunks.push(items.slice(index, index + size));
-    }
-    return chunks;
-}
