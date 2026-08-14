@@ -649,27 +649,35 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                             <h3 className="text-sm font-bold">Overview</h3>
                             <div className={`mt-1 text-xs ${mutedText}`}>Click a category card to see holders sorted by shares</div>
                         </div>
-                        <div className="grid grid-cols-1 divide-y md:grid-cols-2 md:divide-x md:divide-y-0 lg:grid-cols-3 lg:divide-x">
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
                             {data.categorySummaries.map((summary) => (
-                                <ConsensusCard 
-                                    key={summary.key} 
-                                    theme={theme} 
-                                    summary={summary}
-                                    isSelected={selectedDetailCategory === summary.key}
-                                    onClick={() => setSelectedDetailCategory(selectedDetailCategory === summary.key ? null : summary.key)}
-                                />
+                                <React.Fragment key={summary.key}>
+                                    <div className={`${isDark ? 'border-zinc-800' : 'border-gray-100'} border-b md:border-b-0 md:border-r lg:border-r ${
+                                        // Remove right border on last item in each row
+                                        ''
+                                    }`}>
+                                        <ConsensusCard 
+                                            theme={theme} 
+                                            summary={summary}
+                                            isSelected={selectedDetailCategory === summary.key}
+                                            onClick={() => setSelectedDetailCategory(selectedDetailCategory === summary.key ? null : summary.key)}
+                                        />
+                                    </div>
+                                    {selectedDetailCategory === summary.key && (
+                                        <div className="col-span-1 md:col-span-2 lg:col-span-3">
+                                            <CategoryHoldersPanel
+                                                theme={theme}
+                                                categoryKey={selectedDetailCategory}
+                                                categoryLabel={summary.label}
+                                                moves={data.currentHoldersByCategory?.[selectedDetailCategory] || data.topFilerMoves.filter((move) => move.categoryKey === selectedDetailCategory)}
+                                                onClose={() => setSelectedDetailCategory(null)}
+                                                allCategoryHolders={data.currentHoldersByCategory}
+                                            />
+                                        </div>
+                                    )}
+                                </React.Fragment>
                             ))}
                         </div>
-                        {selectedDetailCategory && (
-                            <CategoryHoldersPanel
-                                theme={theme}
-                                categoryKey={selectedDetailCategory}
-                                categoryLabel={data.categorySummaries.find((cat) => cat.key === selectedDetailCategory)?.label || selectedDetailCategory}
-                                moves={data.currentHoldersByCategory?.[selectedDetailCategory] || data.topFilerMoves.filter((move) => move.categoryKey === selectedDetailCategory)}
-                                onClose={() => setSelectedDetailCategory(null)}
-                                allCategoryHolders={data.currentHoldersByCategory}
-                            />
-                        )}
                     </section>
 
                     <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
