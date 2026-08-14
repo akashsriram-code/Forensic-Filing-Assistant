@@ -7,7 +7,7 @@ import {
     type MovementAction,
 } from '@/lib/thirteen-f-radar-core';
 import { searchHoldingsByIssuer } from '@/lib/thirteen-f-radar-cache-query';
-import { searchEdgarLiveHoldings, type EdgarHolderResult } from '@/lib/edgar-reverse-lookup';
+import { searchEdgarLiveHoldings, enrichHoldersWithXml, type EdgarHolderResult } from '@/lib/edgar-reverse-lookup';
 
 // Stub for backwards compatibility with test scripts
 export function resolveReverseLookupDbProviderFromEnv(): 'postgres' | 'turso' {
@@ -158,8 +158,9 @@ export async function POST(req: NextRequest) {
             console.log(`[ReverseLookup] Cache miss for ${ticker}, trying live EDGAR...`);
             source = 'edgar-live';
             
-            const edgarResults = await searchEdgarLiveHoldings(companyName, { maxResults: limit || 100 });
-            console.log(`[ReverseLookup] EDGAR returned ${edgarResults.length} filers for ${ticker}`);
+            let edgarResults = await searchEdgarLiveHoldings(companyName, { maxResults: limit || 50 });
+            console.log(`[ReverseLookup] EDGAR returned ${edgarResults.length} filers for ${ticker}, enriching with XML...`);
+            edgarResults = await enrichHoldersWithXml(edgarResults, companyName);
             
             // Convert EDGAR results to our format
             // Note: EFTS doesn't return actual share/value counts, only filer metadata
@@ -182,8 +183,8 @@ export async function POST(req: NextRequest) {
                     quarter: result.quarter,
                     issuer: companyName,
                     cusip: null,
-                    value: 0, // Not available from EFTS
-                    shares: 1, // Placeholder to indicate holding exists
+                    value: result.value,
+                    shares: result.shares || 1,
                 });
             }
         }

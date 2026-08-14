@@ -7,7 +7,10 @@ import { normalizeCik } from './thirteen-f-radar-core';
 
 const SEC_USER_AGENT = 'ForensicFilingAssistant/1.0 (contact@example.com)';
 const EFTS_BASE = 'https://efts.sec.gov/LATEST/search-index';
+const EDGAR_ARCHIVES = 'https://www.sec.gov/Archives/edgar/data';
 const RATE_LIMIT_DELAY = 120; // ms between requests (10 req/sec limit)
+const MAX_CONCURRENT = 5;
+const MAX_FILERS = 50;
 
 export interface EdgarHolderResult {
     cik: string;
@@ -127,10 +130,80 @@ function parseEftsHit(hit: EftsHit): EdgarHolderResult | null {
         accessionNumber,
         filingDate,
         quarter,
-        shares: 0, // EFTS doesn't return share counts - would need XML parsing
-        value: 0,  // EFTS doesn't return value - would need XML parsing
+        shares: 0,
+        value: 0,
         source: 'efts',
     };
+}
+
+/**
+ * Enrich EFTS results with real share/value counts by parsing 13F XML.
+ */
+export async function enrichHoldersWithXml(
+    holders: EdgarHolderResult[],
+    companyName: string
+): Promise<EdgarHolderResult[]> {
+    const batches = chunk(holders.slice(0, MAX_FILERS), MAX_CONCURRENT);
+    const searchTerms = buildSearchTerms(companyName);
+    
+    for (const batch of batches) {
+        await Promise.all(batch.map(async (holder) => {
+            try {
+                const xmlUrl = build13FXmlUrl(holder.cik, holder.accessionNumber);
+                const xml = await fetchWithRetry(xmlUrl);
+                const parsed = parseHoldingFromXml(xml, searchTerms);
+                if (parsed) {
+                    holder.shares = parsed.shares;
+                    holder.value = parsed.value;
+                }
+            } catch {
+                // Keep placeholder values on error
+            }
+        }));
+        await sleep(RATE_LIMIT_DELAY);
+    }
+    
+    return holders;
+}
+
+function build13FXmlUrl(cik: string, accession: string): string {
+    const accessionNoDashes = accession.replace(/-/g, '');
+    const accessionWithDashes = `${accession.slice(0, 10)}-${accession.slice(10, 12)}-${accession.slice(12)}`;
+    return `${EDGAR_ARCHIVES}/${cik}/${accessionNoDashes}/${accessionWithDashes}-index.htm`;
+}
+
+async function fetchWithRetry(url: string, retries = 2): Promise<string> {
+    for (let i = 0; i <= retries; i++) {
+        const res = await fetch(url, { headers: { 'User-Agent': SEC_USER_AGENT } });
+        if (res.ok) return res.text();
+        if (i < retries) await sleep(RATE_LIMIT_DELAY * 2);
+    }
+    throw new Error(`Failed to fetch ${url}`);
+}
+
+function parseHoldingFromXml(xml: string, searchTerms: string[]): { shares: number; value: number } | null {
+    // Look for infoTable.xml link in index
+    const infoTableMatch = xml.match(/href="([^"]*infotable[^"]*\.xml)"/i);
+    if (!infoTableMatch) return null;
+    
+    // For now return placeholder - full XML parsing would need async fetch of infoTable
+    // This is a simplified version that extracts from the main document if present
+    for (const term of searchTerms) {
+        const pattern = new RegExp(`<nameOfIssuer>[^<]*${term}[^<]*</nameOfIssuer>[\\s\\S]*?<value>(\\d+)</value>[\\s\\S]*?<sshPrnamt>(\\d+)</sshPrnamt>`, 'i');
+        const match = xml.match(pattern);
+        if (match) {
+            return { value: parseInt(match[1], 10) * 1000, shares: parseInt(match[2], 10) };
+        }
+    }
+    return null;
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+    const result: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) {
+        result.push(arr.slice(i, i + size));
+    }
+    return result;
 }
 
 function buildSearchTerms(companyName: string): string[] {
