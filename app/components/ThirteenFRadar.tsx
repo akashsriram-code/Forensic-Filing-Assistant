@@ -1507,15 +1507,39 @@ function CategoryStoryPanel({
     const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
     const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
 
-    // Sort by current shares descending and enrich with filer type
+    // Enrich with filer type and calculate share % change
     const enrichedMoves = useMemo(() => {
         return [...moves]
-            .map((move) => ({
-                ...move,
-                filerType: classifyFiler(move.cik, move.fundName).type,
-            }))
+            .map((move) => {
+                const sharePctChange = move.previousShares > 0 
+                    ? ((move.currentShares - move.previousShares) / move.previousShares) * 100 
+                    : (move.currentShares > 0 ? Infinity : 0);
+                return {
+                    ...move,
+                    filerType: classifyFiler(move.cik, move.fundName).type,
+                    sharePctChange,
+                };
+            })
             .sort((a, b) => b.currentShares - a.currentShares);
     }, [moves]);
+
+    // Sort for table: initiations → liquidations → increased → decreased → unchanged
+    const sortedForTable = useMemo(() => {
+        const actionOrder = (action: string) => {
+            if (action === 'initiated') return 0;
+            if (action === 'liquidated') return 1;
+            if (action === 'increased') return 2;
+            if (action === 'decreased') return 3;
+            return 4; // unchanged
+        };
+        return [...enrichedMoves].sort((a, b) => {
+            const orderDiff = actionOrder(a.action) - actionOrder(b.action);
+            if (orderDiff !== 0) return orderDiff;
+            // Within same action type, sort by currentShares desc (or previousShares for liquidated)
+            if (a.action === 'liquidated') return b.previousShares - a.previousShares;
+            return b.currentShares - a.currentShares;
+        });
+    }, [enrichedMoves]);
 
     // Aggregate stats
     const stats = useMemo(() => {
@@ -1894,39 +1918,66 @@ function CategoryStoryPanel({
 
             {/* Full Table */}
             <div className={`border-t ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div className={`px-5 py-3 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                    <div className="text-sm font-semibold">All Holders by Action</div>
+                    <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                        Sorted: initiations → liquidations → increased → decreased → unchanged
+                    </div>
+                </div>
                 <div className="max-h-[400px] overflow-auto">
                     <table className="w-full text-left text-sm">
                         <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
                             <tr>
-                                <th className="px-5 py-3 text-center">Rank</th>
                                 <th className="px-5 py-3">Fund Name</th>
-                                <th className="px-5 py-3">CIK</th>
                                 <th className="px-5 py-3">Type</th>
+                                <th className="px-5 py-3">Action</th>
                                 <th className="px-5 py-3 text-right">Shares</th>
+                                <th className="px-5 py-3 text-right">Prev Shares</th>
+                                <th className="px-5 py-3 text-right">Chg</th>
                                 <th className="px-5 py-3 text-right">Value</th>
-                                <th className="px-5 py-3 text-right">% of Total</th>
                             </tr>
                         </thead>
                         <tbody className={`divide-y ${tableDivide}`}>
-                            {enrichedMoves.slice(0, 50).map((move, idx) => {
-                                const pct = stats.totalShares > 0 ? (move.currentShares / stats.totalShares) * 100 : 0;
+                            {sortedForTable.slice(0, 100).map((move) => {
+                                const isNew = move.action === 'initiated';
+                                const isGone = move.action === 'liquidated';
+                                const pctChg = move.sharePctChange;
+                                const pctChgDisplay = isNew ? 'NEW' : isGone ? 'GONE' : (pctChg === Infinity ? '∞' : `${pctChg >= 0 ? '+' : ''}${pctChg.toFixed(1)}%`);
+                                const pctChgClass = isNew ? (isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700') 
+                                    : isGone ? (isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700')
+                                    : pctChg >= 0 ? 'text-emerald-500' : 'text-red-500';
                                 return (
-                                    <tr key={`${move.cik}-row`}>
-                                        <td className="px-5 py-3 text-center font-mono text-xs text-gray-500">{idx + 1}</td>
-                                        <td className="px-5 py-3 font-medium">{move.fundName}</td>
-                                        <td className="px-5 py-3 font-mono text-xs opacity-60">{move.cik}</td>
+                                    <tr key={`${move.cik}-${move.action}-row`}>
+                                        <td className="px-5 py-3">
+                                            <div className="font-medium">{move.fundName}</div>
+                                            <div className="font-mono text-[10px] opacity-50">CIK {move.cik}</div>
+                                        </td>
                                         <td className="px-5 py-3 text-xs">{move.filerType}</td>
+                                        <td className="px-5 py-3">
+                                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${actionClass(move.action, isDark)}`}>
+                                                {move.action}
+                                            </span>
+                                        </td>
                                         <td className="px-5 py-3 text-right font-mono text-sm font-bold">{formatNumber(move.currentShares)}</td>
+                                        <td className="px-5 py-3 text-right font-mono text-xs opacity-60">{formatNumber(move.previousShares)}</td>
+                                        <td className="px-5 py-3 text-right">
+                                            {(isNew || isGone) ? (
+                                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${pctChgClass}`}>
+                                                    {pctChgDisplay}
+                                                </span>
+                                            ) : (
+                                                <span className={`font-mono text-xs font-bold ${pctChgClass}`}>{pctChgDisplay}</span>
+                                            )}
+                                        </td>
                                         <td className="px-5 py-3 text-right font-mono text-xs text-emerald-500">{formatMoney(move.currentValue)}</td>
-                                        <td className="px-5 py-3 text-right font-mono text-xs font-bold">{pct.toFixed(2)}%</td>
                                     </tr>
                                 );
                             })}
                         </tbody>
                     </table>
-                    {enrichedMoves.length > 50 && (
+                    {sortedForTable.length > 100 && (
                         <div className={`border-t px-5 py-3 text-xs ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-100 text-gray-500'}`}>
-                            Showing top 50 of {formatNumber(enrichedMoves.length)} holders. Download the CSV for the complete list.
+                            Showing first 100 of {formatNumber(sortedForTable.length)} holders. Download the CSV for the complete list.
                         </div>
                     )}
                 </div>
