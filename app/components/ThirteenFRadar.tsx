@@ -1448,88 +1448,16 @@ function CategoryHoldersPanel({
     onClose: () => void;
     allCategoryHolders?: Record<string, FilerMove[]>;
 }) {
-    // For SpaceX, use the enhanced story panel
-    if (categoryKey === 'spcx') {
-        return <SpaceXStoryPanel theme={theme} moves={moves} onClose={onClose} allCategoryHolders={allCategoryHolders} />;
-    }
-
-    const isDark = theme === 'dark';
-    const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
-    const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
-    
-    // Sort by current shares descending
-    const sortedMoves = useMemo(() => {
-        return [...moves].sort((a, b) => b.currentShares - a.currentShares);
-    }, [moves]);
-
+    // Use the rich story panel for all categories
     return (
-        <div className={`border-t ${isDark ? 'border-zinc-800 bg-zinc-950/50' : 'border-gray-100 bg-gray-50/50'}`}>
-            <div className={`flex items-center justify-between gap-3 px-5 py-4 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-                <div>
-                    <div className="text-sm font-bold">{categoryLabel} Holders</div>
-                    <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                        {formatNumber(sortedMoves.length)} filers sorted by current shares held
-                    </div>
-                </div>
-                <button
-                    onClick={onClose}
-                    className={`rounded-md p-2 ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'}`}
-                >
-                    <X className="h-4 w-4" />
-                </button>
-            </div>
-            {sortedMoves.length > 0 ? (
-                <div className="max-h-[400px] overflow-auto">
-                    <table className="w-full text-left text-sm">
-                        <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
-                            <tr>
-                                <th className="px-5 py-3">Fund Name</th>
-                                <th className="px-5 py-3">CIK</th>
-                                <th className="px-5 py-3">Action</th>
-                                <th className="px-5 py-3 text-right">Current Shares</th>
-                                <th className="px-5 py-3 text-right">Previous Shares</th>
-                                <th className="px-5 py-3 text-right">Current Value</th>
-                                <th className="px-5 py-3 text-right">Value Delta</th>
-                            </tr>
-                        </thead>
-                        <tbody className={`divide-y ${tableDivide}`}>
-                            {sortedMoves.slice(0, 100).map((move) => (
-                                <tr key={`${move.cik}-${move.categoryKey}`}>
-                                    <td className="px-5 py-3 font-medium">{move.fundName}</td>
-                                    <td className="px-5 py-3 font-mono text-xs opacity-60">{move.cik}</td>
-                                    <td className="px-5 py-3">
-                                        <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${actionClass(move.action, isDark)}`}>
-                                            {move.action}
-                                        </span>
-                                    </td>
-                                    <td className="px-5 py-3 text-right font-mono text-sm font-bold">
-                                        {formatNumber(move.currentShares)}
-                                    </td>
-                                    <td className="px-5 py-3 text-right font-mono text-xs opacity-70">
-                                        {formatNumber(move.previousShares)}
-                                    </td>
-                                    <td className="px-5 py-3 text-right font-mono text-xs">
-                                        {formatMoney(move.currentValue)}
-                                    </td>
-                                    <td className={`px-5 py-3 text-right font-mono text-xs ${move.valueDelta >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                                        {formatSignedMoney(move.valueDelta)}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                    {sortedMoves.length > 100 && (
-                        <div className={`border-t px-5 py-3 text-xs ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-100 text-gray-500'}`}>
-                            Showing top 100 of {formatNumber(sortedMoves.length)} holders. Use the workbook export for the full list.
-                        </div>
-                    )}
-                </div>
-            ) : (
-                <div className={`px-5 py-8 text-center text-sm ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
-                    No holders found for {categoryLabel}.
-                </div>
-            )}
-        </div>
+        <CategoryStoryPanel
+            theme={theme}
+            categoryKey={categoryKey}
+            categoryLabel={categoryLabel}
+            moves={moves}
+            onClose={onClose}
+            allCategoryHolders={allCategoryHolders}
+        />
     );
 }
 
@@ -1551,13 +1479,17 @@ function getHHILabel(hhi: number): { label: string; color: string } {
     return { label: 'Competitive', color: 'text-emerald-500' };
 }
 
-function SpaceXStoryPanel({
+function CategoryStoryPanel({
     theme,
+    categoryKey,
+    categoryLabel,
     moves,
     onClose,
     allCategoryHolders,
 }: {
     theme: 'light' | 'dark';
+    categoryKey: string;
+    categoryLabel: string;
     moves: FilerMove[];
     onClose: () => void;
     allCategoryHolders?: Record<string, FilerMove[]>;
@@ -1602,8 +1534,8 @@ function SpaceXStoryPanel({
             .map(([type, data]) => ({ type, ...data, pct: totalShares > 0 ? (data.shares / totalShares) * 100 : 0 }))
             .sort((a, b) => b.shares - a.shares);
 
-        // Calculate HHI for SpaceX
-        const spaceXHHI = calculateHHI(enrichedMoves.map((m) => m.currentShares));
+        // Calculate HHI for this category
+        const categoryHHI = calculateHHI(enrichedMoves.map((m) => m.currentShares));
 
         // Cumulative ownership curve
         const cumulativeCurve = [
@@ -1627,8 +1559,8 @@ function SpaceXStoryPanel({
             top25Pct: totalShares > 0 ? (top25Shares / totalShares) * 100 : 0,
             filerTypeBreakdown,
             maxBarShares: enrichedMoves[0]?.currentShares || 1,
-            hhi: spaceXHHI,
-            hhiLabel: getHHILabel(spaceXHHI),
+            hhi: categoryHHI,
+            hhiLabel: getHHILabel(categoryHHI),
             cumulativeCurve,
         };
     }, [enrichedMoves]);
@@ -1672,7 +1604,7 @@ function SpaceXStoryPanel({
     // Generate story text
     const generateStoryText = useCallback(() => {
         const lines: string[] = [
-            `SpaceX (SPCX) — Institutional 13F Ownership, Q2 2026`,
+            `${categoryLabel} — Institutional 13F Ownership`,
             `=`.repeat(54),
             ``,
             `Institutional holders: ${formatNumber(stats.holderCount)} filers`,
@@ -1702,7 +1634,7 @@ function SpaceXStoryPanel({
         lines.push(`Source: SEC 13F filings, Forensic Filing Assistant`);
 
         return lines.join('\n');
-    }, [enrichedMoves, stats]);
+    }, [categoryLabel, enrichedMoves, stats]);
 
     // Copy to clipboard
     const copyStoryText = useCallback(async () => {
@@ -1732,23 +1664,23 @@ function SpaceXStoryPanel({
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = 'spacex-institutional-holders.csv';
+        link.download = `${categoryKey}-institutional-holders.csv`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
-    }, [enrichedMoves, stats.totalShares]);
+    }, [categoryKey, enrichedMoves, stats.totalShares]);
 
     return (
         <div className={`border-t ${isDark ? 'border-zinc-800 bg-zinc-950/50' : 'border-gray-100 bg-gray-50/50'}`}>
             {/* Header */}
             <div className={`flex flex-col gap-4 px-5 py-5 md:flex-row md:items-center md:justify-between ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
                 <div className="flex items-center gap-3">
-                    <Rocket className="h-6 w-6 text-sky-500" />
+                    <Database className="h-6 w-6 text-emerald-500" />
                     <div>
-                        <div className="text-lg font-bold">SpaceX Institutional Ownership</div>
+                        <div className="text-lg font-bold">{categoryLabel} Institutional Ownership</div>
                         <div className={`mt-0.5 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                            {formatNumber(stats.holderCount)} institutional filers • Q2 2026 13F filings
+                            {formatNumber(stats.holderCount)} institutional filers • 13F filings
                         </div>
                     </div>
                 </div>
@@ -1867,7 +1799,7 @@ function SpaceXStoryPanel({
                         })}
                     </div>
                     <div className={`mt-3 text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
-                        HHI scale: &lt;1,500 = Competitive, 1,500–2,500 = Moderately Concentrated, &gt;2,500 = Highly Concentrated. SpaceX {stats.hhi >= peerHHI[0]?.hhi ? 'has the most concentrated' : 'is less concentrated than the most concentrated'} institutional ownership in this watchlist.
+                        HHI scale: &lt;1,500 = Competitive, 1,500–2,500 = Moderately Concentrated, &gt;2,500 = Highly Concentrated. {categoryLabel} {stats.hhi >= peerHHI[0]?.hhi ? 'has the most concentrated' : 'is less concentrated than the most concentrated'} institutional ownership in this watchlist.
                     </div>
                 </div>
             )}
