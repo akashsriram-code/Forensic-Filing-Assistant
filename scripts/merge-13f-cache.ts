@@ -91,7 +91,6 @@ async function main() {
         
         if (newFilings.length === 0) {
             console.log('[Cache Merge] No new filings to merge. Cache is up to date.');
-            await pool.end();
             return;
         }
         
