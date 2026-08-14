@@ -83,11 +83,10 @@ export function getDefaultRadarWatchlistHash(): string {
 export function buildRadarMatchedRowsCache(input: BuildRadarMatchedRowsCacheInput): RadarMatchedRowsCache {
     const { request, filings, holdings, generatedAt = new Date() } = input;
     const matchedCategoryKeys = getRequestedCategoryKeys(request);
-    const matchedHoldings = dedupeRadarHoldings(
-        holdings.filter((holding) =>
-            matchIssuerToWatchlists(holding.issuer, request.watchlists, matchedCategoryKeys).length > 0
-        )
-    );
+    
+    // Store ALL holdings (not just watchlist-matched) to enable Stock Search / Whale Tracker
+    // The 13F Radar filters at display time, so this doesn't affect radar performance
+    const allHoldings = dedupeRadarHoldings(holdings);
 
     return {
         schemaVersion: RADAR_MATCHED_ROWS_CACHE_VERSION,
@@ -100,7 +99,7 @@ export function buildRadarMatchedRowsCache(input: BuildRadarMatchedRowsCacheInpu
         dbShape: request.dbShape || { holdingsColumns: [], putCallColumn: null },
         watchlists: request.watchlists,
         filings: dedupeRadarFilings(filings),
-        holdings: matchedHoldings,
+        holdings: allHoldings,
     };
 }
 
