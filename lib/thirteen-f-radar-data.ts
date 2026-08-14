@@ -268,13 +268,11 @@ export async function loadRadarComparison(
     const filings = await queryFilings(db, quarters);
     const currentFilings = selectLatestFilings(filings, currentQuarter);
     const previousFilings = selectLatestFilings(filings, previousQuarter);
-    const previousByCik = new Map(previousFilings.map((filing) => [filing.cik, filing]));
-    const comparableFilings = currentFilings.flatMap((currentFiling) => {
-        const previousFiling = previousByCik.get(currentFiling.cik);
-        return previousFiling ? [currentFiling, previousFiling] : [];
-    });
+    // Fetch holdings for ALL filings from both quarters, not just comparable filers.
+    // This ensures prior-quarter holdings are available even for filers that only filed in one quarter.
+    const allFilings = [...currentFilings, ...previousFilings];
     const holdings = selectedCategories.length > 0
-        ? await queryWatchedHoldings(db, comparableFilings, dbShape.putCallColumn)
+        ? await queryWatchedHoldings(db, allFilings, dbShape.putCallColumn)
         : [];
 
     return {
