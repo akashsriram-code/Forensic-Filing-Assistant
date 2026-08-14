@@ -7,6 +7,7 @@ import {
     type MovementAction,
 } from '@/lib/thirteen-f-radar-core';
 import { searchHoldingsByIssuer } from '@/lib/thirteen-f-radar-cache-query';
+import { searchEdgarLiveHoldings, type EdgarHolderResult } from '@/lib/edgar-reverse-lookup';
 
 // Stub for backwards compatibility with test scripts
 export function resolveReverseLookupDbProviderFromEnv(): 'postgres' | 'turso' {
@@ -122,36 +123,77 @@ export async function POST(req: NextRequest) {
 
         console.log(`[ReverseLookup] Searching for holders of: ${ticker} (${companyName})`);
 
-        // Query cache instead of database
+        // Try cache first
         const searchPrefix = buildIssuerSearchPrefix(companyName);
         const cacheResult = await searchHoldingsByIssuer(searchPrefix);
         
-        // Convert cache format to reverse lookup format
-        const matchedHoldings: ReverseHoldingRow[] = cacheResult.holdings.map(h => ({
-            fundName: h.fundName,
-            cik: h.cik,
-            accessionNumber: h.accessionNumber,
-            filingDate: h.filingDate,
-            quarter: h.quarter,
-            issuer: h.issuer,
-            cusip: h.cusip,
-            value: h.value,
-            shares: h.shares,
-        }));
+        let matchedHoldings: ReverseHoldingRow[] = [];
+        let filings: ReverseFilingRow[] = [];
+        let source: 'cache' | 'edgar-live' = 'cache';
         
-        const filings: ReverseFilingRow[] = cacheResult.filings.map(f => ({
-            fundName: f.fundName,
-            cik: f.cik,
-            accessionNumber: f.accessionNumber,
-            filingDate: f.filingDate,
-            quarter: f.quarter,
-        }));
+        if (cacheResult.holdings.length > 0) {
+            // Cache hit - use cached data
+            matchedHoldings = cacheResult.holdings.map(h => ({
+                fundName: h.fundName,
+                cik: h.cik,
+                accessionNumber: h.accessionNumber,
+                filingDate: h.filingDate,
+                quarter: h.quarter,
+                issuer: h.issuer,
+                cusip: h.cusip,
+                value: h.value,
+                shares: h.shares,
+            }));
+            
+            filings = cacheResult.filings.map(f => ({
+                fundName: f.fundName,
+                cik: f.cik,
+                accessionNumber: f.accessionNumber,
+                filingDate: f.filingDate,
+                quarter: f.quarter,
+            }));
+            console.log(`[ReverseLookup] Cache hit: ${matchedHoldings.length} holdings for ${ticker}`);
+        } else {
+            // Cache miss - fall back to live EDGAR search
+            console.log(`[ReverseLookup] Cache miss for ${ticker}, trying live EDGAR...`);
+            source = 'edgar-live';
+            
+            const edgarResults = await searchEdgarLiveHoldings(companyName, { maxResults: limit || 100 });
+            console.log(`[ReverseLookup] EDGAR returned ${edgarResults.length} filers for ${ticker}`);
+            
+            // Convert EDGAR results to our format
+            // Note: EFTS doesn't return actual share/value counts, only filer metadata
+            for (const result of edgarResults) {
+                // Create a filing entry
+                filings.push({
+                    fundName: result.fundName,
+                    cik: result.cik,
+                    accessionNumber: result.accessionNumber,
+                    filingDate: result.filingDate,
+                    quarter: result.quarter,
+                });
+                
+                // Create a placeholder holding (EFTS doesn't return share counts)
+                matchedHoldings.push({
+                    fundName: result.fundName,
+                    cik: result.cik,
+                    accessionNumber: result.accessionNumber,
+                    filingDate: result.filingDate,
+                    quarter: result.quarter,
+                    issuer: companyName,
+                    cusip: null,
+                    value: 0, // Not available from EFTS
+                    shares: 1, // Placeholder to indicate holding exists
+                });
+            }
+        }
         
         const result = buildReverseLookupFunds({ matchedHoldings, filings, limit });
 
         return NextResponse.json({
             ticker,
             companyName,
+            source,
             matchCount: result.matchCount,
             returnedCount: result.returnedCount,
             funds: result.funds,
