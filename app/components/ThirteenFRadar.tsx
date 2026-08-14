@@ -1916,51 +1916,137 @@ function CategoryStoryPanel({
                 </div>
             </div>
 
-            {/* Full Table */}
-            <div className={`border-t ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-                <div className={`px-5 py-3 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-                    <div className="text-sm font-semibold">All Holders by Action</div>
-                    <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                        Sorted: initiations → liquidations → increased → decreased → unchanged
-                    </div>
+            {/* Grouped Filer Table with Security Sub-rows */}
+            <FilerSecurityTable
+                theme={theme}
+                moves={sortedForTable}
+                totalShares={stats.totalShares}
+            />
+        </div>
+    );
+}
+
+// Grouped filer table with expandable security sub-rows
+interface EnrichedFilerMove extends FilerMove {
+    filerType: string;
+    sharePctChange: number;
+}
+
+function FilerSecurityTable({
+    theme,
+    moves,
+    totalShares,
+}: {
+    theme: 'light' | 'dark';
+    moves: EnrichedFilerMove[];
+    totalShares: number;
+}) {
+    const isDark = theme === 'dark';
+    const [expandedFilers, setExpandedFilers] = useState<Set<string>>(() => {
+        // Auto-expand filers with initiated or liquidated securities
+        const autoExpand = new Set<string>();
+        for (const move of moves.slice(0, 50)) {
+            const hasSignificantAction = move.details.some((d) => 
+                d.action === 'initiated' || d.action === 'liquidated'
+            );
+            if (hasSignificantAction && move.details.length > 1) {
+                autoExpand.add(move.cik);
+            }
+        }
+        return autoExpand;
+    });
+    const tableHead = isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-gray-50 text-gray-500';
+    const tableDivide = isDark ? 'divide-zinc-800 text-zinc-300' : 'divide-gray-100 text-gray-700';
+
+    const toggleFiler = (cik: string) => {
+        setExpandedFilers((prev) => {
+            const next = new Set(prev);
+            if (next.has(cik)) {
+                next.delete(cik);
+            } else {
+                next.add(cik);
+            }
+            return next;
+        });
+    };
+
+    // Sort details within each filer by action priority
+    const actionOrder = (action: string) => {
+        if (action === 'initiated') return 0;
+        if (action === 'liquidated') return 1;
+        if (action === 'increased') return 2;
+        if (action === 'decreased') return 3;
+        return 4;
+    };
+
+    return (
+        <div className={`border-t ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+            <div className={`px-5 py-3 ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div className="text-sm font-semibold">All Holders by Security</div>
+                <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                    Click a filer row to expand individual securities. Sorted: initiations → liquidations → increased → decreased → unchanged
                 </div>
-                <div className="max-h-[400px] overflow-auto">
-                    <table className="w-full text-left text-sm">
-                        <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
-                            <tr>
-                                <th className="px-5 py-3">Fund Name</th>
-                                <th className="px-5 py-3">Type</th>
-                                <th className="px-5 py-3">Action</th>
-                                <th className="px-5 py-3 text-right">Shares</th>
-                                <th className="px-5 py-3 text-right">Prev Shares</th>
-                                <th className="px-5 py-3 text-right">Chg</th>
-                                <th className="px-5 py-3 text-right">Value</th>
-                            </tr>
-                        </thead>
-                        <tbody className={`divide-y ${tableDivide}`}>
-                            {sortedForTable.slice(0, 100).map((move) => {
-                                const isNew = move.action === 'initiated';
-                                const isGone = move.action === 'liquidated';
-                                const pctChg = move.sharePctChange;
-                                const pctChgDisplay = isNew ? 'NEW' : isGone ? 'GONE' : (pctChg === Infinity ? '∞' : `${pctChg >= 0 ? '+' : ''}${pctChg.toFixed(1)}%`);
-                                const pctChgClass = isNew ? (isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700') 
-                                    : isGone ? (isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700')
-                                    : pctChg >= 0 ? 'text-emerald-500' : 'text-red-500';
-                                return (
-                                    <tr key={`${move.cik}-${move.action}-row`}>
-                                        <td className="px-5 py-3">
-                                            <div className="font-medium">{move.fundName}</div>
-                                            <div className="font-mono text-[10px] opacity-50">CIK {move.cik}</div>
+            </div>
+            <div className="max-h-[500px] overflow-auto">
+                <table className="w-full text-left text-sm">
+                    <thead className={`sticky top-0 text-xs uppercase ${tableHead}`}>
+                        <tr>
+                            <th className="w-8 px-2 py-3"></th>
+                            <th className="px-3 py-3">Fund / Security</th>
+                            <th className="px-3 py-3">Type</th>
+                            <th className="px-3 py-3">Action</th>
+                            <th className="px-3 py-3 text-right">Shares</th>
+                            <th className="px-3 py-3 text-right">Prev</th>
+                            <th className="px-3 py-3 text-right">Chg</th>
+                            <th className="px-3 py-3 text-right">Value</th>
+                        </tr>
+                    </thead>
+                    <tbody className={`divide-y ${tableDivide}`}>
+                        {moves.slice(0, 100).map((move) => {
+                            const isExpanded = expandedFilers.has(move.cik);
+                            const hasDetails = move.details.length > 0;
+                            const sortedDetails = [...move.details].sort((a, b) => 
+                                actionOrder(a.action) - actionOrder(b.action) || 
+                                b.currentShares - a.currentShares
+                            );
+                            const pctChg = move.sharePctChange;
+                            const isNew = move.action === 'initiated';
+                            const isGone = move.action === 'liquidated';
+                            const pctChgDisplay = isNew ? 'NEW' : isGone ? 'GONE' : (pctChg === Infinity ? '∞' : `${pctChg >= 0 ? '+' : ''}${pctChg.toFixed(1)}%`);
+                            const pctChgClass = isNew ? (isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700') 
+                                : isGone ? (isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700')
+                                : pctChg >= 0 ? 'text-emerald-500' : 'text-red-500';
+
+                            return (
+                                <React.Fragment key={`${move.cik}-filer`}>
+                                    {/* Filer header row */}
+                                    <tr
+                                        onClick={() => hasDetails && toggleFiler(move.cik)}
+                                        className={`${hasDetails ? 'cursor-pointer' : ''} ${isExpanded ? (isDark ? 'bg-zinc-800/30' : 'bg-gray-50') : (hasDetails ? (isDark ? 'hover:bg-zinc-800/20' : 'hover:bg-gray-50') : '')}`}
+                                    >
+                                        <td className="w-8 px-2 py-3 text-center">
+                                            {hasDetails && (
+                                                <span className={`text-xs transition-transform inline-block ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                                            )}
                                         </td>
-                                        <td className="px-5 py-3 text-xs">{move.filerType}</td>
-                                        <td className="px-5 py-3">
+                                        <td className="px-3 py-3">
+                                            <div className="font-semibold">{move.fundName}</div>
+                                            <div className="font-mono text-[10px] opacity-50">CIK {move.cik}</div>
+                                            {hasDetails && (
+                                                <div className={`mt-0.5 text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                                                    {move.details.length} securities
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="px-3 py-3 text-xs">{move.filerType}</td>
+                                        <td className="px-3 py-3">
                                             <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${actionClass(move.action, isDark)}`}>
                                                 {move.action}
                                             </span>
                                         </td>
-                                        <td className="px-5 py-3 text-right font-mono text-sm font-bold">{formatNumber(move.currentShares)}</td>
-                                        <td className="px-5 py-3 text-right font-mono text-xs opacity-60">{formatNumber(move.previousShares)}</td>
-                                        <td className="px-5 py-3 text-right">
+                                        <td className="px-3 py-3 text-right font-mono text-sm font-bold">{formatNumber(move.currentShares)}</td>
+                                        <td className="px-3 py-3 text-right font-mono text-xs opacity-60">{formatNumber(move.previousShares)}</td>
+                                        <td className="px-3 py-3 text-right">
                                             {(isNew || isGone) ? (
                                                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${pctChgClass}`}>
                                                     {pctChgDisplay}
@@ -1969,18 +2055,69 @@ function CategoryStoryPanel({
                                                 <span className={`font-mono text-xs font-bold ${pctChgClass}`}>{pctChgDisplay}</span>
                                             )}
                                         </td>
-                                        <td className="px-5 py-3 text-right font-mono text-xs text-emerald-500">{formatMoney(move.currentValue)}</td>
+                                        <td className="px-3 py-3 text-right font-mono text-xs text-emerald-500">{formatMoney(move.currentValue)}</td>
                                     </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                    {sortedForTable.length > 100 && (
-                        <div className={`border-t px-5 py-3 text-xs ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-100 text-gray-500'}`}>
-                            Showing first 100 of {formatNumber(sortedForTable.length)} holders. Download the CSV for the complete list.
-                        </div>
-                    )}
-                </div>
+
+                                    {/* Expanded security sub-rows */}
+                                    {isExpanded && sortedDetails.map((detail, idx) => {
+                                        const detailPctChg = detail.previousShares > 0 
+                                            ? ((detail.currentShares - detail.previousShares) / detail.previousShares) * 100 
+                                            : (detail.currentShares > 0 ? Infinity : 0);
+                                        const detailIsNew = detail.action === 'initiated';
+                                        const detailIsGone = detail.action === 'liquidated';
+                                        const detailPctChgDisplay = detailIsNew ? 'NEW' : detailIsGone ? 'GONE' : (detailPctChg === Infinity ? '∞' : `${detailPctChg >= 0 ? '+' : ''}${detailPctChg.toFixed(1)}%`);
+                                        const detailPctChgClass = detailIsNew ? (isDark ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700') 
+                                            : detailIsGone ? (isDark ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-700')
+                                            : detailPctChg >= 0 ? 'text-emerald-500' : 'text-red-500';
+
+                                        return (
+                                            <tr 
+                                                key={`${move.cik}-${detail.itemKey}-${idx}`}
+                                                className={isDark ? 'bg-zinc-900/50' : 'bg-gray-100/50'}
+                                            >
+                                                <td className="w-8 px-2 py-2"></td>
+                                                <td className="px-3 py-2 pl-8">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>└</span>
+                                                        <div>
+                                                            <div className="text-sm font-medium">{detail.label}</div>
+                                                            {detail.cusips.length > 0 && (
+                                                                <div className="font-mono text-[10px] opacity-50">{detail.cusips[0]}</div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td className="px-3 py-2 text-xs opacity-50">{detail.ticker}</td>
+                                                <td className="px-3 py-2">
+                                                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${actionClass(detail.action, isDark)}`}>
+                                                        {detail.action}
+                                                    </span>
+                                                </td>
+                                                <td className="px-3 py-2 text-right font-mono text-xs">{formatNumber(detail.currentShares)}</td>
+                                                <td className="px-3 py-2 text-right font-mono text-xs opacity-60">{formatNumber(detail.previousShares)}</td>
+                                                <td className="px-3 py-2 text-right">
+                                                    {(detailIsNew || detailIsGone) ? (
+                                                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${detailPctChgClass}`}>
+                                                            {detailPctChgDisplay}
+                                                        </span>
+                                                    ) : (
+                                                        <span className={`font-mono text-xs ${detailPctChgClass}`}>{detailPctChgDisplay}</span>
+                                                    )}
+                                                </td>
+                                                <td className="px-3 py-2 text-right font-mono text-xs text-emerald-500">{formatMoney(detail.currentValue)}</td>
+                                            </tr>
+                                        );
+                                    })}
+                                </React.Fragment>
+                            );
+                        })}
+                    </tbody>
+                </table>
+                {moves.length > 100 && (
+                    <div className={`border-t px-5 py-3 text-xs ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-100 text-gray-500'}`}>
+                        Showing first 100 of {formatNumber(moves.length)} filers. Download the CSV for the complete list.
+                    </div>
+                )}
             </div>
         </div>
     );
