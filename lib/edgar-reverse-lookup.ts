@@ -10,7 +10,7 @@ const EFTS_BASE = 'https://efts.sec.gov/LATEST/search-index';
 const EDGAR_ARCHIVES = 'https://www.sec.gov/Archives/edgar/data';
 const RATE_LIMIT_DELAY = 120;
 const MAX_CONCURRENT = 5;
-const MAX_FILERS = 50;
+const MAX_FILERS = 10;
 
 export interface EdgarHolderResult {
     cik: string;

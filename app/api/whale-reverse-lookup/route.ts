@@ -158,7 +158,7 @@ export async function POST(req: NextRequest) {
             console.log(`[ReverseLookup] Cache miss for ${ticker}, trying live EDGAR...`);
             source = 'edgar-live';
             
-            let edgarResults = await searchEdgarLiveHoldings(companyName, { maxResults: limit || 50 });
+            let edgarResults = await searchEdgarLiveHoldings(companyName, { maxResults: 10 });
             console.log(`[ReverseLookup] EDGAR returned ${edgarResults.length} filers for ${ticker}, enriching with XML...`);
             edgarResults = await enrichHoldersWithXml(edgarResults, companyName);
             
