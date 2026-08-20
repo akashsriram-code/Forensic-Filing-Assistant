@@ -1,6 +1,6 @@
-# Exclude 13F radar cache files from Vercel bundle (we query DB directly)
-data/13f-radar-cache/
-data/*.json
+# Keep 13F radar cache files (DB queries are too slow without them)
+# data/13f-radar-cache/
+# data/*.json
 
 # Exclude development data
 downloads/
