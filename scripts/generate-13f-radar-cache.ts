@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import { DEFAULT_RADAR_WATCHLISTS } from '../lib/thirteen-f-radar-core';
 import {
     buildRadarMatchedRowsCache,
