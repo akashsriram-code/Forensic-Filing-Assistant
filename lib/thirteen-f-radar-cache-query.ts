@@ -1,6 +1,6 @@
 /**
  * Cache-based query layer for Whale Tracker features.
- * Enables querying the 13F radar cache files instead of a live database.
+ * Queries the Postgres DB when POSTGRES_URL is set, otherwise falls back to local cache files.
  */
 
 import { promises as fs } from 'node:fs';
@@ -13,6 +13,18 @@ import {
     type RadarFilingRow,
     type RadarHoldingRow,
 } from './thirteen-f-radar-core';
+import { createPostgresPool, getPostgresConnectionString, type PostgresExecutor } from './thirteen-f-radar-postgres';
+import type { Pool } from 'pg';
+
+let cachedPool: Pool | null = null;
+
+function getDbPool(): Pool | null {
+    if (cachedPool) return cachedPool;
+    const connectionString = getPostgresConnectionString();
+    if (!connectionString) return null;
+    cachedPool = createPostgresPool(connectionString);
+    return cachedPool;
+}
 
 export interface CacheQueryResult {
     filings: RadarFilingRow[];
@@ -74,10 +86,19 @@ export async function loadMergedCache(): Promise<CacheQueryResult> {
 
 /**
  * Search holdings by issuer name pattern (case-insensitive prefix match).
+ * Queries Postgres DB if POSTGRES_URL is set, otherwise falls back to local cache.
  */
 export async function searchHoldingsByIssuer(
     issuerPrefix: string
 ): Promise<{ holdings: RadarHoldingRow[]; filings: RadarFilingRow[] }> {
+    const pool = getDbPool();
+    
+    if (pool) {
+        // Use DB query
+        return searchHoldingsByIssuerFromDb(pool, issuerPrefix);
+    }
+    
+    // Fall back to cache
     const { filings, holdings } = await loadMergedCache();
     const upperPrefix = issuerPrefix.toUpperCase();
 
@@ -92,6 +113,90 @@ export async function searchHoldingsByIssuer(
     const matchedFilings = filings.filter(f => matchedCiks.has(f.cik));
 
     return { holdings: matchedHoldings, filings: matchedFilings };
+}
+
+async function searchHoldingsByIssuerFromDb(
+    pool: Pool,
+    issuerPrefix: string
+): Promise<{ holdings: RadarHoldingRow[]; filings: RadarFilingRow[] }> {
+    const upperPrefix = issuerPrefix.toUpperCase() + '%';
+    
+    // Query holdings matching the issuer prefix
+    const holdingsResult = await pool.query<{
+        accession_number: string;
+        cik: string;
+        fund_name: string;
+        filing_date: string;
+        quarter: string;
+        issuer: string;
+        cusip: string | null;
+        value: string;
+        shares: string;
+    }>(`
+        SELECT 
+            h.accession_number,
+            f.cik,
+            f.fund_name,
+            f.filing_date,
+            f.quarter,
+            h.issuer,
+            h.cusip,
+            h.value,
+            h.shares
+        FROM pg_13f_holdings h
+        JOIN pg_13f_filings f ON h.accession_number = f.accession_number
+        WHERE UPPER(h.issuer) LIKE $1
+        ORDER BY f.filing_date DESC
+        LIMIT 10000
+    `, [upperPrefix]);
+
+    const holdings: RadarHoldingRow[] = holdingsResult.rows.map(row => ({
+        accessionNumber: row.accession_number,
+        cik: row.cik,
+        fundName: row.fund_name,
+        filingDate: row.filing_date,
+        quarter: row.quarter,
+        issuer: row.issuer,
+        cusip: row.cusip,
+        value: Number(row.value),
+        shares: Number(row.shares),
+    }));
+
+    // Get unique CIKs from matched holdings
+    const matchedCiks = [...new Set(holdings.map(h => h.cik))];
+    
+    if (matchedCiks.length === 0) {
+        return { holdings: [], filings: [] };
+    }
+
+    // Get all filings for those CIKs (needed for history/comparison)
+    const filingsResult = await pool.query<{
+        accession_number: string;
+        cik: string;
+        fund_name: string;
+        filing_date: string;
+        quarter: string;
+    }>(`
+        SELECT DISTINCT
+            accession_number,
+            cik,
+            fund_name,
+            filing_date,
+            quarter
+        FROM pg_13f_filings
+        WHERE cik = ANY($1)
+        ORDER BY filing_date DESC
+    `, [matchedCiks]);
+
+    const filings: RadarFilingRow[] = filingsResult.rows.map(row => ({
+        accessionNumber: row.accession_number,
+        cik: row.cik,
+        fundName: row.fund_name,
+        filingDate: row.filing_date,
+        quarter: row.quarter,
+    }));
+
+    return { holdings, filings };
 }
 
 /**
