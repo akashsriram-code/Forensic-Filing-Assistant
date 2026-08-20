@@ -1,0 +1,14 @@
+# Exclude 13F radar cache files from Vercel bundle (we query DB directly)
+data/13f-radar-cache/
+data/*.json
+
+# Exclude development data
+downloads/
+*.tsv
+
+# Exclude Python files (not needed in deployment)
+*.py
+requirements.txt
+
+# Exclude scripts (build-time only)
+scripts/
