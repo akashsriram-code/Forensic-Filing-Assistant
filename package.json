@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "tsx scripts/download-13f-cache.ts && next build",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "alerts:run": "tsx scripts/run-email-alert-job.ts",
