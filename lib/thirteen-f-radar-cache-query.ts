@@ -136,16 +136,18 @@ async function searchHoldingsByIssuerFromDb(
         SELECT 
             h.accession_number,
             f.cik,
-            f.fund_name,
+            fn.fund_name,
             f.filing_date,
             f.quarter,
-            h.issuer,
-            h.cusip,
+            s.issuer,
+            s.cusip,
             h.value,
             h.shares
-        FROM pg_13f_holdings h
-        JOIN pg_13f_filings f ON h.accession_number = f.accession_number
-        WHERE UPPER(h.issuer) LIKE $1
+        FROM holdings h
+        JOIN filings f ON h.accession_number = f.accession_number
+        JOIN funds fn ON f.cik = fn.cik
+        JOIN securities s ON h.security_key = s.security_key
+        WHERE UPPER(s.issuer) LIKE $1
         ORDER BY f.filing_date DESC
         LIMIT 10000
     `, [upperPrefix]);
@@ -178,14 +180,15 @@ async function searchHoldingsByIssuerFromDb(
         quarter: string;
     }>(`
         SELECT DISTINCT
-            accession_number,
-            cik,
-            fund_name,
-            filing_date,
-            quarter
-        FROM pg_13f_filings
-        WHERE cik = ANY($1)
-        ORDER BY filing_date DESC
+            f.accession_number,
+            f.cik,
+            fn.fund_name,
+            f.filing_date,
+            f.quarter
+        FROM filings f
+        JOIN funds fn ON f.cik = fn.cik
+        WHERE f.cik = ANY($1)
+        ORDER BY f.filing_date DESC
     `, [matchedCiks]);
 
     const filings: RadarFilingRow[] = filingsResult.rows.map(row => ({
