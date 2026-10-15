@@ -95,7 +95,7 @@ jobs:
           done
           DATASETS=$(IFS=,; echo "${DIRS[*]}")
           node --max-old-space-size=6144 node_modules/tsx/dist/cli.mjs scripts/build-13f-store.ts \
-            --current "${{ steps.datasets.outputs.current }}" --previous "${{ steps.datasets.outputs.previous }}" \
+            --current "${{ steps.datasets.outputs.current }}" --previous "${{ steps.datasets.outputs.previous }}" --prior "${{ steps.datasets.outputs.prior }}" \
             --datasets "$DATASETS"
 
       - name: Precompute default radar view

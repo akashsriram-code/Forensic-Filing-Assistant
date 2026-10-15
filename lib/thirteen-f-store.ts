@@ -1,9 +1,13 @@
 /**
- * Compact 13F store: one row per (security, filer) holding BOTH stored quarters side by side.
- * Two quarters of all-filer positions fit in ~300 MB, versus ~1 GB for raw per-quarter holdings rows.
+ * Compact 13F store: one row per (security, filer) holding the stored quarters side by side.
  *
- * Tables: f13_meta (which quarter pair is stored), f13_securities, f13_filers (latest accession per side),
- * f13_positions (prev_* / cur_* shares and values). Option rows are never stored; values are whole dollars.
+ * Slots: cur (newest quarter, filling in during its filing season), prev (the quarter before), and prior (the quarter
+ * before that) - prior is kept ONLY for filers that haven't filed cur yet, so every filer can always show its own
+ * latest quarter-over-quarter change. When a filer files cur, its prior values are dropped, so the table stays at
+ * roughly two quarters of positions (~2.7M rows, ~300 MB) instead of three.
+ *
+ * Tables: f13_meta (stored quarters), f13_securities, f13_filers (accession per slot), f13_positions,
+ * f13_applied_filings. Option rows are never stored; values are whole dollars.
  */
 import {
     matchIssuerToWatchlists,
@@ -15,11 +19,13 @@ import {
 import { type Pool } from 'pg';
 import { type PostgresExecutor } from './thirteen-f-radar-postgres';
 
-export type StoreSide = 'cur' | 'prev';
+export type StoreSide = 'cur' | 'prev' | 'prior';
 
 export interface StoreMeta {
     currentQuarter: string;
     previousQuarter: string;
+    /** Quarter before previousQuarter; held only for filers that haven't filed currentQuarter. */
+    priorQuarter: string | null;
     builtAt: string;
     source: string;
     updatedAt: string;
@@ -40,11 +46,15 @@ export interface StoreFiler {
     curFilingDate: string | null;
     prevAccession: string | null;
     prevFilingDate: string | null;
+    priorAccession: string | null;
+    priorFilingDate: string | null;
 }
 
 export interface StorePosition {
     securityId: number;
     filerId: number;
+    priorShares: number;
+    priorValue: number;
     prevShares: number;
     prevValue: number;
     curShares: number;
@@ -73,6 +83,18 @@ export interface StoreSnapshot {
     positions: StorePosition[];
     /** Every filing folded into the snapshot (base reports and new-holdings amendments), so live ingest skips them. */
     appliedFilings: StoreAppliedFiling[];
+}
+
+/** The two quarters a filer is compared on: its newest filed quarter and the one before it. */
+export interface FilerComparisonPair {
+    currentSide: StoreSide;
+    previousSide: StoreSide | null;
+    currentQuarter: string;
+    previousQuarter: string | null;
+    currentAccession: string;
+    currentFilingDate: string;
+    previousAccession: string | null;
+    previousFilingDate: string | null;
 }
 
 export const STORE_TABLES = ['f13_meta', 'f13_securities', 'f13_filers', 'f13_positions', 'f13_applied_filings'] as const;
@@ -122,6 +144,12 @@ export async function ensureStoreSchema(db: PostgresExecutor) {
             CONSTRAINT f13_positions_pkey PRIMARY KEY (security_id, filer_id)
         )
     `);
+    // Prior slot (added after the first release; ADD COLUMN with a constant default is metadata-only).
+    await db.query('ALTER TABLE f13_meta ADD COLUMN IF NOT EXISTS prior_quarter TEXT');
+    await db.query('ALTER TABLE f13_filers ADD COLUMN IF NOT EXISTS prior_accession TEXT');
+    await db.query('ALTER TABLE f13_filers ADD COLUMN IF NOT EXISTS prior_filing_date TEXT');
+    await db.query('ALTER TABLE f13_positions ADD COLUMN IF NOT EXISTS prior_shares BIGINT NOT NULL DEFAULT 0');
+    await db.query('ALTER TABLE f13_positions ADD COLUMN IF NOT EXISTS prior_value BIGINT NOT NULL DEFAULT 0');
     await db.query('CREATE INDEX IF NOT EXISTS idx_f13_positions_filer ON f13_positions(filer_id)');
     await db.query(`
         CREATE TABLE IF NOT EXISTS f13_applied_filings (
@@ -159,6 +187,37 @@ export function normalizeStoreIssuer(issuer: string): string {
     return String(issuer || '').trim().replace(/\s+/g, ' ').toUpperCase() || 'UNKNOWN';
 }
 
+/** Which quarters a filer is compared on: cur vs prev once it has filed cur, otherwise prev vs prior. */
+export function filerComparisonPair(meta: StoreMeta, filer: StoreFiler): FilerComparisonPair | null {
+    const slots: Array<{ side: StoreSide; quarter: string | null; accession: string | null; date: string | null }> = [
+        { side: 'cur', quarter: meta.currentQuarter, accession: filer.curAccession, date: filer.curFilingDate },
+        { side: 'prev', quarter: meta.previousQuarter, accession: filer.prevAccession, date: filer.prevFilingDate },
+        { side: 'prior', quarter: meta.priorQuarter, accession: filer.priorAccession, date: filer.priorFilingDate },
+    ];
+    const index = slots.findIndex((slot) => slot.accession && slot.quarter);
+    if (index === -1) return null;
+    const current = slots[index];
+    const previous = slots[index + 1]?.accession && slots[index + 1]?.quarter ? slots[index + 1] : null;
+    return {
+        currentSide: current.side,
+        previousSide: previous?.side || null,
+        currentQuarter: current.quarter!,
+        previousQuarter: previous?.quarter || null,
+        currentAccession: current.accession!,
+        currentFilingDate: current.date || '',
+        previousAccession: previous?.accession || null,
+        previousFilingDate: previous?.date || null,
+    };
+}
+
+export function positionShares(position: StorePosition, side: StoreSide): number {
+    return side === 'cur' ? position.curShares : side === 'prev' ? position.prevShares : position.priorShares;
+}
+
+export function positionValue(position: StorePosition, side: StoreSide): number {
+    return side === 'cur' ? position.curValue : side === 'prev' ? position.prevValue : position.priorValue;
+}
+
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------
@@ -182,8 +241,8 @@ export async function writeStoreSnapshot(db: PostgresExecutor, snapshot: StoreSn
     }
     for (const batch of chunk(snapshot.filers, INSERT_BATCH_SIZE)) {
         await db.query(
-            `INSERT INTO f13_filers (id, cik, name, cur_accession, cur_filing_date, prev_accession, prev_filing_date)
-             SELECT * FROM unnest($1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])`,
+            `INSERT INTO f13_filers (id, cik, name, cur_accession, cur_filing_date, prev_accession, prev_filing_date, prior_accession, prior_filing_date)
+             SELECT * FROM unnest($1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[])`,
             [
                 batch.map((f) => f.id),
                 batch.map((f) => f.cik),
@@ -192,6 +251,8 @@ export async function writeStoreSnapshot(db: PostgresExecutor, snapshot: StoreSn
                 batch.map((f) => f.curFilingDate),
                 batch.map((f) => f.prevAccession),
                 batch.map((f) => f.prevFilingDate),
+                batch.map((f) => f.priorAccession),
+                batch.map((f) => f.priorFilingDate),
             ]
         );
     }
@@ -221,15 +282,16 @@ export async function writeStoreSnapshot(db: PostgresExecutor, snapshot: StoreSn
 
 export async function writeStoreMeta(db: PostgresExecutor, meta: Omit<StoreMeta, 'updatedAt'>) {
     await db.query(
-        `INSERT INTO f13_meta (id, current_quarter, previous_quarter, built_at, source, updated_at)
-         VALUES (1, $1, $2, $3, $4, $5)
+        `INSERT INTO f13_meta (id, current_quarter, previous_quarter, prior_quarter, built_at, source, updated_at)
+         VALUES (1, $1, $2, $3, $4, $5, $6)
          ON CONFLICT (id) DO UPDATE SET
             current_quarter = EXCLUDED.current_quarter,
             previous_quarter = EXCLUDED.previous_quarter,
+            prior_quarter = EXCLUDED.prior_quarter,
             built_at = EXCLUDED.built_at,
             source = EXCLUDED.source,
             updated_at = EXCLUDED.updated_at`,
-        [meta.currentQuarter, meta.previousQuarter, meta.builtAt, meta.source, new Date().toISOString()]
+        [meta.currentQuarter, meta.previousQuarter, meta.priorQuarter, meta.builtAt, meta.source, new Date().toISOString()]
     );
 }
 
@@ -238,9 +300,10 @@ export async function touchStoreMeta(db: PostgresExecutor) {
 }
 
 /**
- * Apply one live filing to one side of the store.
- * mode 'replace' (original 13F-HR or restatement): the filer's side is reset to exactly these positions.
- * mode 'add' (new-holdings amendment): positions are added on top of the existing side.
+ * Apply one live filing to one slot of the store.
+ * mode 'replace' (original 13F-HR or restatement): the filer's slot is reset to exactly these positions.
+ * mode 'add' (new-holdings amendment): positions are added on top of the existing slot.
+ * Filing the current quarter makes the filer's prior quarter redundant, so it is dropped.
  */
 export async function applyFilingToStore(
     db: PostgresExecutor,
@@ -263,10 +326,16 @@ export async function applyFilingToStore(
     if (params.mode === 'replace') {
         await db.query(`UPDATE f13_positions SET ${side}_shares = 0, ${side}_value = 0 WHERE filer_id = $1`, [filerId]);
     }
+    if (side === 'cur') {
+        await db.query('UPDATE f13_positions SET prior_shares = 0, prior_value = 0 WHERE filer_id = $1 AND (prior_shares <> 0 OR prior_value <> 0)', [filerId]);
+        await db.query('UPDATE f13_filers SET prior_accession = NULL, prior_filing_date = NULL WHERE id = $1 AND prior_accession IS NOT NULL', [filerId]);
+    }
 
     const rows: StorePosition[] = Array.from(aggregated.values()).map((p) => ({
         securityId: securityIds.get(p.securityKey)!,
         filerId,
+        priorShares: side === 'prior' ? p.shares : 0,
+        priorValue: side === 'prior' ? p.value : 0,
         prevShares: side === 'prev' ? p.shares : 0,
         prevValue: side === 'prev' ? p.value : 0,
         curShares: side === 'cur' ? p.shares : 0,
@@ -279,7 +348,8 @@ export async function applyFilingToStore(
 
     await db.query(
         `DELETE FROM f13_positions
-         WHERE filer_id = $1 AND prev_shares = 0 AND prev_value = 0 AND cur_shares = 0 AND cur_value = 0`,
+         WHERE filer_id = $1 AND prior_shares = 0 AND prior_value = 0
+           AND prev_shares = 0 AND prev_value = 0 AND cur_shares = 0 AND cur_value = 0`,
         [filerId]
     );
     if (params.mode === 'replace') {
@@ -296,7 +366,7 @@ export async function applyFilingToStore(
     return { filerId, positions: rows.length };
 }
 
-/** The filing date currently backing one side for a filer (null if the filer has none on that side). */
+/** The filing date currently backing one slot for a filer (null if the filer has none in that slot). */
 export async function queryFilerSideFilingDate(db: PostgresExecutor, cik: string, side: StoreSide): Promise<string | null> {
     const { rows } = await db.query(`SELECT ${side}_filing_date AS d FROM f13_filers WHERE cik = $1`, [normalizeCik(cik)]);
     return rows[0]?.d ? String(rows[0].d) : null;
@@ -311,7 +381,7 @@ export async function readStoreSnapshot(pool: Pool, log = console.log): Promise<
     if (!meta) throw new Error('The 13F store is empty.');
     const [securityResult, filerResult, appliedResult, maxResult] = await Promise.all([
         pool.query('SELECT id, security_key, cusip, issuer FROM f13_securities'),
-        pool.query('SELECT id, cik, name, cur_accession, cur_filing_date, prev_accession, prev_filing_date FROM f13_filers'),
+        pool.query(`SELECT ${FILER_COLUMNS} FROM f13_filers`),
         pool.query('SELECT accession_number, quarter FROM f13_applied_filings'),
         pool.query('SELECT MAX(security_id) AS max FROM f13_positions'),
     ]);
@@ -326,21 +396,8 @@ export async function readStoreSnapshot(pool: Pool, log = console.log): Promise<
     }
     return {
         meta,
-        securities: securityResult.rows.map((row) => ({
-            id: Number(row.id),
-            securityKey: String(row.security_key),
-            cusip: row.cusip ? String(row.cusip) : null,
-            issuer: String(row.issuer),
-        })),
-        filers: filerResult.rows.map((row) => ({
-            id: Number(row.id),
-            cik: String(row.cik),
-            name: String(row.name),
-            curAccession: row.cur_accession ? String(row.cur_accession) : null,
-            curFilingDate: row.cur_filing_date ? String(row.cur_filing_date) : null,
-            prevAccession: row.prev_accession ? String(row.prev_accession) : null,
-            prevFilingDate: row.prev_filing_date ? String(row.prev_filing_date) : null,
-        })),
+        securities: securityResult.rows.map(toStoreSecurity),
+        filers: filerResult.rows.map(toStoreFiler),
         positions,
         appliedFilings: appliedResult.rows.map((row) => ({ accessionNumber: String(row.accession_number), quarter: String(row.quarter) })),
     };
@@ -375,33 +432,53 @@ export async function compactStore(pool: Pool, log = console.log) {
     await rewriteStore(pool, await readStoreSnapshot(pool, log), log);
 }
 
-/** Shift the stored pair forward one quarter: cur becomes prev, cur starts empty. Rewrites the store compactly. */
+/**
+ * Shift the stored quarters forward one: cur -> prev, prev -> prior, cur starts empty. Rewrites the store compactly.
+ * Nobody has filed the new quarter yet, so every filer keeps its prior quarter (the outgoing prev) for comparisons.
+ */
 export async function rolloverStore(pool: Pool, newCurrentQuarter: string, log = console.log) {
     const snapshot = await readStoreSnapshot(pool, log);
     const { meta } = snapshot;
     if (meta.currentQuarter === newCurrentQuarter) return false;
 
-    // Positions held only in the outgoing previous quarter carry nothing forward.
+    // The outgoing prior quarter is dropped; rows that only held it carry nothing forward.
     const positions = snapshot.positions
-        .filter((p) => p.curShares > 0 || p.curValue > 0)
-        .map((p) => ({ ...p, prevShares: p.curShares, prevValue: p.curValue, curShares: 0, curValue: 0 }));
+        .filter((p) => p.curShares > 0 || p.curValue > 0 || p.prevShares > 0 || p.prevValue > 0)
+        .map((p) => ({
+            ...p,
+            priorShares: p.prevShares,
+            priorValue: p.prevValue,
+            prevShares: p.curShares,
+            prevValue: p.curValue,
+            curShares: 0,
+            curValue: 0,
+        }));
     const filerIdsWithPositions = new Set(positions.map((p) => p.filerId));
     const filers = snapshot.filers
-        .map((f) => ({ ...f, prevAccession: f.curAccession, prevFilingDate: f.curFilingDate, curAccession: null, curFilingDate: null }))
-        .filter((f) => f.prevAccession || filerIdsWithPositions.has(f.id));
+        .map((f) => ({
+            ...f,
+            priorAccession: f.prevAccession,
+            priorFilingDate: f.prevFilingDate,
+            prevAccession: f.curAccession,
+            prevFilingDate: f.curFilingDate,
+            curAccession: null,
+            curFilingDate: null,
+        }))
+        .filter((f) => f.prevAccession || f.priorAccession || filerIdsWithPositions.has(f.id));
 
-    log(`[13F Store] Rolling ${meta.currentQuarter} vs ${meta.previousQuarter} -> ${newCurrentQuarter} vs ${meta.currentQuarter}: ${positions.length} positions carried`);
+    log(`[13F Store] Rolling forward to ${newCurrentQuarter} / ${meta.currentQuarter} / ${meta.previousQuarter}: ${positions.length} positions carried`);
     await rewriteStore(pool, {
         meta: {
             currentQuarter: newCurrentQuarter,
             previousQuarter: meta.currentQuarter,
+            priorQuarter: meta.previousQuarter,
             builtAt: meta.builtAt,
             source: `${meta.source.split('+')[0]}+rollover`,
         },
         securities: snapshot.securities,
         filers,
         positions,
-        appliedFilings: snapshot.appliedFilings.filter((f) => f.quarter !== meta.previousQuarter),
+        appliedFilings: snapshot.appliedFilings.filter((f) => !meta.priorQuarter || f.quarter !== meta.priorQuarter),
     }, log);
     return true;
 }
@@ -450,12 +527,14 @@ async function insertPositions(
             is_prn = f13_positions.is_prn OR EXCLUDED.is_prn`;
     }
     await db.query(
-        `INSERT INTO f13_positions (security_id, filer_id, prev_shares, prev_value, cur_shares, cur_value, is_prn)
-         SELECT * FROM unnest($1::int[], $2::int[], $3::bigint[], $4::bigint[], $5::bigint[], $6::bigint[], $7::bool[])
+        `INSERT INTO f13_positions (security_id, filer_id, prior_shares, prior_value, prev_shares, prev_value, cur_shares, cur_value, is_prn)
+         SELECT * FROM unnest($1::int[], $2::int[], $3::bigint[], $4::bigint[], $5::bigint[], $6::bigint[], $7::bigint[], $8::bigint[], $9::bool[])
          ${onConflict}`,
         [
             rows.map((r) => r.securityId),
             rows.map((r) => r.filerId),
+            rows.map((r) => Math.round(r.priorShares)),
+            rows.map((r) => Math.round(r.priorValue)),
             rows.map((r) => Math.round(r.prevShares)),
             rows.map((r) => Math.round(r.prevValue)),
             rows.map((r) => Math.round(r.curShares)),
@@ -494,16 +573,17 @@ async function resetSerial(db: PostgresExecutor, table: string) {
 // Reads
 // ---------------------------------------------------------------------------
 
+const FILER_COLUMNS = 'id, cik, name, cur_accession, cur_filing_date, prev_accession, prev_filing_date, prior_accession, prior_filing_date';
+
 export async function readStoreMeta(db: PostgresExecutor): Promise<StoreMeta | null> {
     try {
-        const { rows } = await db.query(
-            'SELECT current_quarter, previous_quarter, built_at, source, updated_at FROM f13_meta WHERE id = 1'
-        );
+        const { rows } = await db.query('SELECT * FROM f13_meta WHERE id = 1');
         const row = rows[0];
         if (!row) return null;
         return {
             currentQuarter: String(row.current_quarter),
             previousQuarter: String(row.previous_quarter),
+            priorQuarter: row.prior_quarter ? String(row.prior_quarter) : null,
             builtAt: String(row.built_at),
             source: String(row.source),
             updatedAt: String(row.updated_at),
@@ -531,25 +611,9 @@ export async function loadStoreDirectory(db: PostgresExecutor, meta: StoreMeta):
 
     const [securityResult, filerResult] = await Promise.all([
         db.query('SELECT id, security_key, cusip, issuer FROM f13_securities'),
-        db.query('SELECT id, cik, name, cur_accession, cur_filing_date, prev_accession, prev_filing_date FROM f13_filers'),
+        db.query(`SELECT ${FILER_COLUMNS} FROM f13_filers`),
     ]);
-    const securities: StoreSecurity[] = securityResult.rows.map((row) => ({
-        id: Number(row.id),
-        securityKey: String(row.security_key),
-        cusip: row.cusip ? String(row.cusip) : null,
-        issuer: String(row.issuer),
-    }));
-    const filers: StoreFiler[] = filerResult.rows.map((row) => ({
-        id: Number(row.id),
-        cik: String(row.cik),
-        name: String(row.name),
-        curAccession: row.cur_accession ? String(row.cur_accession) : null,
-        curFilingDate: row.cur_filing_date ? String(row.cur_filing_date) : null,
-        prevAccession: row.prev_accession ? String(row.prev_accession) : null,
-        prevFilingDate: row.prev_filing_date ? String(row.prev_filing_date) : null,
-    }));
-
-    directoryCache = createStoreDirectory(securities, filers, meta.updatedAt);
+    directoryCache = createStoreDirectory(securityResult.rows.map(toStoreSecurity), filerResult.rows.map(toStoreFiler), meta.updatedAt);
     watchlistMatchCache.clear();
     return directoryCache;
 }
@@ -594,6 +658,7 @@ export async function queryPositionsBySecurities(db: PostgresExecutor, securityI
     const { rows } = await db.query(
         `SELECT
             array_agg(security_id) AS s, array_agg(filer_id) AS f,
+            array_agg(prior_shares::float8) AS rs, array_agg(prior_value::float8) AS rv,
             array_agg(prev_shares::float8) AS ps, array_agg(prev_value::float8) AS pv,
             array_agg(cur_shares::float8) AS cs, array_agg(cur_value::float8) AS cv,
             array_agg(is_prn) AS p
@@ -605,6 +670,8 @@ export async function queryPositionsBySecurities(db: PostgresExecutor, securityI
     return ids.map((securityId, i) => ({
         securityId: Number(securityId),
         filerId: Number(row!.f![i]),
+        priorShares: Number(row!.rs![i]),
+        priorValue: Number(row!.rv![i]),
         prevShares: Number(row!.ps![i]),
         prevValue: Number(row!.pv![i]),
         curShares: Number(row!.cs![i]),
@@ -615,14 +682,18 @@ export async function queryPositionsBySecurities(db: PostgresExecutor, securityI
 
 export async function queryPositionsByFiler(db: PostgresExecutor, filerId: number): Promise<StorePosition[]> {
     const { rows } = await db.query(
-        `SELECT security_id, filer_id, prev_shares, prev_value, cur_shares, cur_value, is_prn
+        `SELECT security_id, filer_id, prior_shares, prior_value, prev_shares, prev_value, cur_shares, cur_value, is_prn
          FROM f13_positions WHERE filer_id = $1`,
         [filerId]
     );
     return rows.map(toStorePosition);
 }
 
-/** Map store rows onto the radar core's per-quarter filing/holding rows. PRN (bond principal) rows are left out. */
+/**
+ * Map store rows onto the radar core's per-quarter filing/holding rows for the stored cur/prev pair.
+ * (The prior slot is per-filer fallback data for the Whale Tracker, not part of the radar comparison.)
+ * PRN (bond principal) rows are left out.
+ */
 export function buildRadarRowsFromStore(
     meta: StoreMeta,
     directory: StoreDirectory,
@@ -655,10 +726,36 @@ export function buildRadarRowsFromStore(
     return { filings, holdings };
 }
 
+function toStoreSecurity(row: Record<string, unknown>): StoreSecurity {
+    return {
+        id: Number(row.id),
+        securityKey: String(row.security_key),
+        cusip: row.cusip ? String(row.cusip) : null,
+        issuer: String(row.issuer),
+    };
+}
+
+function toStoreFiler(row: Record<string, unknown>): StoreFiler {
+    const text = (value: unknown) => (value ? String(value) : null);
+    return {
+        id: Number(row.id),
+        cik: String(row.cik),
+        name: String(row.name),
+        curAccession: text(row.cur_accession),
+        curFilingDate: text(row.cur_filing_date),
+        prevAccession: text(row.prev_accession),
+        prevFilingDate: text(row.prev_filing_date),
+        priorAccession: text(row.prior_accession),
+        priorFilingDate: text(row.prior_filing_date),
+    };
+}
+
 function toStorePosition(row: Record<string, unknown>): StorePosition {
     return {
         securityId: Number(row.security_id),
         filerId: Number(row.filer_id),
+        priorShares: Number(row.prior_shares),
+        priorValue: Number(row.prior_value),
         prevShares: Number(row.prev_shares),
         prevValue: Number(row.prev_value),
         curShares: Number(row.cur_shares),

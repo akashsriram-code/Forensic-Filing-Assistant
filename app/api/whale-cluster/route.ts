@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { fetchCIK } from '@/lib/sec-client';
 import { RadarDataError, getAppPostgresPool, readAppStoreMeta } from '@/lib/thirteen-f-radar-data';
 import { loadFilerHoldingDiff, resolveStoreFiler } from '@/lib/thirteen-f-lookup';
-import { loadStoreDirectory, type StoreDirectory } from '@/lib/thirteen-f-store';
+import { loadStoreDirectory, type StoreDirectory, type StoreMeta } from '@/lib/thirteen-f-store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -21,27 +21,27 @@ interface Holding {
  */
 async function getFundHoldings(
     db: ReturnType<typeof getAppPostgresPool>,
+    meta: StoreMeta,
     directory: StoreDirectory,
-    query: string,
-    quarters: { current: string; previous: string }
+    query: string
 ) {
     const cikHint = /^\d{1,10}$/.test(query) ? query : await fetchCIK(query).catch(() => null);
     const filer = resolveStoreFiler(directory, query, cikHint);
-    if (!filer || (!filer.curAccession && !filer.prevAccession)) return null;
-    const useCurrent = Boolean(filer.curAccession);
+    if (!filer) return null;
+    const diff = await loadFilerHoldingDiff(db, meta, directory, filer);
+    if (!diff) return null;
 
     const holdings = new Map<string, Holding>();
-    for (const row of await loadFilerHoldingDiff(db, directory, filer)) {
-        const shares = useCurrent ? row.sharesCurr : row.sharesPrev;
-        if (shares <= 0) continue;
+    for (const row of diff.rows) {
+        if (row.sharesCurr <= 0) continue;
         const key = row.cusip || row.issuer;
-        holdings.set(key, { issuer: row.issuer, cusip: key, value: (useCurrent ? row.valueCurr : row.valuePrev) / 1000, shares });
+        holdings.set(key, { issuer: row.issuer, cusip: key, value: row.valueCurr / 1000, shares: row.sharesCurr });
     }
     return {
         ticker: query,
         filerName: filer.name,
-        quarter: useCurrent ? quarters.current : quarters.previous,
-        filingDate: (useCurrent ? filer.curFilingDate : filer.prevFilingDate) || '',
+        quarter: diff.pair.currentQuarter,
+        filingDate: diff.pair.currentFilingDate,
         holdings,
     };
 }
@@ -60,10 +60,9 @@ export async function POST(req: NextRequest) {
         const db = getAppPostgresPool();
         const directory = await loadStoreDirectory(db, meta);
 
-        const quarters = { current: meta.currentQuarter, previous: meta.previousQuarter };
         const [fundA, fundB] = await Promise.all([
-            getFundHoldings(db, directory, ticker1, quarters),
-            getFundHoldings(db, directory, ticker2, quarters),
+            getFundHoldings(db, meta, directory, ticker1),
+            getFundHoldings(db, meta, directory, ticker2),
         ]);
         if (!fundA || !fundB) {
             const missing = [!fundA && ticker1, !fundB && ticker2].filter(Boolean).join(' and ');

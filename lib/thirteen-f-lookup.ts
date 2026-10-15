@@ -4,13 +4,18 @@
 import { normalizeCik, normalizeIssuerName } from './thirteen-f-radar-core';
 import { type PostgresExecutor } from './thirteen-f-radar-postgres';
 import {
+    filerComparisonPair,
+    positionShares,
+    positionValue,
     queryPositionsByFiler,
     queryPositionsBySecurities,
+    type FilerComparisonPair,
     type StoreDirectory,
     type StoreFiler,
     type StoreMeta,
     type StorePosition,
     type StoreSecurity,
+    type StoreSide,
 } from './thirteen-f-store';
 
 const CORPORATE_SUFFIXES = new Set([
@@ -84,23 +89,33 @@ export interface FilerHoldingDiff {
     valuePrev: number;
 }
 
+/**
+ * A filer's holdings on its own latest pair of quarters: cur vs prev once it has filed the newest quarter,
+ * otherwise prev vs prior (so funds that haven't reported yet still show a real quarter-over-quarter change).
+ */
 export async function loadFilerHoldingDiff(
     db: PostgresExecutor,
+    meta: StoreMeta,
     directory: StoreDirectory,
     filer: StoreFiler
-): Promise<FilerHoldingDiff[]> {
+): Promise<{ pair: FilerComparisonPair; rows: FilerHoldingDiff[] } | null> {
+    const pair = filerComparisonPair(meta, filer);
+    if (!pair) return null;
     const positions = await queryPositionsByFiler(db, filer.id);
-    return positions.map((position) => {
-        const security = directory.securitiesById.get(position.securityId);
-        return {
-            issuer: security?.issuer || 'UNKNOWN',
-            cusip: security?.cusip || null,
-            sharesCurr: filer.curAccession ? position.curShares : 0,
-            sharesPrev: filer.prevAccession ? position.prevShares : 0,
-            valueCurr: filer.curAccession ? position.curValue : 0,
-            valuePrev: filer.prevAccession ? position.prevValue : 0,
-        };
-    });
+    const rows = positions
+        .map((position) => {
+            const security = directory.securitiesById.get(position.securityId);
+            return {
+                issuer: security?.issuer || 'UNKNOWN',
+                cusip: security?.cusip || null,
+                sharesCurr: positionShares(position, pair.currentSide),
+                valueCurr: positionValue(position, pair.currentSide),
+                sharesPrev: pair.previousSide ? positionShares(position, pair.previousSide) : 0,
+                valuePrev: pair.previousSide ? positionValue(position, pair.previousSide) : 0,
+            };
+        })
+        .filter((row) => row.sharesCurr > 0 || row.sharesPrev > 0 || row.valueCurr > 0 || row.valuePrev > 0);
+    return { pair, rows };
 }
 
 export interface ReverseLookupRows {
@@ -118,7 +133,10 @@ export interface ReverseLookupRows {
     filings: Array<{ fundName: string; cik: string; accessionNumber: string; filingDate: string; quarter: string }>;
 }
 
-/** Holders of the given securities, shaped for buildReverseLookupFunds (whale-reverse-lookup route). */
+/**
+ * Holders of the given securities, shaped for buildReverseLookupFunds (whale-reverse-lookup route).
+ * Every stored slot is passed through; buildReverseLookupFunds compares each fund's latest two filed quarters.
+ */
 export async function loadReverseLookupRows(
     db: PostgresExecutor,
     meta: StoreMeta,
@@ -133,21 +151,37 @@ export async function loadReverseLookupRows(
         const filer = directory.filersById.get(position.filerId);
         const security = directory.securitiesById.get(position.securityId);
         if (!filer || !security) continue;
-        const base = { fundName: filer.name, cik: filer.cik, issuer: security.issuer, cusip: security.cusip };
-        if (filer.curAccession && position.curShares > 0) {
-            rows.matchedHoldings.push({ ...base, accessionNumber: filer.curAccession, filingDate: filer.curFilingDate || '', quarter: meta.currentQuarter, value: position.curValue, shares: position.curShares });
-        }
-        if (filer.prevAccession && position.prevShares > 0) {
-            rows.matchedHoldings.push({ ...base, accessionNumber: filer.prevAccession, filingDate: filer.prevFilingDate || '', quarter: meta.previousQuarter, value: position.prevValue, shares: position.prevShares });
+        const slots = filerSlots(meta, filer);
+        for (const slot of slots) {
+            const shares = positionShares(position, slot.side);
+            if (shares <= 0) continue;
+            rows.matchedHoldings.push({
+                fundName: filer.name,
+                cik: filer.cik,
+                issuer: security.issuer,
+                cusip: security.cusip,
+                accessionNumber: slot.accession,
+                filingDate: slot.filingDate,
+                quarter: slot.quarter,
+                value: positionValue(position, slot.side),
+                shares,
+            });
         }
         if (filersSeen.has(filer.id)) continue;
         filersSeen.add(filer.id);
-        if (filer.curAccession) {
-            rows.filings.push({ fundName: filer.name, cik: filer.cik, accessionNumber: filer.curAccession, filingDate: filer.curFilingDate || '', quarter: meta.currentQuarter });
-        }
-        if (filer.prevAccession) {
-            rows.filings.push({ fundName: filer.name, cik: filer.cik, accessionNumber: filer.prevAccession, filingDate: filer.prevFilingDate || '', quarter: meta.previousQuarter });
+        for (const slot of slots) {
+            rows.filings.push({ fundName: filer.name, cik: filer.cik, accessionNumber: slot.accession, filingDate: slot.filingDate, quarter: slot.quarter });
         }
     }
     return rows;
+}
+
+function filerSlots(meta: StoreMeta, filer: StoreFiler) {
+    const slots: Array<{ side: StoreSide; quarter: string; accession: string; filingDate: string }> = [];
+    if (filer.curAccession) slots.push({ side: 'cur', quarter: meta.currentQuarter, accession: filer.curAccession, filingDate: filer.curFilingDate || '' });
+    if (filer.prevAccession) slots.push({ side: 'prev', quarter: meta.previousQuarter, accession: filer.prevAccession, filingDate: filer.prevFilingDate || '' });
+    if (filer.priorAccession && meta.priorQuarter) {
+        slots.push({ side: 'prior', quarter: meta.priorQuarter, accession: filer.priorAccession, filingDate: filer.priorFilingDate || '' });
+    }
+    return slots;
 }

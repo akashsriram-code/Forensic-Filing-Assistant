@@ -20,6 +20,7 @@ function nextReportQuarter(quarter: string): string {
 async function main() {
     let current = getArg('--current');
     let previous = getArg('--previous');
+    let prior = getArg('--prior');
     const pool = createPostgresPool();
     const meta = await readStoreMeta(pool).catch(() => null).finally(() => pool.end());
     if (!current) {
@@ -30,11 +31,14 @@ async function main() {
         }
         current = meta.currentQuarter;
         previous = meta.previousQuarter;
+        prior = meta.priorQuarter;
     }
     previous ||= previousReportQuarter(current);
+    prior ||= previousReportQuarter(previous);
     // A quarter's filings land in its own window; stragglers spill into the next one.
+    // The prior quarter (kept for filers that haven't filed the current one) is included when its window is published.
     const required = [previous, current];
-    const optional = [nextReportQuarter(current)];
+    const optional = [prior, nextReportQuarter(current)];
 
     const urls: string[] = [];
     let complete = true;
@@ -50,11 +54,11 @@ async function main() {
     // Same naming as build-13f-store's datasetSource(): extracted folders are named after the ZIP.
     const source = `sec-bulk:${urls.map((url) => url.split('/').pop()!.replace(/\.zip$/i, '')).sort().join(',')}`;
     const upToDate = Boolean(
-        meta && meta.currentQuarter === current && meta.previousQuarter === previous && meta.source.split('+')[0] === source
+        meta && meta.currentQuarter === current && meta.previousQuarter === previous && meta.priorQuarter === prior && meta.source.split('+')[0] === source
     );
 
     if (hasArg('--github-output')) {
-        const text = `urls=${urls.join(' ')}\ncomplete=${complete}\nup_to_date=${upToDate}\ncurrent=${current}\nprevious=${previous}\n`;
+        const text = `urls=${urls.join(' ')}\ncomplete=${complete}\nup_to_date=${upToDate}\ncurrent=${current}\nprevious=${previous}\nprior=${prior}\n`;
         if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, text);
         else process.stdout.write(text);
     } else {

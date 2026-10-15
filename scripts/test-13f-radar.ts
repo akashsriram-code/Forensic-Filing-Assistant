@@ -39,6 +39,7 @@ import {
     buildRadarRowsFromStore,
     buildStoreSecurityKey,
     createStoreDirectory,
+    filerComparisonPair,
     matchStoreSecurities,
     type StoreFiler,
     type StoreMeta,
@@ -427,6 +428,7 @@ async function run() {
     const storeMeta: StoreMeta = {
         currentQuarter: '2025-Q4',
         previousQuarter: '2025-Q3',
+        priorQuarter: '2025-Q2',
         builtAt: '2026-05-11T00:00:00.000Z',
         source: 'test',
         updatedAt: '2026-05-11T00:00:00.000Z',
@@ -440,6 +442,7 @@ async function run() {
         id, cik, name,
         curAccession: cur, curFilingDate: cur ? '2026-02-14' : null,
         prevAccession: prev, prevFilingDate: prev ? '2025-08-14' : null,
+        priorAccession: null, priorFilingDate: null,
     });
     const storeFilers = [
         storeFiler(1, 'A', 'Alpha Capital', 'A-curr', 'A-prev'),
@@ -449,12 +452,12 @@ async function run() {
     ];
     const directory = createStoreDirectory(storeSecurities, storeFilers, storeMeta.updatedAt);
     const storeRows = buildRadarRowsFromStore(storeMeta, directory, [
-        { securityId: 1, filerId: 1, prevShares: 100, prevValue: 25000, curShares: 50, curValue: 12000, isPrn: false },
-        { securityId: 1, filerId: 2, prevShares: 0, prevValue: 0, curShares: 10, curValue: 2600, isPrn: false },
-        { securityId: 1, filerId: 3, prevShares: 20, prevValue: 5300, curShares: 0, curValue: 0, isPrn: false },
-        { securityId: 2, filerId: 1, prevShares: 100, prevValue: 11000, curShares: 200, curValue: 22000, isPrn: false },
-        { securityId: 2, filerId: 2, prevShares: 0, prevValue: 0, curShares: 40, curValue: 4400, isPrn: false },
-        { securityId: 3, filerId: 4, prevShares: 0, prevValue: 0, curShares: 5000000, curValue: 5000000, isPrn: true },
+        { securityId: 1, filerId: 1, priorShares: 0, priorValue: 0, prevShares: 100, prevValue: 25000, curShares: 50, curValue: 12000, isPrn: false },
+        { securityId: 1, filerId: 2, priorShares: 0, priorValue: 0, prevShares: 0, prevValue: 0, curShares: 10, curValue: 2600, isPrn: false },
+        { securityId: 1, filerId: 3, priorShares: 0, priorValue: 0, prevShares: 20, prevValue: 5300, curShares: 0, curValue: 0, isPrn: false },
+        { securityId: 2, filerId: 1, priorShares: 0, priorValue: 0, prevShares: 100, prevValue: 11000, curShares: 200, curValue: 22000, isPrn: false },
+        { securityId: 2, filerId: 2, priorShares: 0, priorValue: 0, prevShares: 0, prevValue: 0, curShares: 40, curValue: 4400, isPrn: false },
+        { securityId: 3, filerId: 4, priorShares: 0, priorValue: 0, prevShares: 0, prevValue: 0, curShares: 5000000, curValue: 5000000, isPrn: true },
     ]);
     assert.equal(storeRows.holdings.some((row) => row.cik === 'D'), false);
     assert.equal(storeRows.filings.length, 8);
@@ -462,6 +465,20 @@ async function run() {
     assert.deepEqual(storeComparison.categorySummaries, comparison.categorySummaries);
     assert.deepEqual(storeComparison.topFilerMoves, comparison.topFilerMoves);
     assert.deepEqual(matchStoreSecurities(directory, DEFAULT_RADAR_WATCHLISTS, ['energy']), [2]);
+
+    // Each filer is compared on its own latest two filed quarters: cur vs prev once it has filed the newest quarter,
+    // prev vs prior until then (mid filing season), a single-quarter snapshot if that's all there is.
+    const pairFor = (filer: Partial<StoreFiler>) => filerComparisonPair(storeMeta, { ...storeFiler(9, 'Z', 'Z', null, null), ...filer });
+    assert.deepEqual(
+        [pairFor({ curAccession: 'c', prevAccession: 'p' })?.currentQuarter, pairFor({ curAccession: 'c', prevAccession: 'p' })?.previousQuarter],
+        ['2025-Q4', '2025-Q3']
+    );
+    const notYetFiled = pairFor({ prevAccession: 'p', priorAccession: 'r', priorFilingDate: '2025-05-15' });
+    assert.equal(notYetFiled?.currentSide, 'prev');
+    assert.equal(notYetFiled?.previousSide, 'prior');
+    assert.equal(notYetFiled?.previousQuarter, '2025-Q2');
+    assert.equal(pairFor({ prevAccession: 'p' })?.previousSide, null);
+    assert.equal(pairFor({}), null);
 
     // Ticker -> issuer lines: share-class suffixes match, other companies sharing the first word do not.
     const lookupDirectory = createStoreDirectory([
