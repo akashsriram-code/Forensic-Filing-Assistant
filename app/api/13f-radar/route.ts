@@ -1,64 +1,36 @@
 import { NextResponse } from 'next/server';
 import {
     RadarDataError,
-    buildRadarNotes,
-    createRadarClientFromEnv,
-    isRadarCacheOnlyEnabled,
-    loadRadarComparison,
-    loadRadarComparisonFromCache,
+    loadPrecomputedRadarResponse,
+    loadRadarComparisonFromStore,
+    readAppStoreMeta,
     readRadarRequestBody,
     resolveRadarRequest,
-    resolveRadarRequestFromCache,
+    toRadarApiResponse,
 } from '@/lib/thirteen-f-radar-data';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
     try {
         const body = await readRadarRequestBody(req);
-
-        // Hybrid approach: Try cache first, fall back to DB on miss
-        try {
-            const cacheRequest = await resolveRadarRequestFromCache(body);
-            const { comparison: cachedComparison } = await loadRadarComparisonFromCache(cacheRequest);
-            console.log('[13F Radar] Cache hit for', cacheRequest.currentQuarter, 'vs', cacheRequest.previousQuarter);
-
-            return NextResponse.json({
-                ...cachedComparison,
-                securityMovements: cachedComparison.securityMovements.slice(0, 100),
-                initiations: cachedComparison.initiations.slice(0, 50),
-                liquidations: cachedComparison.liquidations.slice(0, 50),
-                topFilerMoves: cachedComparison.topFilerMoves.slice(0, 100),
-                currentHoldersByCategory: cachedComparison.currentHoldersByCategory || {},
-                availableQuarters: cacheRequest.availableQuarters,
-                watchlists: cacheRequest.watchlists,
-                notes: buildRadarNotes(cacheRequest.dbShape),
-            });
-        } catch (cacheError) {
-            // Cache miss or cache-only mode without valid cache - fall back to DB
-            if (isRadarCacheOnlyEnabled()) {
-                throw cacheError; // No DB fallback in cache-only mode
-            }
-            console.log('[13F Radar] Cache miss, falling back to DB');
-        }
-
-        const db = createRadarClientFromEnv();
-        const request = await resolveRadarRequest(db, body);
-        const { comparison: mainComparison } = await loadRadarComparison(db, request);
-
-        return NextResponse.json({
-            ...mainComparison,
-            securityMovements: mainComparison.securityMovements.slice(0, 100),
-            initiations: mainComparison.initiations.slice(0, 50),
-            liquidations: mainComparison.liquidations.slice(0, 50),
-            topFilerMoves: mainComparison.topFilerMoves.slice(0, 100),
-            currentHoldersByCategory: mainComparison.currentHoldersByCategory || {},
-            availableQuarters: request.availableQuarters,
-            watchlists: request.watchlists,
-            notes: buildRadarNotes(request.dbShape),
+        const meta = await readAppStoreMeta().catch((error) => {
+            // The default view can still be served from precomputed files while the DB is unreachable.
+            console.error('[13F Radar] Store unavailable:', error);
+            return null;
         });
+        const request = await resolveRadarRequest(body, meta);
+
+        const precomputed = await loadPrecomputedRadarResponse(request);
+        if (precomputed) return NextResponse.json(precomputed);
+
+        if (!meta) {
+            throw new RadarDataError('The 13F database is unavailable, and only the built-in watchlists are precomputed. Try again shortly.', 503);
+        }
+        const { comparison } = await loadRadarComparisonFromStore(request, meta);
+        return NextResponse.json(toRadarApiResponse(comparison, request));
     } catch (error) {
         console.error('[13F Radar] Error:', error);
         const status = error instanceof RadarDataError ? error.status : 500;

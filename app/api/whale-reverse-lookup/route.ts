@@ -6,16 +6,19 @@ import {
     normalizeCik,
     type MovementAction,
 } from '@/lib/thirteen-f-radar-core';
-import { searchHoldingsByIssuer } from '@/lib/thirteen-f-radar-cache-query';
-import { searchEdgarLiveHoldings, enrichHoldersWithXml, type EdgarHolderResult } from '@/lib/edgar-reverse-lookup';
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout';
+import { RadarDataError, getAppPostgresPool, readAppStoreMeta } from '@/lib/thirteen-f-radar-data';
+import { findSecuritiesByCusip, findSecuritiesForCompany, loadReverseLookupRows } from '@/lib/thirteen-f-lookup';
+import { loadStoreDirectory } from '@/lib/thirteen-f-store';
 
-// Stub for backwards compatibility with test scripts
-export function resolveReverseLookupDbProviderFromEnv(): 'postgres' | 'turso' {
-    return 'postgres';
-}
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 const CACHE_REVALIDATE = 3600;
 const MAX_RESULT_LIMIT = 1000;
+const SEC_TICKER_TIMEOUT_MS = 10000;
+const CUSIP_PATTERN = /^[0-9A-Z]{8}[0-9]$/;
 type ReverseMovementAction = Exclude<MovementAction, 'absent'> | 'no_prior';
 const ACTION_RANK: Record<ReverseMovementAction, number> = {
     initiated: 0,
@@ -90,10 +93,10 @@ export interface ReverseLookupBuildResult {
 
 async function getCompanyName(ticker: string): Promise<string | null> {
     try {
-        const response = await fetch('https://www.sec.gov/files/company_tickers.json', {
-            headers: { 'User-Agent': 'ForensicAnalyzer contact@example.com' },
+        const response = await fetchWithTimeout('https://www.sec.gov/files/company_tickers.json', {
+            headers: { 'User-Agent': process.env.SEC_USER_AGENT || 'ForensicAnalyzer contact@example.com' },
             next: { revalidate: CACHE_REVALIDATE },
-        });
+        }, SEC_TICKER_TIMEOUT_MS);
         if (!response.ok) return null;
 
         const data = await response.json() as Record<string, SecCompanyTickerEntry>;
@@ -116,85 +119,39 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Ticker required' }, { status: 400 });
         }
 
-        const companyName = await getCompanyName(ticker);
-        if (!companyName) {
+        const meta = await readAppStoreMeta();
+        if (!meta) {
+            return NextResponse.json({ error: 'The 13F database is unavailable. Try again shortly.' }, { status: 503 });
+        }
+        const db = getAppPostgresPool();
+        const directory = await loadStoreDirectory(db, meta);
+
+        // A 9-character CUSIP is looked up directly; anything else is a ticker resolved to its SEC company name.
+        const isCusip = CUSIP_PATTERN.test(ticker);
+        const companyName = isCusip ? null : await getCompanyName(ticker);
+        const securities = isCusip
+            ? findSecuritiesByCusip(directory, ticker)
+            : companyName ? findSecuritiesForCompany(directory, companyName) : [];
+        if (!isCusip && !companyName) {
             return NextResponse.json({ error: 'Could not resolve ticker to specific company name' }, { status: 404 });
         }
-
-        console.log(`[ReverseLookup] Searching for holders of: ${ticker} (${companyName})`);
-
-        // Try cache first
-        const searchPrefix = buildIssuerSearchPrefix(companyName);
-        const cacheResult = await searchHoldingsByIssuer(searchPrefix);
-        
-        let matchedHoldings: ReverseHoldingRow[] = [];
-        let filings: ReverseFilingRow[] = [];
-        let source: 'cache' | 'edgar-live' = 'cache';
-        
-        if (cacheResult.holdings.length > 0) {
-            // Cache hit - use cached data
-            matchedHoldings = cacheResult.holdings.map(h => ({
-                fundName: h.fundName,
-                cik: h.cik,
-                accessionNumber: h.accessionNumber,
-                filingDate: h.filingDate,
-                quarter: h.quarter,
-                issuer: h.issuer,
-                cusip: h.cusip,
-                value: h.value,
-                shares: h.shares,
-            }));
-            
-            filings = cacheResult.filings.map(f => ({
-                fundName: f.fundName,
-                cik: f.cik,
-                accessionNumber: f.accessionNumber,
-                filingDate: f.filingDate,
-                quarter: f.quarter,
-            }));
-            console.log(`[ReverseLookup] Cache hit: ${matchedHoldings.length} holdings for ${ticker}`);
-        } else {
-            // Cache miss - fall back to live EDGAR search
-            console.log(`[ReverseLookup] Cache miss for ${ticker}, trying live EDGAR...`);
-            source = 'edgar-live';
-            
-            let edgarResults = await searchEdgarLiveHoldings(companyName, { maxResults: 10 });
-            console.log(`[ReverseLookup] EDGAR returned ${edgarResults.length} filers for ${ticker}, enriching with XML...`);
-            edgarResults = await enrichHoldersWithXml(edgarResults, companyName);
-            
-            // Convert EDGAR results to our format
-            // Note: EFTS doesn't return actual share/value counts, only filer metadata
-            for (const result of edgarResults) {
-                // Create a filing entry
-                filings.push({
-                    fundName: result.fundName,
-                    cik: result.cik,
-                    accessionNumber: result.accessionNumber,
-                    filingDate: result.filingDate,
-                    quarter: result.quarter,
-                });
-                
-                // Create a placeholder holding (EFTS doesn't return share counts)
-                matchedHoldings.push({
-                    fundName: result.fundName,
-                    cik: result.cik,
-                    accessionNumber: result.accessionNumber,
-                    filingDate: result.filingDate,
-                    quarter: result.quarter,
-                    issuer: companyName,
-                    cusip: null,
-                    value: result.value,
-                    shares: result.shares || 1,
-                });
-            }
+        if (securities.length === 0) {
+            return NextResponse.json({
+                error: `No ${meta.currentQuarter} or ${meta.previousQuarter} 13F holdings found for ${companyName || ticker}.`,
+            }, { status: 404 });
         }
-        
+
+        console.log(`[ReverseLookup] ${ticker} (${companyName || 'CUSIP'}) -> ${securities.length} securities`);
+        const { matchedHoldings, filings } = await loadReverseLookupRows(db, meta, directory, securities);
         const result = buildReverseLookupFunds({ matchedHoldings, filings, limit });
 
         return NextResponse.json({
             ticker,
-            companyName,
-            source,
+            companyName: companyName || securities[0].issuer,
+            source: 'store',
+            matchedIssuers: securities.map((security) => ({ issuer: security.issuer, cusip: security.cusip })),
+            currentQuarter: meta.currentQuarter,
+            previousQuarter: meta.previousQuarter,
             matchCount: result.matchCount,
             returnedCount: result.returnedCount,
             funds: result.funds,
@@ -203,7 +160,7 @@ export async function POST(req: NextRequest) {
         console.error('[ReverseLookup] Error:', error);
         return NextResponse.json(
             { error: error instanceof Error ? error.message : 'Internal Server Error' },
-            { status: 500 }
+            { status: error instanceof RadarDataError ? error.status : 500 }
         );
     }
 }
@@ -301,7 +258,7 @@ function aggregateHoldingsByAccession(rows: ReverseHoldingRow[]) {
             cusips: [],
         };
         existing.shares += row.shares;
-        existing.value += estimateActualValue(row.value, row.shares);
+        existing.value += estimateActualValue(row.value);
         pushUnique(existing.issuerSamples, row.issuer, 3);
         if (row.cusip) pushUnique(existing.cusips, row.cusip, 5);
         holdings.set(row.accessionNumber, existing);
@@ -366,10 +323,6 @@ function compareFilingsAsc(a: ReverseFilingRow, b: ReverseFilingRow): number {
     if (dateDiff !== 0) return dateDiff;
 
     return a.accessionNumber.localeCompare(b.accessionNumber);
-}
-
-function buildIssuerSearchPrefix(companyName: string): string {
-    return companyName.toUpperCase().split(' ')[0].replace(/[^A-Z0-9]/g, '');
 }
 
 async function readRequestBody(req: NextRequest): Promise<Record<string, unknown>> {

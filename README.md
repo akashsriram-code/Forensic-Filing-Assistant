@@ -79,30 +79,49 @@ This application relies on **Server-Side API Routes** to proxy requests to the S
 2.  Import the repo on [Vercel.com](https://vercel.com).
 3.  Deploy (Zero configuration required).
 
-### 13F Radar: Aiven + Cache-Only Reads
+### 13F data: compact Postgres store + precomputed JSON
 
-For production radar views, use PostgreSQL for ingestion/cache refresh and committed JSON for dashboard/export reads.
+The 13F features run inside a fixed **480 MB** Postgres budget (`POSTGRES_13F_SIZE_TARGET_BYTES`). No raw holdings rows are stored.
+
+*   **Postgres** (`lib/thirteen-f-store.ts`) holds exactly two quarters. Each row of `f13_positions` is one filer x security with **both** quarters side by side (`prev_*` / `cur_*` shares and values). All ~8,900 filers and ~27,000 securities take about 290 MB with indexes.
+    *   Option (put/call) rows are not stored. Bond principal (PRN) rows are stored but left out of the radar.
+    *   Values are the reported dollars. The SEC has required whole dollars since 2023, so nothing is scaled.
+*   **Precomputed JSON**, committed to git (no LFS), lives in `data/13f-precomputed/<current>-vs-<previous>/`. `radar.json` is the default-watchlist radar view, about 0.5 MB, refreshed by CI.
+    *   When a pair leaves the database it is archived there with `holders/<category>.json`, so older pairs stay browsable from the quarter dropdown.
+
+What reads what:
+
+| Feature | Source |
+|---|---|
+| 13F Radar, built-in watchlists | `radar.json` (no DB) |
+| 13F Radar, custom watchlists / audit XLSX / category holders | Postgres, latest pair only (archived holders come from git) |
+| Stock search, Whale Tracker, fund overlap | Postgres, latest pair |
+| Whale History (8 quarters) | Live SEC EDGAR |
+
+During a filing season the radar's default view stays on the most complete pair until the new quarter has at least 80% of the previous pair's comparable filers.
 
 App environment:
 
 ```bash
-THIRTEEN_F_DB_PROVIDER=postgres
-DATABASE_URL=postgres://...aivencloud.com:PORT/defaultdb?sslmode=require
-THIRTEEN_F_RADAR_CACHE_ONLY=true
+DATABASE_URL=postgres://...?sslmode=require   # or POSTGRES_URL
 ```
 
-When cache-only reads are disabled or a cache fallback is needed, the app prefers the PostgreSQL/Aiven URL whenever `DATABASE_URL` or `POSTGRES_URL` is present. Set `THIRTEEN_F_DB_PROVIDER=turso` only when you explicitly want to use Turso.
-Use the Aiven primary/read-write service URI for ingestion and cache refreshes. A read-only replica URI will fail with Postgres error `25006` (`cannot execute UPDATE in a read-only transaction`).
+Pipeline (`.github/workflows/13f-ingestion.yml`, daily):
 
-Cache generation:
+1.  `scripts/ingest-live-13f.ts --quarter <Q>` folds new 13F-HR/A filings from EDGAR into the store.
+    *   Restatements replace the filer's report and "new holdings" amendments are added to it. $0 stub filings are ignored.
+    *   When `<Q>` is the quarter after the stored current one, the store first archives its pair, then rolls forward. The rollover is batched and resumes if it is interrupted.
+2.  `scripts/build-13f-store.ts` rebuilds the store from the SEC Form 13F bulk data sets once they are published for both quarters. `scripts/resolve-13f-store-datasets.ts` picks the windows to download and skips the rebuild if nothing has changed.
+3.  `scripts/precompute-13f-radar.ts` refreshes `radar.json`. Then `scripts/size-13f-neon.ts --require-under-target` checks the size budget, and only `data/13f-precomputed/` is committed.
 
-*   Add a GitHub secret named `AIVEN_DATABASE_URL` with the Aiven PostgreSQL URI.
-*   Run the manual `13F Radar Cache` workflow after ingesting or refreshing a quarter.
-*   The workflow writes `data/13f-radar-cache/*/matched-holdings.json` and commits it.
+To build from scratch locally, download and extract the SEC data sets (e.g. into `downloads/sec-13f-datasets/<name>/extracted`), then run:
 
-When `THIRTEEN_F_RADAR_CACHE_ONLY=true`, `/api/13f-radar` and `/api/13f-radar/export` read only matching JSON cache files. If the requested quarter pair, categories, or watchlist hash are not cached, the API returns an error instead of falling back to SQL.
+```bash
+npm run build:13f-store -- --current 2026-Q2 --previous 2026-Q1 --datasets <dir1>,<dir2>
+npm run precompute:13f-radar
+```
 
-The app normalizes `sslmode=require` for Node's Postgres driver, so the standard Aiven URI is acceptable.
+Use the primary read-write URI for ingestion. A read-only replica URI fails with Postgres error `25006`. The app normalizes `sslmode=require` for Node's Postgres driver.
 
 ---
 

@@ -1,50 +1,43 @@
-import { createClient } from '@libsql/client';
-import { type InValue } from '@libsql/client';
 import { type Pool } from 'pg';
 import {
     DEFAULT_RADAR_WATCHLISTS,
-    buildIssuerSqlPatterns,
+    buildCategoryConcentration,
     buildRadarComparison,
-    compareQuartersAsc,
-    matchIssuerToWatchlists,
-    normalizeCik,
-    selectLatestFilings,
+    compareHoldersForTable,
     sortQuartersDesc,
-    type FilerSideMatch,
+    type FilerMove,
     type MovementBasis,
+    type RadarApiResponse,
     type RadarComparison,
     type RadarFilingRow,
     type RadarHoldingRow,
     type RadarWatchlist,
 } from './thirteen-f-radar-core';
-import {
-    createPostgresPool,
-    getPostgresConnectionString,
-    queryPostgresRows,
-} from './thirteen-f-radar-postgres';
+import { createPostgresPool, getPostgresConnectionString } from './thirteen-f-radar-postgres';
 import {
     getRadarWatchlistHash,
-    listRadarMatchedRowsCaches,
-    readRadarMatchedRowsCache,
-    type RadarCacheOptions,
-} from './thirteen-f-radar-cache';
+    listPrecomputedPairs,
+    readPrecomputedComparableFilers,
+    readPrecomputedHolders,
+    readPrecomputedRadar,
+    type PrecomputedPair,
+} from './thirteen-f-precomputed';
+import {
+    buildRadarRowsFromStore,
+    loadStoreDirectory,
+    matchStoreSecurities,
+    queryPositionsBySecurities,
+    readStoreMeta,
+    type StoreMeta,
+} from './thirteen-f-store';
 
-export const MISSING_TURSO_ERROR =
-    'Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN. 13F Radar needs the Turso holdings database.';
-export const MISSING_POSTGRES_ERROR =
-    'Missing DATABASE_URL or POSTGRES_URL. 13F Radar is configured for Postgres.';
+export const MISSING_POSTGRES_ERROR = 'Missing DATABASE_URL or POSTGRES_URL. 13F Radar is configured for Postgres.';
 
-const HOLDING_QUERY_CHUNK_SIZE = 500;
-const HOLDING_QUERY_CONCURRENCY = 12;
+// App-facing queries must fail fast instead of leaving the UI spinning.
+const APP_CONNECTION_TIMEOUT_MS = 10000;
+const APP_QUERY_TIMEOUT_MS = 25000;
 
-export type TursoClient = ReturnType<typeof createClient>;
-export type RadarDbProvider = 'turso' | 'postgres';
-export type RadarDbClient =
-    | { provider: 'turso'; client: TursoClient }
-    | { provider: 'postgres'; pool: Pool };
-type DbRow = Record<string, unknown>;
-
-let cachedPostgresPool: Pool | null = null;
+let appPool: Pool | null = null;
 
 export interface RadarRequestBody {
     currentQuarter?: unknown;
@@ -52,11 +45,8 @@ export interface RadarRequestBody {
     categories?: unknown;
     watchlists?: unknown;
     movementBasis?: unknown;
-}
-
-export interface DbShape {
-    holdingsColumns: string[];
-    putCallColumn: string | null;
+    /** Holders endpoint only. */
+    category?: unknown;
 }
 
 export interface ResolvedRadarRequest {
@@ -66,17 +56,16 @@ export interface ResolvedRadarRequest {
     watchlists: RadarWatchlist[];
     selectedCategories: string[];
     movementBasis: MovementBasis;
-    dbShape: DbShape;
+    /** True when the request uses the built-in watchlists and every category, so a precomputed file can serve it. */
+    isDefault: boolean;
+    /** True when the requested pair is the one held in the Postgres store (custom watchlists and exports need this). */
+    inStore: boolean;
 }
 
 export interface LoadedRadarComparison {
     comparison: RadarComparison;
     filings: RadarFilingRow[];
     holdings: RadarHoldingRow[];
-}
-
-export interface LoadRadarComparisonOptions extends RadarCacheOptions {
-    useCache?: boolean;
 }
 
 export class RadarDataError extends Error {
@@ -97,79 +86,119 @@ export async function readRadarRequestBody(req: Request): Promise<RadarRequestBo
     }
 }
 
-export function resolveRadarDbProviderFromEnv(): RadarDbProvider {
-    const explicit = process.env.THIRTEEN_F_DB_PROVIDER?.trim().toLowerCase();
-    if (explicit === 'postgres') return 'postgres';
-    if (explicit === 'turso') return 'turso';
-    if (getPostgresConnectionString()) return 'postgres';
-    return 'turso';
+/** Shared Postgres pool for API routes, with connection and statement timeouts. */
+export function getAppPostgresPool(): Pool {
+    const connectionString = getPostgresConnectionString();
+    if (!connectionString) throw new RadarDataError(MISSING_POSTGRES_ERROR, 500);
+    // Client-side query_timeout rather than statement_timeout: the connection pooler rejects it as a startup parameter.
+    appPool ||= createPostgresPool(connectionString, {
+        connectionTimeoutMillis: APP_CONNECTION_TIMEOUT_MS,
+        query_timeout: APP_QUERY_TIMEOUT_MS,
+    });
+    return appPool;
 }
 
-export function createRadarClientFromEnv(provider = resolveRadarDbProviderFromEnv()): RadarDbClient {
-    if (provider === 'postgres') {
-        const connectionString = getPostgresConnectionString();
-        if (!connectionString) {
-            throw new RadarDataError(MISSING_POSTGRES_ERROR, 500);
-        }
-        cachedPostgresPool ||= createPostgresPool(connectionString);
-        return { provider, pool: cachedPostgresPool };
-    }
-
-    const url = process.env.TURSO_DATABASE_URL;
-    const authToken = process.env.TURSO_AUTH_TOKEN;
-
-    if (!url || !authToken) {
-        throw new RadarDataError(MISSING_TURSO_ERROR, 500);
-    }
-
-    return { provider, client: createClient({ url, authToken }) };
+/** Store metadata, or null when Postgres is not configured / not built yet (precomputed files still work). */
+export async function readAppStoreMeta(): Promise<StoreMeta | null> {
+    if (!getPostgresConnectionString()) return null;
+    return readStoreMeta(getAppPostgresPool());
 }
 
-export function isRadarCacheOnlyEnabled(): boolean {
-    return ['1', 'true', 'yes'].includes(String(process.env.THIRTEEN_F_RADAR_CACHE_ONLY || '').trim().toLowerCase());
-}
-
-export async function resolveRadarRequestFromCache(
+export async function resolveRadarRequest(
     body: RadarRequestBody,
-    options: RadarCacheOptions = {}
+    meta: StoreMeta | null,
+    precomputedPairs?: PrecomputedPair[]
 ): Promise<ResolvedRadarRequest> {
+    const pairs = [...(precomputedPairs || await listPrecomputedPairs())];
+    if (meta && !pairs.some((p) => p.currentQuarter === meta.currentQuarter && p.previousQuarter === meta.previousQuarter)) {
+        pairs.unshift({ currentQuarter: meta.currentQuarter, previousQuarter: meta.previousQuarter });
+    }
+    if (pairs.length === 0) {
+        throw new RadarDataError('No 13F quarter pair is available yet. Run scripts/build-13f-store.ts and scripts/precompute-13f-radar.ts.', 503);
+    }
+
+    const availableQuarters = sortQuartersDesc(pairs.flatMap((p) => [p.currentQuarter, p.previousQuarter]));
+    const requestedCurrent = typeof body.currentQuarter === 'string' ? body.currentQuarter : '';
+    const requestedPrevious = typeof body.previousQuarter === 'string' ? body.previousQuarter : '';
+    const pair = requestedCurrent || requestedPrevious
+        ? pairs.find((p) =>
+            (!requestedCurrent || p.currentQuarter === requestedCurrent) &&
+            (!requestedPrevious || p.previousQuarter === requestedPrevious)
+        )
+        : await pickDefaultPair(pairs);
+    if (!pair) {
+        const listed = pairs.map((p) => `${p.currentQuarter} vs ${p.previousQuarter}`).join(', ');
+        throw new RadarDataError(`No stored comparison for ${requestedCurrent || '?'} vs ${requestedPrevious || '?'}. Available: ${listed}.`, 404);
+    }
+
     const watchlists = normalizeWatchlists(body.watchlists);
     const selectedCategories = normalizeCategories(body.categories, watchlists);
-    const movementBasis: MovementBasis = body.movementBasis === 'filer-count' ? 'filer-count' : 'filer-count';
-    const cache = await findUsableCache(body, watchlists, selectedCategories, options);
-
-    if (!cache) {
-        throw new RadarDataError('13F Radar cache is missing or stale, and database fallback is disabled.', 503);
-    }
+    const defaultKeys = DEFAULT_RADAR_WATCHLISTS.map((w) => w.key);
+    const isDefault =
+        getRadarWatchlistHash(watchlists) === getRadarWatchlistHash(DEFAULT_RADAR_WATCHLISTS) &&
+        defaultKeys.every((key) => selectedCategories.includes(key));
 
     return {
-        currentQuarter: cache.currentQuarter,
-        previousQuarter: cache.previousQuarter,
-        availableQuarters: cache.availableQuarters,
+        ...pair,
+        availableQuarters,
         watchlists,
         selectedCategories,
-        movementBasis,
-        dbShape: cache.dbShape,
+        movementBasis: 'filer-count',
+        isDefault,
+        inStore: Boolean(meta && meta.currentQuarter === pair.currentQuarter && meta.previousQuarter === pair.previousQuarter),
     };
 }
 
-export async function loadRadarComparisonFromCache(
+/**
+ * Newest pair, unless its quarter is still filing in: early in a filing season only a fraction of filers have reported,
+ * so stay on the newest pair whose comparable-filer count is within DEFAULT_PAIR_COVERAGE_RATIO of the best one.
+ */
+const DEFAULT_PAIR_COVERAGE_RATIO = 0.8;
+
+async function pickDefaultPair(pairs: PrecomputedPair[]): Promise<PrecomputedPair> {
+    const sorted = [...pairs].sort((a, b) => b.currentQuarter.localeCompare(a.currentQuarter));
+    const counts = await readPrecomputedComparableFilers(sorted);
+    const best = Math.max(0, ...counts.values());
+    return sorted.find((pair) => {
+        const count = counts.get(`${pair.currentQuarter}|${pair.previousQuarter}`);
+        return count === undefined ? best === 0 : count >= best * DEFAULT_PAIR_COVERAGE_RATIO;
+    }) || sorted[0];
+}
+
+/** Serve a default request from its precomputed file, if one exists for the pair. */
+export async function loadPrecomputedRadarResponse(request: ResolvedRadarRequest): Promise<RadarApiResponse | null> {
+    if (!request.isDefault) return null;
+    const file = await readPrecomputedRadar(request.currentQuarter, request.previousQuarter);
+    if (!file) return null;
+    return { ...file.response, availableQuarters: request.availableQuarters };
+}
+
+/** Build the comparison from the Postgres store: only positions in watchlist-matched securities are fetched. */
+export async function loadRadarComparisonFromStore(
     request: ResolvedRadarRequest,
-    options: RadarCacheOptions = {}
+    meta: StoreMeta,
+    db: Pool = getAppPostgresPool()
 ): Promise<LoadedRadarComparison> {
-    const cachedRows = await readRadarMatchedRowsCache(request, options);
-    if (!cachedRows) {
-        throw new RadarDataError('13F Radar cache is missing or stale, and database fallback is disabled.', 503);
+    if (!request.inStore) {
+        throw new RadarDataError(
+            `Custom watchlists and exports are only available for the latest stored pair (${meta.currentQuarter} vs ${meta.previousQuarter}). ` +
+            `${request.currentQuarter} vs ${request.previousQuarter} is only kept with the built-in watchlists.`,
+            400
+        );
     }
+    const directory = await loadStoreDirectory(db, meta);
+    const securityIds = matchStoreSecurities(directory, request.watchlists, request.selectedCategories);
+    const positions = await queryPositionsBySecurities(db, securityIds);
+    const { filings, holdings } = buildRadarRowsFromStore(meta, directory, positions);
 
     return {
-        filings: cachedRows.filings,
-        holdings: cachedRows.holdings,
+        filings,
+        holdings,
         comparison: buildRadarComparison({
             currentQuarter: request.currentQuarter,
             previousQuarter: request.previousQuarter,
-            filings: cachedRows.filings,
-            holdings: cachedRows.holdings,
+            filings,
+            holdings,
             watchlists: request.watchlists,
             selectedCategories: request.selectedCategories,
             movementBasis: request.movementBasis,
@@ -177,324 +206,58 @@ export async function loadRadarComparisonFromCache(
     };
 }
 
-export async function resolveRadarRequest(
-    db: RadarDbClient,
-    body: RadarRequestBody
-): Promise<ResolvedRadarRequest> {
-    const availableQuarters = await queryAvailableQuarters(db);
-
-    if (availableQuarters.length < 2) {
-        throw new RadarDataError('Need at least two ingested 13F quarters to build the radar.', 404);
-    }
-
-    const currentQuarter = pickCurrentQuarter(body.currentQuarter, availableQuarters);
-    const previousQuarter = pickPreviousQuarter(body.previousQuarter, currentQuarter, availableQuarters);
-
-    if (!currentQuarter || !previousQuarter) {
-        throw new RadarDataError('Could not resolve a comparable current and previous quarter.', 400);
-    }
-
-    const watchlists = normalizeWatchlists(body.watchlists);
-    const selectedCategories = normalizeCategories(body.categories, watchlists);
-    const movementBasis: MovementBasis = body.movementBasis === 'filer-count' ? 'filer-count' : 'filer-count';
-    const dbShape = await inspectDbShape(db);
-
+/**
+ * The API response shape. Shared by the route and the precompute script so both produce identical output.
+ * Full holder lists (tens of MB) are replaced by per-category concentration; the UI loads holders on demand.
+ */
+export function toRadarApiResponse(comparison: RadarComparison, request: ResolvedRadarRequest): RadarApiResponse {
     return {
-        currentQuarter,
-        previousQuarter,
-        availableQuarters,
-        watchlists,
-        selectedCategories,
-        movementBasis,
-        dbShape,
+        ...comparison,
+        securityMovements: comparison.securityMovements.slice(0, 100),
+        initiations: comparison.initiations.slice(0, 50),
+        liquidations: comparison.liquidations.slice(0, 50),
+        topFilerMoves: comparison.topFilerMoves.slice(0, 100),
+        currentHoldersByCategory: {},
+        categoryConcentration: buildCategoryConcentration(comparison.currentHoldersByCategory || {}, request.watchlists),
+        availableQuarters: request.availableQuarters,
+        watchlists: request.watchlists,
+        notes: buildRadarNotes(),
     };
 }
 
-async function findUsableCache(
-    body: RadarRequestBody,
-    watchlists: RadarWatchlist[],
-    selectedCategories: string[],
-    options: RadarCacheOptions
-) {
-    const requestedCurrent = typeof body.currentQuarter === 'string' ? body.currentQuarter : '';
-    const requestedPrevious = typeof body.previousQuarter === 'string' ? body.previousQuarter : '';
-    const watchlistHash = getRadarWatchlistHash(watchlists);
-    const requestedCategorySet = new Set(selectedCategories);
-    const caches = await listRadarMatchedRowsCaches(options);
+/** Rows of the holder table that render per-security details; the rest ship without them to keep payloads small. */
+export const HOLDER_DETAIL_ROWS = 100;
 
-    // Find cache with matching quarters - be lenient on watchlist hash (warn, don't reject)
-    const candidate = caches.find((cache) => {
-        if (requestedCurrent && cache.currentQuarter !== requestedCurrent) return false;
-        if (requestedPrevious && cache.previousQuarter !== requestedPrevious) return false;
-        return true;
-    });
-    
-    if (!candidate) return null;
-    
-    // Warn if watchlist hash differs (new tickers won't have data until regeneration)
-    if (candidate.watchlistHash !== watchlistHash) {
-        console.warn(`[13F Radar Cache] Watchlist hash mismatch: cache=${candidate.watchlistHash.slice(0, 8)} current=${watchlistHash.slice(0, 8)}. New tickers may show no data.`);
-    }
-    
-    // Warn if requested categories are missing (new categories won't have data)
-    const cachedCategorySet = new Set(candidate.matchedCategoryKeys);
-    const missingCategories = Array.from(requestedCategorySet).filter((cat) => !cachedCategorySet.has(cat));
-    if (missingCategories.length > 0) {
-        console.warn(`[13F Radar Cache] Categories not in cache: ${missingCategories.join(', ')}. They will show no data.`);
-    }
-    
-    return candidate;
-}
-
-export async function loadRadarComparison(
-    db: RadarDbClient,
+/**
+ * Every current holder in one category (for the category panel and its CSV download).
+ * Served from the store for the live pair, or from the archive written when an older pair left the store.
+ */
+export async function loadCategoryHolders(
     request: ResolvedRadarRequest,
-    options: LoadRadarComparisonOptions = {}
-): Promise<LoadedRadarComparison> {
-    const {
-        currentQuarter,
-        previousQuarter,
-        watchlists,
-        selectedCategories,
-        movementBasis,
-        dbShape,
-    } = request;
-
-    const cachedRows = options.useCache === false
-        ? null
-        : await readRadarMatchedRowsCache(request, options);
-    if (cachedRows) {
-        return {
-            filings: cachedRows.filings,
-            holdings: cachedRows.holdings,
-            comparison: buildRadarComparison({
-                currentQuarter,
-                previousQuarter,
-                filings: cachedRows.filings,
-                holdings: cachedRows.holdings,
-                watchlists,
-                selectedCategories,
-                movementBasis,
-            }),
-        };
+    meta: StoreMeta | null,
+    categoryKey: string
+): Promise<FilerMove[]> {
+    if (!request.watchlists.some((w) => w.key === categoryKey)) {
+        throw new RadarDataError(`Unknown category "${categoryKey}".`, 400);
     }
-
-    const quarters = [currentQuarter, previousQuarter];
-    const filings = await queryFilings(db, quarters);
-    const currentFilings = selectLatestFilings(filings, currentQuarter);
-    const previousFilings = selectLatestFilings(filings, previousQuarter);
-    // Fetch holdings for ALL filings from both quarters, not just comparable filers.
-    // This ensures prior-quarter holdings are available even for filers that only filed in one quarter.
-    const allFilings = [...currentFilings, ...previousFilings];
-    const holdings = selectedCategories.length > 0
-        ? await queryWatchedHoldings(db, allFilings, dbShape.putCallColumn)
-        : [];
-
-    return {
-        filings,
-        holdings,
-        comparison: buildRadarComparison({
-            currentQuarter,
-            previousQuarter,
-            filings,
-            holdings,
-            watchlists,
-            selectedCategories,
-            movementBasis,
-        }),
-    };
+    if (!request.inStore || !meta) {
+        const archived = request.isDefault
+            ? await readPrecomputedHolders(request.currentQuarter, request.previousQuarter, categoryKey)
+            : null;
+        if (archived) return archived;
+        if (!meta) throw new RadarDataError('The 13F database is unavailable. Try again shortly.', 503);
+    }
+    const { comparison } = await loadRadarComparisonFromStore({ ...request, selectedCategories: [categoryKey] }, meta);
+    const holders = [...(comparison.currentHoldersByCategory?.[categoryKey] || [])].sort(compareHoldersForTable);
+    return holders.map((holder, index) => (index < HOLDER_DETAIL_ROWS ? holder : { ...holder, details: [] }));
 }
 
-export async function queryFilerSideMatches(params: {
-    db: RadarDbClient;
-    currentQuarter: string;
-    previousQuarter: string;
-    watchlists: RadarWatchlist[];
-    selectedCategories: string[];
-}): Promise<FilerSideMatch[]> {
-    const { db, currentQuarter, previousQuarter, watchlists, selectedCategories } = params;
-    const patterns = buildIssuerSqlPatterns(watchlists, selectedCategories);
-    if (patterns.length === 0) return [];
-
-    const rowsByCik = new Map<string, DbRow>();
-    for (const patternChunk of chunkArray(patterns, 40)) {
-        const patternClauses = patternChunk.map(() => "UPPER(f.name) LIKE ? ESCAPE '\\'").join(' OR ');
-        const result = await executeRadarQuery(
-            db,
-            `
-                SELECT
-                    f.cik AS cik,
-                    f.name AS "fundName",
-                    MAX(fil.filing_date) AS "latestFilingDate",
-                    SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS "currentCount",
-                    SUM(CASE WHEN fil.quarter = ? THEN 1 ELSE 0 END) AS "previousCount"
-                FROM funds f
-                LEFT JOIN filings fil ON fil.cik = f.cik
-                WHERE ${patternClauses}
-                GROUP BY f.cik, f.name
-                LIMIT 200
-            `,
-            [currentQuarter, previousQuarter, ...patternChunk]
-        );
-
-        for (const row of result.rows) {
-            rowsByCik.set(toStringValue(row, 'cik'), row);
-        }
-    }
-
-    return Array.from(rowsByCik.values())
-        .map((row) => {
-            const fundName = toStringValue(row, 'fundName');
-            const matches = matchIssuerToWatchlists(fundName, watchlists, selectedCategories);
-            if (matches.length === 0) return null;
-
-            return {
-                cik: normalizeCik(toStringValue(row, 'cik')),
-                fundName,
-                matchedCategories: matches.map((match) => match.category.label),
-                matchedItems: matches.flatMap((match) => match.items.map((item) => item.label)),
-                latestFilingDate: nullableStringValue(row, 'latestFilingDate'),
-                hasCurrentQuarter: toNumberValue(row, 'currentCount') > 0,
-                hasPreviousQuarter: toNumberValue(row, 'previousCount') > 0,
-            };
-        })
-        .filter((match): match is FilerSideMatch => match !== null)
-        .slice(0, 30);
-}
-
-export function buildRadarNotes(dbShape: DbShape): string[] {
-    const notes = [
+export function buildRadarNotes(): string[] {
+    return [
         'Form 13F reports quarter-end long positions and does not reveal exact trade dates.',
         'Trend percentages use filer counts, not value-weighted flows.',
+        'Option (put/call) rows and bond principal (PRN) rows are excluded; values are reported dollars.',
     ];
-
-    if (!dbShape.putCallColumn) {
-        notes.push('The holdings table has no put/call column, so option rows can only be excluded after the SEC dataset ingestion upgrade adds that field.');
-    }
-
-    return notes;
-}
-
-async function queryAvailableQuarters(db: RadarDbClient): Promise<string[]> {
-    const result = await executeRadarQuery(db, `
-        SELECT quarter
-        FROM filings
-        WHERE quarter IS NOT NULL AND quarter != ''
-        GROUP BY quarter
-    `);
-
-    return sortQuartersDesc(result.rows.map((row) => toStringValue(row, 'quarter')).filter(Boolean));
-}
-
-async function queryFilings(db: RadarDbClient, quarters: string[]): Promise<RadarFilingRow[]> {
-    const placeholders = quarters.map(() => '?').join(', ');
-    const result = await executeRadarQuery(
-        db,
-        `
-            SELECT
-                fil.cik AS cik,
-                COALESCE(f.name, fil.cik) AS "fundName",
-                fil.accession_number AS "accessionNumber",
-                fil.filing_date AS "filingDate",
-                fil.quarter AS quarter
-            FROM filings fil
-            LEFT JOIN funds f ON fil.cik = f.cik
-            WHERE fil.quarter IN (${placeholders})
-        `,
-        quarters
-    );
-
-    return result.rows.map((row) => ({
-        cik: normalizeCik(toStringValue(row, 'cik')),
-        fundName: toStringValue(row, 'fundName'),
-        accessionNumber: toStringValue(row, 'accessionNumber'),
-        filingDate: toStringValue(row, 'filingDate'),
-        quarter: toStringValue(row, 'quarter'),
-    }));
-}
-
-async function queryWatchedHoldings(
-    db: RadarDbClient,
-    filings: RadarFilingRow[],
-    putCallColumn: string | null
-): Promise<RadarHoldingRow[]> {
-    if (filings.length === 0) return [];
-
-    const filingByAccession = new Map(filings.map((filing) => [filing.accessionNumber, filing]));
-    const putCallFilter = putCallColumn
-        ? `AND (${quoteIdentifier('h', putCallColumn)} IS NULL OR TRIM(${quoteIdentifier('h', putCallColumn)}) = '')`
-        : '';
-    const holdings: RadarHoldingRow[] = [];
-    const filingChunks = chunkArray(filings, HOLDING_QUERY_CHUNK_SIZE);
-    let nextChunkIndex = 0;
-
-    const worker = async () => {
-        while (true) {
-            const chunkIndex = nextChunkIndex++;
-            if (chunkIndex >= filingChunks.length) return;
-
-            const filingChunk = filingChunks[chunkIndex];
-            const placeholders = filingChunk.map(() => '?').join(', ');
-            const result = await executeRadarQuery(
-                db,
-                buildHoldingsSql(db, placeholders, putCallFilter),
-                filingChunk.map((filing) => filing.accessionNumber)
-            );
-
-            for (const row of result.rows) {
-                const accessionNumber = toStringValue(row, 'accessionNumber');
-                const filing = filingByAccession.get(accessionNumber);
-                if (!filing) continue;
-
-                holdings.push({
-                    cik: filing.cik,
-                    fundName: filing.fundName,
-                    accessionNumber,
-                    filingDate: filing.filingDate,
-                    quarter: filing.quarter,
-                    issuer: toStringValue(row, 'issuer'),
-                    cusip: nullableStringValue(row, 'cusip'),
-                    value: toNumberValue(row, 'value'),
-                    shares: toNumberValue(row, 'shares'),
-                });
-            }
-        }
-    };
-
-    await Promise.all(Array.from(
-        { length: Math.min(HOLDING_QUERY_CONCURRENCY, filingChunks.length) },
-        () => worker()
-    ));
-
-    return holdings;
-}
-
-async function inspectDbShape(db: RadarDbClient): Promise<DbShape> {
-    const result = db.provider === 'postgres'
-        ? await executeRadarQuery(db, `
-            SELECT column_name AS name
-            FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = 'holdings'
-        `)
-        : await executeRadarQuery(db, 'PRAGMA table_info(holdings)');
-    const holdingsColumns = result.rows.map((row) => toStringValue(row, 'name')).filter(Boolean);
-    const putCallColumn =
-        holdingsColumns.find((column) => column.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === 'putcall') || null;
-
-    return { holdingsColumns, putCallColumn };
-}
-
-function pickCurrentQuarter(value: unknown, availableQuarters: string[]): string {
-    const requested = typeof value === 'string' ? value : null;
-    if (requested && availableQuarters.includes(requested)) return requested;
-    return availableQuarters[0];
-}
-
-function pickPreviousQuarter(value: unknown, currentQuarter: string, availableQuarters: string[]): string | null {
-    const requested = typeof value === 'string' ? value : null;
-    if (requested && requested !== currentQuarter && availableQuarters.includes(requested)) return requested;
-
-    return availableQuarters.find((quarter) => compareQuartersAsc(quarter, currentQuarter) < 0) || null;
 }
 
 function normalizeCategories(value: unknown, watchlists: RadarWatchlist[]): string[] {
@@ -541,83 +304,4 @@ function parseWatchlist(value: unknown): RadarWatchlist | null {
         .filter((item): item is RadarWatchlist['items'][number] => item !== null);
 
     return { key, label, description, items };
-}
-
-function toStringValue(row: DbRow, key: string): string {
-    const value = row[key];
-    if (value === null || value === undefined) return '';
-    return String(value);
-}
-
-function nullableStringValue(row: DbRow, key: string): string | null {
-    const value = toStringValue(row, key);
-    return value || null;
-}
-
-function buildHoldingsSql(db: RadarDbClient, placeholders: string, putCallFilter: string): string {
-    if (db.provider === 'postgres') {
-        return `
-            SELECT
-                h.accession_number AS "accessionNumber",
-                s.issuer AS issuer,
-                s.cusip AS cusip,
-                h.value AS value,
-                h.shares AS shares
-            FROM holdings h
-            JOIN securities s ON s.security_key = h.security_key
-            WHERE h.accession_number IN (${placeholders})
-              ${putCallFilter}
-        `;
-    }
-
-    return `
-        SELECT
-            h.accession_number AS "accessionNumber",
-            h.issuer AS issuer,
-            h.cusip AS cusip,
-            h.value AS value,
-            h.shares AS shares
-        FROM holdings h
-        WHERE h.accession_number IN (${placeholders})
-          ${putCallFilter}
-    `;
-}
-
-async function executeRadarQuery(
-    db: RadarDbClient,
-    sql: string,
-    args: unknown[] = []
-): Promise<{ rows: DbRow[] }> {
-    if (db.provider === 'postgres') {
-        const result = await queryPostgresRows(db.pool, sql, args);
-        return { rows: result.rows as DbRow[] };
-    }
-
-    const result = await db.client.execute({ sql, args: args as InValue[] });
-    return { rows: result.rows as DbRow[] };
-}
-
-function toNumberValue(row: DbRow, key: string): number {
-    const value = row[key];
-    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-    if (typeof value === 'bigint') return Number(value);
-    if (typeof value === 'string') {
-        const parsed = Number.parseFloat(value);
-        return Number.isFinite(parsed) ? parsed : 0;
-    }
-    return 0;
-}
-
-function quoteIdentifier(prefix: string, identifier: string): string {
-    const safePrefix = prefix.replace(/"/g, '""');
-    const safeIdentifier = identifier.replace(/"/g, '""');
-    return `"${safePrefix}"."${safeIdentifier}"`;
-}
-
-function chunkArray<T>(items: T[], size: number): T[][] {
-    const chunks: T[][] = [];
-    for (let i = 0; i < items.length; i += size) {
-        chunks.push(items.slice(i, i + size));
-    }
-    return chunks;
 }

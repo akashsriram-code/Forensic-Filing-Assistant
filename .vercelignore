@@ -1,9 +1,10 @@
-# Keep 13F radar cache files (DB queries are too slow without them)
-# data/13f-radar-cache/
-# data/*.json
+# 13F data: only the small precomputed radar files (data/13f-precomputed/) ship with the app.
+data/13f-radar-cache/
+data/q1-2026/
 
 # Exclude development data
 downloads/
+exports/
 *.tsv
 
 # Exclude Python files (not needed in deployment)

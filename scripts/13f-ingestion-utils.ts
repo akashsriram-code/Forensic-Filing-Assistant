@@ -19,6 +19,8 @@ export interface HoldingInput {
 
 export interface ParsedLive13FXml {
     reportDate: string | null;
+    /** Cover-page amendment type for 13F-HR/A: "RESTATEMENT" or "NEW HOLDINGS". */
+    amendmentType: string | null;
     holdings: HoldingInput[];
 }
 
@@ -554,30 +556,33 @@ export async function parseLive13FXmlText(xmlContent: string): Promise<ParsedLiv
         tagNameProcessors: [(name: string) => name.toLowerCase()],
     });
     const reportDate = normalizeSecDate(findFirstTextByKeys(parsed, ['periodofreport', 'reportcalendarorquarter']) || '');
+    const amendmentType = (findFirstTextByKeys(parsed, ['amendmenttype']) || '').trim().toUpperCase() || null;
     const infoTableRows = collectInfoTableRows(parsed);
     const holdings = infoTableRows
         .map(parseInfoTableHolding)
         .filter((holding): holding is HoldingInput => holding !== null);
-    return { reportDate: reportDate || null, holdings };
+    return { reportDate: reportDate || null, amendmentType, holdings };
 }
 
 export async function parseLive13FSubmissionText(submissionText: string): Promise<ParsedLive13FXml> {
     const xmlSegments = Array.from(submissionText.matchAll(/<XML>([\s\S]*?)<\/XML>/gi)).map((match) => match[1]);
     const candidates = xmlSegments.length > 0 ? xmlSegments : [submissionText];
     let reportDate: string | null = null;
+    let amendmentType: string | null = null;
     let holdings: HoldingInput[] = [];
 
     for (const candidate of candidates) {
         try {
             const parsed = await parseLive13FXmlText(candidate);
             if (!reportDate && parsed.reportDate) reportDate = parsed.reportDate;
+            if (!amendmentType && parsed.amendmentType) amendmentType = parsed.amendmentType;
             if (parsed.holdings.length > holdings.length) holdings = parsed.holdings;
         } catch {
             // Filing submission wrappers often contain non-XML documents; ignore those blocks.
         }
     }
 
-    return { reportDate, holdings };
+    return { reportDate, amendmentType, holdings };
 }
 
 export function parseTsv(text: string): TsvRow[] {

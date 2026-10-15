@@ -23,9 +23,12 @@ import {
     X,
 } from 'lucide-react';
 import { classifyFiler } from '@/lib/filer-classification';
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout';
 import {
     DEFAULT_RADAR_WATCHLISTS,
+    calculateHHI,
     hydrateEditableWatchlists,
+    type CategoryConcentration,
     type CategorySummary,
     type FilerMove,
     type FilerTypeSummary,
@@ -99,6 +102,9 @@ interface SpaceXExposureResponse {
         filers: Record<string, number>;
     };
 }
+
+// Default views are precomputed; custom watchlists hit the database, so allow longer before giving up.
+const RADAR_REQUEST_TIMEOUT_MS = 45000;
 
 // Q2 Watch — Named funds to track for SpaceX and other watchlist activity
 const Q2_WATCH_FUNDS = [
@@ -261,6 +267,10 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
         DEFAULT_RADAR_WATCHLISTS.map((watchlist) => watchlist.key)
     );
     const [selectedDetailCategory, setSelectedDetailCategory] = useState<string | null>(null);
+    // Full holder lists are too large to ship with the comparison; fetched per category when its panel opens.
+    const [categoryHolders, setCategoryHolders] = useState<Record<string, FilerMove[]>>({});
+    const [holdersError, setHoldersError] = useState('');
+    const holdersRequestRef = useRef<string | null>(null);
     const initialLoadRef = useRef(false);
 
     const panelClass = isDark ? 'border-zinc-800 bg-zinc-900/45' : 'border-gray-200 bg-white';
@@ -304,13 +314,16 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
         const payload = buildRequestPayload(override);
 
         try {
-            const res = await fetch('/api/13f-radar', {
+            const res = await fetchWithTimeout('/api/13f-radar', {
                 method: 'POST',
                 headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
-            });
+            }, RADAR_REQUEST_TIMEOUT_MS);
             const radar = await parseRadarResponse(res);
             setData(radar);
+            setCategoryHolders({});
+            setHoldersError('');
+            holdersRequestRef.current = null;
             setWatchlists(radar.watchlists);
             setCurrentQuarter(radar.coverage.currentQuarter);
             setPreviousQuarter(radar.coverage.previousQuarter);
@@ -327,11 +340,11 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
         setError('');
 
         try {
-            const res = await fetch('/api/13f-radar/export', {
+            const res = await fetchWithTimeout('/api/13f-radar/export', {
                 method: 'POST',
                 headers: { 'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Type': 'application/json' },
                 body: JSON.stringify(buildRequestPayload()),
-            });
+            }, RADAR_REQUEST_TIMEOUT_MS * 2);
 
             if (!res.ok) {
                 throw new Error(await parseRadarErrorResponse(res, '13F Radar export failed'));
@@ -359,6 +372,36 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
         initialLoadRef.current = true;
         void loadRadar();
     }, [loadRadar]);
+
+    useEffect(() => {
+        const category = selectedDetailCategory;
+        if (!category || !data || categoryHolders[category] || holdersRequestRef.current === category) return;
+        holdersRequestRef.current = category;
+        setHoldersError('');
+
+        void (async () => {
+            try {
+                const res = await fetchWithTimeout('/api/13f-radar/holders', {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ...buildRequestPayload({
+                            currentQuarter: data.coverage.currentQuarter,
+                            previousQuarter: data.coverage.previousQuarter,
+                        }),
+                        category,
+                    }),
+                }, RADAR_REQUEST_TIMEOUT_MS);
+                if (!res.ok) throw new Error(await parseRadarErrorResponse(res, 'Could not load holders'));
+                const payload = (await res.json()) as { holders: FilerMove[] };
+                setCategoryHolders((prev) => ({ ...prev, [category]: payload.holders }));
+            } catch (err) {
+                setHoldersError(err instanceof Error ? err.message : 'Could not load holders');
+            } finally {
+                if (holdersRequestRef.current === category) holdersRequestRef.current = null;
+            }
+        })();
+    }, [buildRequestPayload, categoryHolders, data, selectedDetailCategory]);
 
     const selectedCategorySet = useMemo(() => new Set(selectedCategories), [selectedCategories]);
     const biggestSectorBuying = useMemo(
@@ -562,15 +605,25 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
             </section>
 
             {activeRadarTab === 'trends' && error && (
-                <div className={`rounded-xl border px-4 py-3 text-sm ${isDark ? 'border-red-900/70 bg-red-950/30 text-red-200' : 'border-red-200 bg-red-50 text-red-700'}`}>
-                    {error}
+                <div className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm ${isDark ? 'border-red-900/70 bg-red-950/30 text-red-200' : 'border-red-200 bg-red-50 text-red-700'}`}>
+                    <span>{error}</span>
+                    {!loading && (
+                        <button
+                            type="button"
+                            onClick={() => void loadRadar()}
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-current px-3 py-1 text-xs font-semibold"
+                        >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            Retry
+                        </button>
+                    )}
                 </div>
             )}
 
             {activeRadarTab === 'trends' && loading && !data && (
                 <div className={`rounded-xl border p-10 text-center ${panelClass}`}>
                     <Loader2 className="mx-auto mb-3 h-7 w-7 animate-spin text-emerald-500" />
-                    <div className={`text-sm ${mutedText}`}>Scanning ingested 13F holdings...</div>
+                    <div className={`text-sm ${mutedText}`}>Loading 13F comparison...</div>
                 </div>
             )}
 
@@ -669,9 +722,11 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                                                 theme={theme}
                                                 categoryKey={selectedDetailCategory}
                                                 categoryLabel={summary.label}
-                                                moves={data.currentHoldersByCategory?.[selectedDetailCategory] || data.topFilerMoves.filter((move) => move.categoryKey === selectedDetailCategory)}
+                                                moves={categoryHolders[selectedDetailCategory] || data.topFilerMoves.filter((move) => move.categoryKey === selectedDetailCategory)}
+                                                holdersStatus={categoryHolders[selectedDetailCategory] ? 'loaded' : holdersError ? 'error' : 'loading'}
+                                                holdersError={holdersError}
                                                 onClose={() => setSelectedDetailCategory(null)}
-                                                allCategoryHolders={data.currentHoldersByCategory}
+                                                concentration={data.categoryConcentration}
                                             />
                                         </div>
                                     )}
@@ -1446,38 +1501,48 @@ function CategoryHoldersPanel({
     categoryKey,
     categoryLabel,
     moves,
+    holdersStatus,
+    holdersError,
     onClose,
-    allCategoryHolders,
+    concentration,
 }: {
     theme: 'light' | 'dark';
     categoryKey: string;
     categoryLabel: string;
     moves: FilerMove[];
+    holdersStatus: 'loading' | 'loaded' | 'error';
+    holdersError?: string;
     onClose: () => void;
-    allCategoryHolders?: Record<string, FilerMove[]>;
+    concentration?: CategoryConcentration[];
 }) {
-    // Use the rich story panel for all categories
-    return (
-        <CategoryStoryPanel
-            theme={theme}
-            categoryKey={categoryKey}
-            categoryLabel={categoryLabel}
-            moves={moves}
-            onClose={onClose}
-            allCategoryHolders={allCategoryHolders}
-        />
-    );
-}
+    const isDark = theme === 'dark';
+    if (holdersStatus === 'loading') {
+        return (
+            <div className={`p-8 text-center text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin text-emerald-500" />
+                Loading all {categoryLabel} holders...
+            </div>
+        );
+    }
 
-// Calculate Herfindahl-Hirschman Index for ownership concentration
-function calculateHHI(shares: number[]): number {
-    const total = shares.reduce((sum, s) => sum + s, 0);
-    if (total === 0) return 0;
-    const sumSquares = shares.reduce((sum, s) => {
-        const marketShare = (s / total) * 100;
-        return sum + marketShare * marketShare;
-    }, 0);
-    return Math.round(sumSquares);
+    // Use the rich story panel for all categories (falls back to top movers if the full list failed to load)
+    return (
+        <>
+            {holdersStatus === 'error' && (
+                <div className={`mx-4 mt-4 rounded-lg border px-3 py-2 text-xs ${isDark ? 'border-amber-900/70 bg-amber-950/30 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                    Showing top movers only - the full holder list could not be loaded ({holdersError}). Close and reopen to retry.
+                </div>
+            )}
+            <CategoryStoryPanel
+                theme={theme}
+                categoryKey={categoryKey}
+                categoryLabel={categoryLabel}
+                moves={moves}
+                onClose={onClose}
+                concentration={concentration}
+            />
+        </>
+    );
 }
 
 // Get HHI classification label
@@ -1493,14 +1558,14 @@ function CategoryStoryPanel({
     categoryLabel,
     moves,
     onClose,
-    allCategoryHolders,
+    concentration,
 }: {
     theme: 'light' | 'dark';
     categoryKey: string;
     categoryLabel: string;
     moves: FilerMove[];
     onClose: () => void;
-    allCategoryHolders?: Record<string, FilerMove[]>;
+    concentration?: CategoryConcentration[];
 }) {
     const isDark = theme === 'dark';
     const [copied, setCopied] = useState(false);
@@ -1597,41 +1662,8 @@ function CategoryStoryPanel({
         };
     }, [enrichedMoves]);
 
-    // Calculate HHI for peer categories (for comparison)
-    const peerHHI = useMemo(() => {
-        if (!allCategoryHolders) return [];
-        
-        const categoryLabels: Record<string, string> = {
-            'mag7': 'Mag 7',
-            'palantir': 'Palantir',
-            'strategy': 'Strategy',
-            'energy': 'Energy',
-            'bdc': 'BDC / Alt-Credit',
-            'blue-owl': 'Blue Owl',
-            'software': 'Software / SaaS',
-            'semiconductors': 'Semiconductors',
-            'ai-infra': 'AI Infrastructure',
-            'utilities-power': 'Utilities / Power',
-            'data-centers': 'Data Centers',
-            'spcx': 'SpaceX',
-        };
-
-        const results: { key: string; label: string; hhi: number; holders: number }[] = [];
-        
-        for (const [key, holders] of Object.entries(allCategoryHolders)) {
-            if (holders.length === 0) continue;
-            const shares = holders.map((h) => h.currentShares);
-            const hhi = calculateHHI(shares);
-            results.push({
-                key,
-                label: categoryLabels[key] || key,
-                hhi,
-                holders: holders.length,
-            });
-        }
-        
-        return results.sort((a, b) => b.hhi - a.hhi);
-    }, [allCategoryHolders]);
+    // HHI for peer categories (for comparison) - computed server-side from the full holder lists
+    const peerHHI = concentration || [];
 
     // Generate story text
     const generateStoryText = useCallback(() => {

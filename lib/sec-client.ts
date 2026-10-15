@@ -1,7 +1,10 @@
 import { parseStringPromise } from 'xml2js';
 import * as cheerio from 'cheerio';
+import { fetchWithTimeout } from './fetch-with-timeout';
 
 const SEC_USER_AGENT = "ForensicAnalyzer contact@example.com"; // Replace with real info in prod
+// Every SEC call gives up after this, so a slow EDGAR response can't hang an API route.
+const SEC_FETCH_TIMEOUT_MS = 15000;
 
 interface CompanyTicker {
     cik_str: number;
@@ -71,10 +74,10 @@ export async function fetchCIK(query: string): Promise<string | null> {
 
     // 1. Try the standard company_tickers.json (Best for Public Companies / Tickers)
     try {
-        const response = await fetch("https://www.sec.gov/files/company_tickers.json", {
+        const response = await fetchWithTimeout("https://www.sec.gov/files/company_tickers.json", {
             headers: { "User-Agent": SEC_USER_AGENT },
             next: { revalidate: 86400 } // I'm caching this for a day because company tickers don't change that often.
-        });
+        }, SEC_FETCH_TIMEOUT_MS);
 
         if (response.ok) {
             const data = await response.json();
@@ -115,11 +118,12 @@ export async function fetchCIK(query: string): Promise<string | null> {
     console.log(`[CIK Lookup] Attempting EDGAR company search for: ${query}`);
     try {
         const encoded = encodeURIComponent(query);
-        const response = await fetch(
+        const response = await fetchWithTimeout(
             `https://www.sec.gov/cgi-bin/browse-edgar?company=${encoded}&CIK=&type=&dateb=&owner=include&count=1&search_text=&action=getcompany`,
             {
                 headers: { "User-Agent": SEC_USER_AGENT },
-            }
+            },
+            SEC_FETCH_TIMEOUT_MS
         );
 
         if (response.ok) {
@@ -148,10 +152,10 @@ export async function fetchCIK(query: string): Promise<string | null> {
 
 export async function fetchSubmission(cik: string): Promise<SecSubmission | null> {
     try {
-        const response = await fetch(`https://data.sec.gov/submissions/CIK${cik}.json`, {
+        const response = await fetchWithTimeout(`https://data.sec.gov/submissions/CIK${cik}.json`, {
             headers: { "User-Agent": SEC_USER_AGENT },
             next: { revalidate: 3600 }
-        });
+        }, SEC_FETCH_TIMEOUT_MS);
 
         if (!response.ok) return null;
         return await response.json();
@@ -163,9 +167,9 @@ export async function fetchSubmission(cik: string): Promise<SecSubmission | null
 
 export async function fetchFilingContent(url: string): Promise<string | null> {
     try {
-        const response = await fetch(url, {
+        const response = await fetchWithTimeout(url, {
             headers: { "User-Agent": SEC_USER_AGENT },
-        });
+        }, SEC_FETCH_TIMEOUT_MS);
         if (!response.ok) return null;
         return await response.text();
     } catch (error) {

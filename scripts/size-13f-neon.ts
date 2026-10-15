@@ -6,7 +6,7 @@ import {
     queryPostgresDatabaseSize,
     queryPostgresTableSizes,
 } from '../lib/thirteen-f-radar-postgres';
-import { isDirectRun } from './13f-ingestion-utils';
+import { hasArg, isDirectRun } from './13f-ingestion-utils';
 
 dotenv.config();
 
@@ -24,6 +24,10 @@ async function main() {
             size: formatBytes(row.sizeBytes),
             bytes: row.sizeBytes,
         })));
+        if (hasArg('--require-under-target') && databaseSize > POSTGRES_13F_SIZE_TARGET_BYTES) {
+            console.error(`[13F Neon Size] Database is over the ${formatBytes(POSTGRES_13F_SIZE_TARGET_BYTES)} target.`);
+            process.exitCode = 1;
+        }
     } finally {
         await pool.end();
     }

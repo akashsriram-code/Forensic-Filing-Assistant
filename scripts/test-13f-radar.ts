@@ -5,43 +5,45 @@ import path from 'node:path';
 import * as XLSX from 'xlsx';
 import {
     DEFAULT_RADAR_WATCHLISTS,
+    buildCategoryConcentration,
     buildRadarAudit,
     buildRadarComparison,
     buildSecAccessionFolderUrl,
     buildSecSubmissionTextUrl,
+    calculateHHI,
     classifyMovement,
+    compareHoldersForTable,
+    estimateActualValue,
     issuerMatchesItem,
     normalizeCik,
     selectLatestFilings,
+    type FilerMove,
     type RadarFilingRow,
     type RadarHoldingRow,
     type RadarWatchlist,
 } from '../lib/thirteen-f-radar-core';
 import { classifyFiler } from '../lib/filer-classification';
 import { getSector } from '../lib/sectors';
-import {
-    buildRadarMatchedRowsCache,
-    getRadarWatchlistHash,
-    listRadarMatchedRowsCaches,
-    readRadarMatchedRowsCache,
-    writeRadarMatchedRowsCache,
-} from '../lib/thirteen-f-radar-cache';
 import { buildRadarAuditWorkbook, buildRadarExportFilename } from '../lib/thirteen-f-radar-export';
+import { resolveRadarRequest, toRadarApiResponse, type ResolvedRadarRequest } from '../lib/thirteen-f-radar-data';
 import {
-    RadarDataError,
-    isRadarCacheOnlyEnabled,
-    loadRadarComparison,
-    loadRadarComparisonFromCache,
-    resolveRadarDbProviderFromEnv,
-    resolveRadarRequestFromCache,
-    type ResolvedRadarRequest,
-} from '../lib/thirteen-f-radar-data';
+    getRadarWatchlistHash,
+    listPrecomputedPairs,
+    readPrecomputedHolders,
+    readPrecomputedRadar,
+    writePrecomputedHolders,
+    writePrecomputedRadar,
+} from '../lib/thirteen-f-precomputed';
+import { findSecuritiesForCompany } from '../lib/thirteen-f-lookup';
 import {
-    buildPostgresSecurityKey,
-    normalizePostgresIssuer,
-    postgresValuePlaceholders,
-    toPostgresSql,
-} from '../lib/thirteen-f-radar-postgres';
+    buildRadarRowsFromStore,
+    buildStoreSecurityKey,
+    createStoreDirectory,
+    matchStoreSecurities,
+    type StoreFiler,
+    type StoreMeta,
+    type StoreSecurity,
+} from '../lib/thirteen-f-store';
 
 const filings: RadarFilingRow[] = [
     filing('A', 'Alpha Capital', 'A-prev', '2025-08-15', '2025-Q3'),
@@ -74,97 +76,18 @@ async function run() {
     assert.equal(normalizeCik('0001001011'), '1001011');
     assert.equal(normalizeCik('1001011'), '1001011');
     assert.equal(normalizeCik('A'), 'A');
-    assert.equal(normalizePostgresIssuer('  Salesforce   Inc  '), 'SALESFORCE INC');
-    assert.equal(buildPostgresSecurityKey('Salesforce Inc', '79466l302'), '79466L302|SALESFORCE INC');
-    assert.equal(buildPostgresSecurityKey('Salesforce Inc', null), 'NO_CUSIP|SALESFORCE INC');
-    assert.equal(toPostgresSql('a = ? AND b IN (?, ?)'), 'a = $1 AND b IN ($2, $3)');
-    assert.equal(postgresValuePlaceholders(2, 3), '($1, $2, $3), ($4, $5, $6)');
-    withTemporaryEnv({
-        TURSO_DATABASE_URL: undefined,
-        TURSO_AUTH_TOKEN: undefined,
-        DATABASE_URL: undefined,
-        POSTGRES_URL: undefined,
-        THIRTEEN_F_DB_PROVIDER: undefined,
-    }, () => {
-        assert.equal(resolveRadarDbProviderFromEnv(), 'turso');
-    });
-    withTemporaryEnv({
-        TURSO_DATABASE_URL: undefined,
-        TURSO_AUTH_TOKEN: undefined,
-        DATABASE_URL: 'postgres://example',
-        POSTGRES_URL: undefined,
-        THIRTEEN_F_DB_PROVIDER: undefined,
-    }, () => {
-        assert.equal(resolveRadarDbProviderFromEnv(), 'postgres');
-    });
-    withTemporaryEnv({
-        TURSO_DATABASE_URL: 'libsql://example',
-        TURSO_AUTH_TOKEN: 'token',
-        DATABASE_URL: 'postgres://example',
-        POSTGRES_URL: undefined,
-        THIRTEEN_F_DB_PROVIDER: undefined,
-    }, () => {
-        assert.equal(resolveRadarDbProviderFromEnv(), 'postgres');
-    });
-    withTemporaryEnv({
-        TURSO_DATABASE_URL: 'libsql://example',
-        TURSO_AUTH_TOKEN: 'token',
-        DATABASE_URL: 'postgres://example',
-        POSTGRES_URL: undefined,
-        THIRTEEN_F_DB_PROVIDER: 'turso',
-    }, () => {
-        assert.equal(resolveRadarDbProviderFromEnv(), 'turso');
-    });
-    withTemporaryEnv({
-        TURSO_DATABASE_URL: 'libsql://example',
-        TURSO_AUTH_TOKEN: 'token',
-        DATABASE_URL: undefined,
-        POSTGRES_URL: undefined,
-        THIRTEEN_F_DB_PROVIDER: 'postgres',
-    }, () => {
-        assert.equal(resolveRadarDbProviderFromEnv(), 'postgres');
-    });
-    withTemporaryEnv({ THIRTEEN_F_RADAR_CACHE_ONLY: 'true' }, () => {
-        assert.equal(isRadarCacheOnlyEnabled(), true);
-    });
-    withTemporaryEnv({ THIRTEEN_F_RADAR_CACHE_ONLY: undefined }, () => {
-        assert.equal(isRadarCacheOnlyEnabled(), false);
-    });
+    assert.equal(buildStoreSecurityKey('79466l302', 'Salesforce Inc'), '79466L302');
+    assert.equal(buildStoreSecurityKey(null, '  Salesforce   Inc  '), 'NO_CUSIP|SALESFORCE INC');
+    assert.equal(buildStoreSecurityKey('000000000', 'Salesforce Inc'), 'NO_CUSIP|SALESFORCE INC');
+    // Post-2023 13F values are whole dollars: no "thousands" scaling, even for bond principal or sub-$4 shares.
+    assert.equal(estimateActualValue(1000), 1000);
+    assert.equal(estimateActualValue(25000), 25000);
+    assert.equal(estimateActualValue(-5), 0);
 
     const reverseRouteModule = await import('../app/api/whale-reverse-lookup/route');
     const buildReverseLookupFunds = reverseRouteModule.buildReverseLookupFunds || (
         reverseRouteModule as unknown as { default: typeof reverseRouteModule }
     ).default.buildReverseLookupFunds;
-    const resolveReverseLookupDbProviderFromEnv = reverseRouteModule.resolveReverseLookupDbProviderFromEnv || (
-        reverseRouteModule as unknown as { default: typeof reverseRouteModule }
-    ).default.resolveReverseLookupDbProviderFromEnv;
-    withTemporaryEnv({
-        TURSO_DATABASE_URL: 'libsql://example',
-        TURSO_AUTH_TOKEN: 'token',
-        DATABASE_URL: undefined,
-        POSTGRES_URL: undefined,
-        THIRTEEN_F_DB_PROVIDER: undefined,
-    }, () => {
-        assert.equal(resolveReverseLookupDbProviderFromEnv(), 'postgres');
-    });
-    withTemporaryEnv({
-        TURSO_DATABASE_URL: 'libsql://example',
-        TURSO_AUTH_TOKEN: 'token',
-        DATABASE_URL: undefined,
-        POSTGRES_URL: undefined,
-        THIRTEEN_F_DB_PROVIDER: 'turso',
-    }, () => {
-        assert.equal(resolveReverseLookupDbProviderFromEnv(), 'turso');
-    });
-    withTemporaryEnv({
-        TURSO_DATABASE_URL: 'libsql://example',
-        TURSO_AUTH_TOKEN: 'token',
-        DATABASE_URL: 'postgres://example',
-        POSTGRES_URL: undefined,
-        THIRTEEN_F_DB_PROVIDER: undefined,
-    }, () => {
-        assert.equal(resolveReverseLookupDbProviderFromEnv(), 'postgres');
-    });
     const reverseLookup = buildReverseLookupFunds({
         filings: [
             reverseFiling('A', 'Alpha Fund', 'A-prev', '2026-02-14', '2025-Q4'),
@@ -496,115 +419,124 @@ async function run() {
         watchlists: DEFAULT_RADAR_WATCHLISTS,
         selectedCategories: ['software', 'energy'],
         movementBasis: 'filer-count',
-        dbShape: { holdingsColumns: ['putcall'], putCallColumn: 'putcall' },
+        isDefault: false,
+        inStore: true,
     };
 
-    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), '13f-radar-cache-'));
+    // Store rows map onto the radar core and reproduce the direct comparison; PRN (bond principal) rows are left out.
+    const storeMeta: StoreMeta = {
+        currentQuarter: '2025-Q4',
+        previousQuarter: '2025-Q3',
+        builtAt: '2026-05-11T00:00:00.000Z',
+        source: 'test',
+        updatedAt: '2026-05-11T00:00:00.000Z',
+    };
+    const storeSecurities: StoreSecurity[] = [
+        { id: 1, securityKey: '79466L302', cusip: '79466L302', issuer: 'SALESFORCE INC' },
+        { id: 2, securityKey: '30231G102', cusip: '30231G102', issuer: 'EXXON MOBIL CORP' },
+        { id: 3, securityKey: '79466LAA2', cusip: '79466LAA2', issuer: 'SALESFORCE INC' },
+    ];
+    const storeFiler = (id: number, cik: string, name: string, cur: string | null, prev: string | null): StoreFiler => ({
+        id, cik, name,
+        curAccession: cur, curFilingDate: cur ? '2026-02-14' : null,
+        prevAccession: prev, prevFilingDate: prev ? '2025-08-14' : null,
+    });
+    const storeFilers = [
+        storeFiler(1, 'A', 'Alpha Capital', 'A-curr', 'A-prev'),
+        storeFiler(2, 'B', 'Beta Partners', 'B-curr', 'B-prev'),
+        storeFiler(3, 'C', 'Cobalt Advisors', 'C-curr', 'C-prev'),
+        storeFiler(4, 'D', 'Delta Fund', 'D-curr', 'D-prev'),
+    ];
+    const directory = createStoreDirectory(storeSecurities, storeFilers, storeMeta.updatedAt);
+    const storeRows = buildRadarRowsFromStore(storeMeta, directory, [
+        { securityId: 1, filerId: 1, prevShares: 100, prevValue: 25000, curShares: 50, curValue: 12000, isPrn: false },
+        { securityId: 1, filerId: 2, prevShares: 0, prevValue: 0, curShares: 10, curValue: 2600, isPrn: false },
+        { securityId: 1, filerId: 3, prevShares: 20, prevValue: 5300, curShares: 0, curValue: 0, isPrn: false },
+        { securityId: 2, filerId: 1, prevShares: 100, prevValue: 11000, curShares: 200, curValue: 22000, isPrn: false },
+        { securityId: 2, filerId: 2, prevShares: 0, prevValue: 0, curShares: 40, curValue: 4400, isPrn: false },
+        { securityId: 3, filerId: 4, prevShares: 0, prevValue: 0, curShares: 5000000, curValue: 5000000, isPrn: true },
+    ]);
+    assert.equal(storeRows.holdings.some((row) => row.cik === 'D'), false);
+    assert.equal(storeRows.filings.length, 8);
+    const storeComparison = buildRadarComparison({ ...request, filings: storeRows.filings, holdings: storeRows.holdings });
+    assert.deepEqual(storeComparison.categorySummaries, comparison.categorySummaries);
+    assert.deepEqual(storeComparison.topFilerMoves, comparison.topFilerMoves);
+    assert.deepEqual(matchStoreSecurities(directory, DEFAULT_RADAR_WATCHLISTS, ['energy']), [2]);
+
+    // Ticker -> issuer lines: share-class suffixes match, other companies sharing the first word do not.
+    const lookupDirectory = createStoreDirectory([
+        { id: 1, securityKey: '037833100', cusip: '037833100', issuer: 'APPLE INC' },
+        { id: 2, securityKey: '03784Y200', cusip: '03784Y200', issuer: 'APPLE HOSPITALITY REIT INC' },
+        { id: 3, securityKey: '02079K305', cusip: '02079K305', issuer: 'ALPHABET INC CL A' },
+        { id: 4, securityKey: '02079K107', cusip: '02079K107', issuer: 'ALPHABET INC CAP STK CL C' },
+        { id: 5, securityKey: '67066G104', cusip: '67066G104', issuer: 'NVIDIA CORPORATION' },
+    ], [], 'x');
+    assert.deepEqual(findSecuritiesForCompany(lookupDirectory, 'Apple Inc.').map((s) => s.id), [1]);
+    assert.deepEqual(findSecuritiesForCompany(lookupDirectory, 'Alphabet Inc.').map((s) => s.id), [3, 4]);
+    assert.deepEqual(findSecuritiesForCompany(lookupDirectory, 'NVIDIA CORP').map((s) => s.id), [5]);
+
+    // Holder table order and concentration.
+    const holderMove = (cik: string, action: FilerMove['action'], currentShares: number, previousShares: number) =>
+        ({ cik, action, currentShares, previousShares } as FilerMove);
+    assert.deepEqual(
+        [holderMove('u', 'unchanged', 9, 9), holderMove('l', 'liquidated', 0, 5), holderMove('i', 'initiated', 3, 0), holderMove('i2', 'initiated', 7, 0)]
+            .sort(compareHoldersForTable).map((m) => m.cik),
+        ['i2', 'i', 'l', 'u']
+    );
+    assert.equal(calculateHHI([50, 50]), 5000);
+    assert.deepEqual(
+        buildCategoryConcentration({ software: [holderMove('a', 'unchanged', 100, 100)], energy: [] }, DEFAULT_RADAR_WATCHLISTS),
+        [{ key: 'software', label: 'Software / SaaS', hhi: 10000, holders: 1 }]
+    );
+
+    // Precomputed files: round trip, response trimming, and the filing-season default pair.
+    const precomputedRoot = await mkdtemp(path.join(os.tmpdir(), '13f-precomputed-'));
+    const previousPrecomputedDir = process.env.THIRTEEN_F_PRECOMPUTED_DIR;
+    process.env.THIRTEEN_F_PRECOMPUTED_DIR = precomputedRoot;
     try {
-        const directAudit = buildRadarAudit({
-            currentQuarter: request.currentQuarter,
-            previousQuarter: request.previousQuarter,
-            filings,
-            holdings,
-            watchlists: request.watchlists,
-            selectedCategories: request.selectedCategories,
-        });
-        const cache = buildRadarMatchedRowsCache({
-            request,
-            filings,
-            holdings: [
-                ...holdings,
-                holding('A', 'Alpha Capital', 'A-curr', '2026-02-17', '2025-Q4', 'UNWATCHED INDUSTRIAL CO', '999999999', 100, 1),
-            ],
-            generatedAt: new Date('2026-05-11T12:00:00.000Z'),
-        });
+        const response = toRadarApiResponse(comparison, request);
+        assert.deepEqual(response.currentHoldersByCategory, {});
+        assert.ok(Array.isArray(response.categoryConcentration));
+        const writeCoverage = async (currentQuarter: string, previousQuarter: string, comparableFilers: number) => {
+            await writePrecomputedRadar({
+                schemaVersion: 1,
+                generatedAt: '2026-05-11T00:00:00.000Z',
+                watchlistHash: getRadarWatchlistHash(DEFAULT_RADAR_WATCHLISTS),
+                storeUpdatedAt: null,
+                response: { ...response, coverage: { ...response.coverage, currentQuarter, previousQuarter, comparableFilers } },
+            });
+        };
+        await writeCoverage('2026-Q2', '2026-Q1', 8600);
+        await writeCoverage('2026-Q3', '2026-Q2', 1200);
+        assert.deepEqual(await listPrecomputedPairs(), [
+            { currentQuarter: '2026-Q3', previousQuarter: '2026-Q2' },
+            { currentQuarter: '2026-Q2', previousQuarter: '2026-Q1' },
+        ]);
+        assert.equal((await readPrecomputedRadar('2026-Q2', '2026-Q1'))?.response.coverage.comparableFilers, 8600);
 
-        assert.equal(cache.watchlistHash, getRadarWatchlistHash(DEFAULT_RADAR_WATCHLISTS));
-        assert.equal(cache.holdings.some((row) => row.issuer === 'UNWATCHED INDUSTRIAL CO'), false);
-        await writeRadarMatchedRowsCache(cache, { cacheRoot });
-        const listedCaches = await listRadarMatchedRowsCaches({ cacheRoot });
-        assert.equal(listedCaches.length, 1);
-        assert.equal(listedCaches[0].currentQuarter, request.currentQuarter);
-        assert.deepEqual(listedCaches[0].dbShape, request.dbShape);
+        // Early in the Q3 filing season (1,200 of ~8,600 filers) the default stays on Q2 vs Q1...
+        const early = await resolveRadarRequest({}, null);
+        assert.equal(early.currentQuarter, '2026-Q2');
+        assert.equal(early.isDefault, true);
+        assert.equal(early.inStore, false);
+        assert.deepEqual(early.availableQuarters, ['2026-Q3', '2026-Q2', '2026-Q1']);
+        // ...an explicit request still gets the newer pair...
+        assert.equal((await resolveRadarRequest({ currentQuarter: '2026-Q3' }, null)).previousQuarter, '2026-Q2');
+        // ...and once coverage catches up the default moves forward.
+        await writeCoverage('2026-Q3', '2026-Q2', 8000);
+        assert.equal((await resolveRadarRequest({}, null)).currentQuarter, '2026-Q3');
+        await assert.rejects(() => resolveRadarRequest({ currentQuarter: '2024-Q1' }, null), /No stored comparison/);
 
-        const cachedRows = await readRadarMatchedRowsCache(request, { cacheRoot });
-        assert.ok(cachedRows);
-        const resolvedFromCache = await resolveRadarRequestFromCache({
-            categories: request.selectedCategories,
-            watchlists: request.watchlists,
-        }, { cacheRoot });
-        assert.equal(resolvedFromCache.currentQuarter, request.currentQuarter);
-        assert.equal(resolvedFromCache.previousQuarter, request.previousQuarter);
-        assert.deepEqual(resolvedFromCache.dbShape, request.dbShape);
-        const cachedComparison = buildRadarComparison({
-            currentQuarter: request.currentQuarter,
-            previousQuarter: request.previousQuarter,
-            filings: cachedRows.filings,
-            holdings: cachedRows.holdings,
-            watchlists: request.watchlists,
-            selectedCategories: request.selectedCategories,
-        });
-        const cachedAudit = buildRadarAudit({
-            currentQuarter: request.currentQuarter,
-            previousQuarter: request.previousQuarter,
-            filings: cachedRows.filings,
-            holdings: cachedRows.holdings,
-            watchlists: request.watchlists,
-            selectedCategories: request.selectedCategories,
-        });
+        const customRequest = await resolveRadarRequest({ watchlists: [{ key: 'x', label: 'X', items: [{ ticker: 'X', label: 'X', aliases: ['X'] }] }] }, null);
+        assert.equal(customRequest.isDefault, false);
 
-        assert.deepEqual(cachedComparison.categorySummaries, comparison.categorySummaries);
-        assert.deepEqual(cachedComparison.initiations, comparison.initiations);
-        assert.deepEqual(cachedComparison.liquidations, comparison.liquidations);
-        assert.deepEqual(cachedComparison.topFilerMoves, comparison.topFilerMoves);
-        assert.deepEqual(cachedAudit.filerSecurityAuditRows, directAudit.filerSecurityAuditRows);
-        const loadedDirectlyFromCache = await loadRadarComparisonFromCache(resolvedFromCache, { cacheRoot });
-        assert.deepEqual(loadedDirectlyFromCache.comparison.categorySummaries, comparison.categorySummaries);
-
-        const noDb = {
-            provider: 'turso',
-            client: {
-                execute: async () => {
-                    throw new Error('DB should not be queried on cache hit');
-                },
-            },
-        } as unknown as Parameters<typeof loadRadarComparison>[0];
-        const loadedFromCache = await loadRadarComparison(noDb, request, { cacheRoot });
-        assert.deepEqual(loadedFromCache.comparison.categorySummaries, comparison.categorySummaries);
-
-        await writeRadarMatchedRowsCache({ ...cache, watchlistHash: 'stale' }, { cacheRoot });
-        assert.equal(await readRadarMatchedRowsCache(request, { cacheRoot }), null);
-        await assert.rejects(
-            () => resolveRadarRequestFromCache({
-                categories: request.selectedCategories,
-                watchlists: request.watchlists,
-            }, { cacheRoot }),
-            (error) => error instanceof RadarDataError && error.status === 503
-        );
-
-        const softwareOnlyCache = buildRadarMatchedRowsCache({
-            request: { ...request, selectedCategories: ['software'] },
-            filings,
-            holdings,
-        });
-        await writeRadarMatchedRowsCache(softwareOnlyCache, { cacheRoot });
-        assert.equal(await readRadarMatchedRowsCache(request, { cacheRoot }), null);
-
-        const missingCacheRoot = await mkdtemp(path.join(os.tmpdir(), '13f-radar-cache-missing-'));
-        try {
-            assert.equal(await readRadarMatchedRowsCache(request, { cacheRoot: missingCacheRoot }), null);
-            await assert.rejects(
-                () => resolveRadarRequestFromCache({
-                    categories: request.selectedCategories,
-                    watchlists: request.watchlists,
-                }, { cacheRoot: missingCacheRoot }),
-                (error) => error instanceof RadarDataError && error.status === 503
-            );
-        } finally {
-            await rm(missingCacheRoot, { recursive: true, force: true });
-        }
+        await writePrecomputedHolders('2026-Q2', '2026-Q1', 'software', [holderMove('a', 'unchanged', 1, 1)]);
+        assert.equal((await readPrecomputedHolders('2026-Q2', '2026-Q1', 'software'))?.length, 1);
+        assert.equal(await readPrecomputedHolders('2026-Q2', '2026-Q1', 'energy'), null);
     } finally {
-        await rm(cacheRoot, { recursive: true, force: true });
+        if (previousPrecomputedDir === undefined) delete process.env.THIRTEEN_F_PRECOMPUTED_DIR;
+        else process.env.THIRTEEN_F_PRECOMPUTED_DIR = previousPrecomputedDir;
+        await rm(precomputedRoot, { recursive: true, force: true });
     }
 
     const workbookBuffer = buildRadarAuditWorkbook({
@@ -631,64 +563,15 @@ async function run() {
     assert.equal(workbook.SheetNames.includes('Filer Side Matches'), false);
     assert.equal(buildRadarExportFilename('2025-Q4', '2025-Q3'), '13f-radar-audit-2025-Q4-vs-2025-Q3.xlsx');
 
+    // Without a database, exports fail fast with a JSON error instead of hanging.
     const exportRouteModule = await import('../app/api/13f-radar/export/route');
     const exportPost = exportRouteModule.POST || (
         exportRouteModule as unknown as { default: { POST: (req: Request) => Promise<Response> } }
     ).default.POST;
-    const routeCacheRoot = await mkdtemp(path.join(os.tmpdir(), '13f-radar-route-cache-'));
-    const routeEnvSnapshot = snapshotEnv([
-        'TURSO_DATABASE_URL',
-        'TURSO_AUTH_TOKEN',
-        'DATABASE_URL',
-        'POSTGRES_URL',
-        'THIRTEEN_F_DB_PROVIDER',
-        'THIRTEEN_F_RADAR_CACHE_ONLY',
-        'THIRTEEN_F_RADAR_CACHE_DIR',
-    ]);
-    try {
-        await writeRadarMatchedRowsCache(buildRadarMatchedRowsCache({ request, filings, holdings }), {
-            cacheRoot: routeCacheRoot,
-        });
-        delete process.env.TURSO_DATABASE_URL;
-        delete process.env.TURSO_AUTH_TOKEN;
-        delete process.env.DATABASE_URL;
-        delete process.env.POSTGRES_URL;
-        delete process.env.THIRTEEN_F_DB_PROVIDER;
-        process.env.THIRTEEN_F_RADAR_CACHE_ONLY = 'true';
-        process.env.THIRTEEN_F_RADAR_CACHE_DIR = routeCacheRoot;
-
-        const cachedExportResponse = await exportPost(new Request('http://localhost/api/13f-radar/export', {
-            method: 'POST',
-            body: JSON.stringify({
-                currentQuarter: request.currentQuarter,
-                previousQuarter: request.previousQuarter,
-                categories: request.selectedCategories,
-                watchlists: request.watchlists,
-            }),
-            headers: { 'Content-Type': 'application/json' },
-        }));
-        assert.equal(cachedExportResponse.status, 200);
-        assert.match(cachedExportResponse.headers.get('content-type') || '', /spreadsheetml\.sheet/);
-    } finally {
-        restoreEnv(routeEnvSnapshot);
-        await rm(routeCacheRoot, { recursive: true, force: true });
-    }
-
-    const previousUrl = process.env.TURSO_DATABASE_URL;
-    const previousToken = process.env.TURSO_AUTH_TOKEN;
-    const previousDatabaseUrl = process.env.DATABASE_URL;
-    const previousPostgresUrl = process.env.POSTGRES_URL;
-    const previousProvider = process.env.THIRTEEN_F_DB_PROVIDER;
-    const previousCacheOnly = process.env.THIRTEEN_F_RADAR_CACHE_ONLY;
-    const previousCacheDir = process.env.THIRTEEN_F_RADAR_CACHE_DIR;
+    const routeEnvSnapshot = snapshotEnv(['DATABASE_URL', 'POSTGRES_URL']);
     const previousConsoleError = console.error;
-    delete process.env.TURSO_DATABASE_URL;
-    delete process.env.TURSO_AUTH_TOKEN;
     delete process.env.DATABASE_URL;
     delete process.env.POSTGRES_URL;
-    delete process.env.THIRTEEN_F_DB_PROVIDER;
-    delete process.env.THIRTEEN_F_RADAR_CACHE_ONLY;
-    delete process.env.THIRTEEN_F_RADAR_CACHE_DIR;
     console.error = () => undefined;
     try {
         const response = await exportPost(new Request('http://localhost/api/13f-radar/export', {
@@ -696,47 +579,13 @@ async function run() {
             body: JSON.stringify({}),
             headers: { 'Content-Type': 'application/json' },
         }));
-        assert.equal(response.status, 500);
+        assert.equal(response.status, 503);
         assert.match(response.headers.get('content-type') || '', /application\/json/);
         const json = await response.json() as { error?: string };
-        assert.match(json.error || '', /Missing TURSO_DATABASE_URL/);
+        assert.match(json.error || '', /not been built/);
     } finally {
         console.error = previousConsoleError;
-        if (previousUrl === undefined) {
-            delete process.env.TURSO_DATABASE_URL;
-        } else {
-            process.env.TURSO_DATABASE_URL = previousUrl;
-        }
-        if (previousToken === undefined) {
-            delete process.env.TURSO_AUTH_TOKEN;
-        } else {
-            process.env.TURSO_AUTH_TOKEN = previousToken;
-        }
-        if (previousDatabaseUrl === undefined) {
-            delete process.env.DATABASE_URL;
-        } else {
-            process.env.DATABASE_URL = previousDatabaseUrl;
-        }
-        if (previousPostgresUrl === undefined) {
-            delete process.env.POSTGRES_URL;
-        } else {
-            process.env.POSTGRES_URL = previousPostgresUrl;
-        }
-        if (previousProvider === undefined) {
-            delete process.env.THIRTEEN_F_DB_PROVIDER;
-        } else {
-            process.env.THIRTEEN_F_DB_PROVIDER = previousProvider;
-        }
-        if (previousCacheOnly === undefined) {
-            delete process.env.THIRTEEN_F_RADAR_CACHE_ONLY;
-        } else {
-            process.env.THIRTEEN_F_RADAR_CACHE_ONLY = previousCacheOnly;
-        }
-        if (previousCacheDir === undefined) {
-            delete process.env.THIRTEEN_F_RADAR_CACHE_DIR;
-        } else {
-            process.env.THIRTEEN_F_RADAR_CACHE_DIR = previousCacheDir;
-        }
+        restoreEnv(routeEnvSnapshot);
     }
 
     console.log('13F Radar unit tests passed.');
@@ -796,30 +645,6 @@ function reverseHolding(
         value,
         shares,
     };
-}
-
-function withTemporaryEnv(values: Record<string, string | undefined>, fn: () => void) {
-    const previous = new Map<string, string | undefined>();
-    for (const [key, value] of Object.entries(values)) {
-        previous.set(key, process.env[key]);
-        if (value === undefined) {
-            delete process.env[key];
-        } else {
-            process.env[key] = value;
-        }
-    }
-
-    try {
-        fn();
-    } finally {
-        for (const [key, value] of previous.entries()) {
-            if (value === undefined) {
-                delete process.env[key];
-            } else {
-                process.env[key] = value;
-            }
-        }
-    }
 }
 
 function snapshotEnv(keys: string[]): Map<string, string | undefined> {

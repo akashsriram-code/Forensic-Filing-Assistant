@@ -1,32 +1,36 @@
-import { createClient, type InValue } from '@libsql/client';
+/**
+ * Live EDGAR 13F ingestion into the compact store (lib/thirteen-f-store.ts).
+ *
+ * Scans the quarterly master index, recent daily indexes and the current feed for 13F-HR / 13F-HR/A filings, then folds
+ * each new filing into its filer's side of the stored pair: report quarter == stored current -> cur, == stored previous
+ * -> prev (late filers). If --quarter is the quarter after the stored current one, the store rolls over first (after
+ * archiving the outgoing pair's precomputed view to data/13f-precomputed/).
+ *
+ * Usage: npm run ingest:13f-live -- --quarter 2026-Q3 [--dry-run] [--limit 250] [--max-new-filings 200]
+ *        [--concurrency 6] [--rate-limit-ms 110] [--current-feed-pages 5] [--daily-index-lookback-days 7]
+ */
 import * as dotenv from 'dotenv';
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import {
+    POSTGRES_13F_SIZE_TARGET_BYTES,
     assertPostgresWritable,
-    completePostgresIngestionRun,
     createPostgresPool,
-    dropPostgres13FIndexes,
-    ensurePostgres13FIndexes,
-    ensurePostgres13FSchema,
-    failPostgresIngestionRun,
     getPostgresConnectionString,
-    queryPostgresExistingAccessions,
-    replacePostgres13FHoldings,
-    retainPostgres13FQuarters,
-    startPostgresIngestionRun,
-    upsertPostgres13FFilings,
-    type Postgres13FFilingInput,
-    type Postgres13FHoldingInput,
+    queryPostgresDatabaseSize,
 } from '../lib/thirteen-f-radar-postgres';
+import { compareQuartersAsc } from '../lib/thirteen-f-radar-core';
 import {
-    batchWithRetry,
-    chunkRows,
-    completeIngestionRun,
-    ensure13FSchema,
-    ensureRequired13FIndexes,
-    executeWithArgsRetry,
-    failIngestionRun,
+    applyFilingToStore,
+    ensureStoreSchema,
+    markFilingSeen,
+    queryAppliedAccessions,
+    queryFilerSideFilingDate,
+    compactStore,
+    readStoreMeta,
+    rolloverStore,
+    touchStoreMeta,
+    type StoreSide,
+} from '../lib/thirteen-f-store';
+import {
     fetchTextWithRetry,
     filingIndexQuarterForReportQuarter,
     getArg,
@@ -36,11 +40,7 @@ import {
     parseLive13FSubmissionText,
     previousReportQuarter,
     quarterFromReportDate,
-    resolveIngestionTargetProvider,
-    startIngestionRun,
-    dropHoldingSearchIndexes,
     type HoldingInput,
-    type IngestionTargetProvider,
 } from './13f-ingestion-utils';
 
 dotenv.config();
@@ -59,510 +59,261 @@ interface ProcessedLiveFiling {
     fundName: string;
     form: string;
     filingDate: string;
-    reportDate: string;
+    reportQuarter: string | null;
+    amendmentType: string | null;
     holdings: HoldingInput[];
-    skippedReason?: string;
     errorMessage?: string;
 }
 
-const TURSO_URL = process.env.TURSO_DATABASE_URL;
-const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
 const DEFAULT_CONCURRENCY = 6;
 const DEFAULT_RATE_LIMIT_MS = 110;
-const DEFAULT_WRITE_BATCH_SIZE = 5;
-const DEFAULT_HOLDING_INSERT_CHUNK_SIZE = 100;
-const MAX_HOLDING_INSERT_CHUNK_SIZE = 100;
-const MAX_POSTGRES_HOLDING_INSERT_CHUNK_SIZE = 1000;
-const HOLDING_INSERT_STATEMENTS_PER_BATCH = 25;
 const CURRENT_FEED_PAGE_SIZE = 100;
 const CURRENT_FEED_FORMS = ['13F-HR', '13F-HR/A'] as const;
-
-type LiveDbTarget =
-    | { provider: 'turso'; client: ReturnType<typeof createClient> }
-    | { provider: 'postgres'; pool: ReturnType<typeof createPostgresPool> };
-
-const CACHE_ROOT = path.join(process.cwd(), 'data', '13f-radar-cache');
-
-/** Load accession numbers from existing cache to avoid re-ingesting already-cached filings */
-async function loadCacheAccessions(quarter: string, previousQuarter: string): Promise<Set<string>> {
-    const accessions = new Set<string>();
-    try {
-        const cacheDir = path.join(CACHE_ROOT, `${quarter}-vs-${previousQuarter}`);
-        const cachePath = path.join(cacheDir, 'matched-holdings.json');
-        const content = await fs.readFile(cachePath, 'utf8');
-        const cache = JSON.parse(content);
-        if (Array.isArray(cache.filings)) {
-            for (const filing of cache.filings) {
-                if (filing.accessionNumber) {
-                    accessions.add(filing.accessionNumber);
-                }
-            }
-        }
-    } catch {
-        // Cache doesn't exist or is invalid - that's fine
-    }
-    return accessions;
-}
+// Touch f13_meta (which invalidates app-side directory caches) at least this often during long runs.
+const META_TOUCH_EVERY = 200;
+// Compact (rewrite) the store when it grows past this, well below the 480 MB budget.
+const COMPACT_ABOVE_BYTES = 400 * 1024 * 1024;
 
 async function main() {
     const quarter = getArg('--quarter');
-    const targetProvider = resolveIngestionTargetProvider();
     const dryRun = hasArg('--dry-run');
-    const refreshExisting = hasArg('--refresh-existing');
-    const rebuildSearchIndexes = hasArg('--rebuild-search-indexes');
     const limit = Number.parseInt(getArg('--limit') || '', 10);
     const concurrency = positiveIntArg('--concurrency', DEFAULT_CONCURRENCY);
     const rateLimitMs = positiveIntArg('--rate-limit-ms', DEFAULT_RATE_LIMIT_MS);
-    const writeBatchSize = positiveIntArg('--write-batch-size', DEFAULT_WRITE_BATCH_SIZE);
-    const requestedHoldingInsertChunkSize = positiveIntArg('--holding-insert-chunk-size', DEFAULT_HOLDING_INSERT_CHUNK_SIZE);
     const dailyIndexLookbackDays = nonNegativeIntArg('--daily-index-lookback-days', 7);
     const currentFeedPages = nonNegativeIntArg('--current-feed-pages', 5);
-    const holdingInsertChunkSize = Math.min(
-        requestedHoldingInsertChunkSize,
-        maxHoldingInsertChunkSizeFor(targetProvider)
-    );
     const maxNewFilings = positiveOptionalIntArg('--max-new-filings');
 
     if (!quarter) {
-        console.error('Usage: npm run ingest:13f-live -- --quarter 2026-Q1 [--target turso|postgres] [--dry-run] [--refresh-existing] [--rebuild-search-indexes] [--limit 250] [--max-new-filings 200] [--concurrency 6] [--rate-limit-ms 110] [--write-batch-size 5] [--holding-insert-chunk-size 100] [--current-feed-pages 5] [--daily-index-lookback-days 7]');
+        console.error('Usage: npm run ingest:13f-live -- --quarter 2026-Q3 [--dry-run] [--limit 250] [--max-new-filings 200] [--concurrency 6] [--rate-limit-ms 110] [--current-feed-pages 5] [--daily-index-lookback-days 7]');
         process.exit(1);
     }
-    if (!dryRun && targetProvider === 'turso' && (!TURSO_URL || !TURSO_TOKEN)) {
-        console.error('Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN.');
-        process.exit(1);
-    }
-    if (!dryRun && targetProvider === 'postgres' && !getPostgresConnectionString()) {
-        console.error('Missing DATABASE_URL or POSTGRES_URL for Postgres ingestion.');
+    if (!getPostgresConnectionString()) {
+        console.error('Missing DATABASE_URL or POSTGRES_URL.');
         process.exit(1);
     }
 
-    const filingIndex = filingIndexQuarterForReportQuarter(quarter);
-    const masterIndexUrl = masterIndexUrlFor(filingIndex.year, filingIndex.quarter);
-    const indexSource = await loadLiveIndexEntries(masterIndexUrl, {
-        currentFeedPages,
-        dailyIndexLookbackDays,
-    });
-    const entries = indexSource.entries;
-    const limitedEntries = Number.isFinite(limit) && limit > 0 ? entries.slice(0, limit) : entries;
-
-    console.log(`[13F Live EDGAR] Target report quarter: ${quarter}`);
-    console.log(`[13F Live EDGAR] Target database: ${targetProvider}`);
-    console.log(`[13F Live EDGAR] Scanning ${masterIndexUrl}`);
-    console.log(`[13F Live EDGAR] Quarterly index entries: ${indexSource.masterCount}`);
-    console.log(`[13F Live EDGAR] Current feed entries: ${indexSource.currentFeedCount}`);
-    console.log(`[13F Live EDGAR] Recent daily-index entries: ${indexSource.dailyIndexCount}`);
-    if (indexSource.skippedOptionalIndexes > 0) {
-        console.log(`[13F Live EDGAR] Skipped ${indexSource.skippedOptionalIndexes} unavailable recent daily index file(s).`);
-    }
-    console.log(`[13F Live EDGAR] Found ${entries.length} unique 13F-HR/13F-HR-A filings; processing ${limitedEntries.length}`);
-    console.log(`[13F Live EDGAR] Fast mode: fetch submission .txt once per filing.`);
-    console.log(`[13F Live EDGAR] Concurrency ${concurrency}, global SEC request spacing ${rateLimitMs}ms, write batch ${writeBatchSize}, holding chunk ${holdingInsertChunkSize}`);
-    if (requestedHoldingInsertChunkSize !== holdingInsertChunkSize) {
-        console.log(`[13F Live EDGAR] Holding chunk capped at ${holdingInsertChunkSize} to stay below SQLite bind limits.`);
-    }
-    if (maxNewFilings) console.log(`[13F Live EDGAR] Stop after roughly ${maxNewFilings} new matching filings.`);
-
-    let target: LiveDbTarget | null = null;
-    let existingAccessions = new Set<string>();
-    let runId: string | null = null;
-    if (!dryRun) {
-        target = await createLiveTarget(targetProvider);
-        if (hasArg('--skip-schema')) {
-            console.log('[13F Live EDGAR] Skipping schema setup.');
-        } else {
-            await ensureLiveTargetSchema(target);
-        }
-        if (rebuildSearchIndexes) await dropLiveTargetIndexes(target);
-        else await ensureLiveTargetIndexes(target);
-        if (!refreshExisting) {
-            // Load accessions from both DB and cache
-            existingAccessions = await queryExistingAccessions(target, quarter);
-            const cacheAccessions = await loadCacheAccessions(quarter, previousReportQuarter(quarter));
-            for (const accession of cacheAccessions) {
-                existingAccessions.add(accession);
-            }
-            console.log(`[13F Live EDGAR] ${existingAccessions.size} existing accessions for ${quarter} (DB + cache); use --refresh-existing to replace them.`);
-        }
-        runId = await startLiveIngestionRun(target, quarter, masterIndexUrl);
-    }
-
-    const stats = {
-        filingsSeen: limitedEntries.length,
-        reportQuarterMatches: 0,
-        skippedExisting: 0,
-        skippedWrongQuarter: 0,
-        skippedNoHoldings: 0,
-        skippedErrors: 0,
-        filingsUpserted: 0,
-        holdingsInserted: 0,
-    };
-
+    const pool = createPostgresPool();
     try {
-        const limiter = createRateLimiter(rateLimitMs);
-        const writeBuffer: ProcessedLiveFiling[] = [];
-        let writeChain = Promise.resolve();
-        let nextIndex = 0;
-        let completed = 0;
+        if (!dryRun) await assertPostgresWritable(pool, '13F Live EDGAR ingestion target');
+        await ensureStoreSchema(pool);
+        let meta = await readStoreMeta(pool);
+        if (!meta) throw new Error('The 13F store is empty. Seed it with scripts/build-13f-store.ts from SEC bulk data first.');
 
-        const flushBufferedWrites = async (force = false) => {
-            if (dryRun || !target) return;
-            if (writeBuffer.length === 0) return;
-            if (!force && writeBuffer.length < writeBatchSize) return;
-            const batch = writeBuffer.splice(0, writeBuffer.length);
-            writeChain = writeChain.then(async () => {
-                const holdingCount = batch.reduce((sum, filing) => sum + filing.holdings.length, 0);
-                console.log(`\n[13F Live EDGAR] Writing ${batch.length} filing(s), ${holdingCount} holding row(s)...`);
-                const result = await replaceLiveFilings(target!, batch, holdingInsertChunkSize);
-                stats.filingsUpserted += result.filings;
-                stats.holdingsInserted += result.holdings;
-                console.log(`[13F Live EDGAR] Wrote ${result.filings} filing(s), ${result.holdings} holding row(s).`);
+        if (quarter !== meta.currentQuarter && previousReportQuarter(quarter) === meta.currentQuarter) {
+            console.log(`[13F Live EDGAR] Rolling store forward: ${meta.currentQuarter} vs ${meta.previousQuarter} -> ${quarter} vs ${meta.currentQuarter}`);
+            if (!dryRun) {
+                // Archive the outgoing pair (default view + holder lists) before its previous quarter is dropped.
+                const { precomputeStorePair } = await import('./precompute-13f-radar');
+                await precomputeStorePair(pool, { archive: true });
+                await rolloverStore(pool, quarter);
+                meta = (await readStoreMeta(pool))!;
+            }
+        } else if (quarter !== meta.currentQuarter && quarter !== meta.previousQuarter) {
+            throw new Error(`Store holds ${meta.currentQuarter} vs ${meta.previousQuarter}; --quarter ${quarter} is neither side nor the next quarter.`);
+        }
+        const sideForQuarter = (reportQuarter: string | null): StoreSide | null =>
+            reportQuarter === (dryRun ? quarter : meta!.currentQuarter) ? 'cur'
+                : reportQuarter === (dryRun ? previousReportQuarter(quarter) : meta!.previousQuarter) ? 'prev'
+                    : null;
+
+        // Scan the filing indexes for both stored quarters so late filers for the previous quarter are picked up.
+        const indexQuarters = [quarter, previousReportQuarter(quarter)].map(filingIndexQuarterForReportQuarter);
+        const indexUrls = [...new Set(indexQuarters.map((q) => masterIndexUrlFor(q.year, q.quarter)))];
+        const indexSource = await loadLiveIndexEntries(indexUrls, { currentFeedPages, dailyIndexLookbackDays });
+        const applied = await queryAppliedAccessions(pool);
+        const pending = indexSource.entries.filter((entry) => !applied.has(accessionFromFilename(entry.filename)));
+        const limitedEntries = Number.isFinite(limit) && limit > 0 ? pending.slice(0, limit) : pending;
+
+        console.log(`[13F Live EDGAR] Store pair: ${meta.currentQuarter} vs ${meta.previousQuarter}`);
+        console.log(`[13F Live EDGAR] Index entries: ${indexSource.masterCount} quarterly, ${indexSource.currentFeedCount} current feed, ${indexSource.dailyIndexCount} recent daily`);
+        console.log(`[13F Live EDGAR] ${indexSource.entries.length} unique 13F-HR/13F-HR-A filings, ${applied.size} already applied, processing ${limitedEntries.length}`);
+
+        const stats = {
+            filingsSeen: limitedEntries.length,
+            applied: 0,
+            amendmentsAdded: 0,
+            skippedFutureQuarter: 0,
+            skippedWrongQuarter: 0,
+            skippedNoHoldings: 0,
+            skippedZeroValue: 0,
+            skippedSuperseded: 0,
+            skippedNoBase: 0,
+            skippedErrors: 0,
+            positionsWritten: 0,
+        };
+
+        // One worker handles all of a filer's filings, oldest first, so an amendment is never applied before its base.
+        const byCik = new Map<string, IndexEntry[]>();
+        for (const entry of limitedEntries) {
+            const list = byCik.get(entry.cik) || [];
+            list.push(entry);
+            byCik.set(entry.cik, list);
+        }
+        const groups = Array.from(byCik.values()).map((list) =>
+            list.sort((a, b) => a.date.localeCompare(b.date) || a.filename.localeCompare(b.filename))
+        );
+
+        const limiter = createRateLimiter(rateLimitMs);
+        let nextGroup = 0;
+        let completed = 0;
+        let sinceTouch = 0;
+        let writeChain = Promise.resolve();
+
+        const skip = async (filing: ProcessedLiveFiling, reason: Exclude<keyof typeof stats, 'filingsSeen' | 'applied' | 'amendmentsAdded' | 'positionsWritten' | 'skippedErrors' | 'skippedFutureQuarter'>) => {
+            stats[reason]++;
+            if (!dryRun) await markFilingSeen(pool, filing.accessionNumber, filing.reportQuarter);
+        };
+
+        const applyProcessed = async (filing: ProcessedLiveFiling) => {
+            const side = sideForQuarter(filing.reportQuarter);
+            if (!side) {
+                // Reports for a quarter newer than the stored pair are needed after the next rollover: don't mark them seen.
+                const storedCurrent = dryRun ? quarter : meta!.currentQuarter;
+                if (filing.reportQuarter && compareQuartersAsc(filing.reportQuarter, storedCurrent) > 0) {
+                    stats.skippedFutureQuarter++;
+                    return;
+                }
+                return skip(filing, 'skippedWrongQuarter');
+            }
+            const equityHoldings = filing.holdings.filter((h) => !h.putcall);
+            const totalValue = filing.holdings.reduce((sum, h) => sum + (Number.isFinite(h.value) ? h.value : 0), 0);
+            if (filing.holdings.length === 0) return skip(filing, 'skippedNoHoldings');
+            // Placeholder filings with no reported value would otherwise wipe the filer's real holdings.
+            if (totalValue <= 0) return skip(filing, 'skippedZeroValue');
+            const mode = filing.amendmentType === 'NEW HOLDINGS' ? 'add' : 'replace';
+            if (dryRun) {
+                stats.applied++;
+                return;
+            }
+            const sideDate = await queryFilerSideFilingDate(pool, filing.cik, side);
+            if (mode === 'replace' && sideDate && filing.filingDate < sideDate) return skip(filing, 'skippedSuperseded');
+            if (mode === 'add' && !sideDate) return skip(filing, 'skippedNoBase');
+            const result = await applyFilingToStore(pool, {
+                side,
+                quarter: filing.reportQuarter!,
+                cik: filing.cik,
+                filerName: filing.fundName,
+                accessionNumber: filing.accessionNumber,
+                filingDate: filing.filingDate,
+                mode,
+                positions: equityHoldings.map((h) => ({
+                    cusip: h.cusip,
+                    issuer: h.issuer,
+                    shares: h.shares,
+                    value: h.value,
+                    isPrn: (h.sshPrnamtType || '').toUpperCase() === 'PRN',
+                })),
             });
-            await writeChain;
+            stats.positionsWritten += result.positions;
+            if (mode === 'add') stats.amendmentsAdded++;
+            else stats.applied++;
+            if (++sinceTouch >= META_TOUCH_EVERY) {
+                sinceTouch = 0;
+                await touchStoreMeta(pool);
+            }
         };
 
         const worker = async () => {
             while (true) {
-                if (maxNewFilings && stats.reportQuarterMatches >= maxNewFilings) return;
-                const index = nextIndex++;
-                if (index >= limitedEntries.length) return;
-                const entry = limitedEntries[index];
-                const accessionNumber = accessionFromFilename(entry.filename);
-                if (!refreshExisting && existingAccessions.has(accessionNumber)) {
-                    stats.skippedExisting++;
-                } else {
-                    const processed = await processLiveFiling(entry, quarter, limiter);
-                    if (processed.skippedReason === 'wrong-quarter') {
-                        stats.skippedWrongQuarter++;
-                    } else if (processed.skippedReason === 'no-holdings') {
-                        stats.skippedNoHoldings++;
-                    } else if (processed.skippedReason === 'error') {
+                if (maxNewFilings && stats.applied + stats.amendmentsAdded >= maxNewFilings) return;
+                const groupIndex = nextGroup++;
+                if (groupIndex >= groups.length) return;
+                for (const entry of groups[groupIndex]) {
+                    const processed = await processLiveFiling(entry, limiter);
+                    if (processed.errorMessage) {
                         stats.skippedErrors++;
-                        console.warn(`\n[13F Live EDGAR] Skipped ${processed.accessionNumber}: ${processed.errorMessage || 'unknown error'}`);
-                    } else if (processed.holdings.length > 0) {
-                        stats.reportQuarterMatches++;
-                        if (!dryRun && target) {
-                            writeBuffer.push(processed);
-                            await flushBufferedWrites(false);
-                        } else {
-                            stats.holdingsInserted += processed.holdings.length;
-                        }
+                        console.warn(`\n[13F Live EDGAR] Skipped ${processed.accessionNumber}: ${processed.errorMessage}`);
+                    } else {
+                        // Writes are serialised; within a filer they run in filing-date order.
+                        writeChain = writeChain.then(() => applyProcessed(processed));
+                        await writeChain;
                     }
-                }
-
-                completed++;
-                if (completed % 25 === 0 || completed === limitedEntries.length) {
-                    process.stdout.write(`\r[13F Live EDGAR] Processed ${completed}/${limitedEntries.length}`);
+                    completed++;
+                    if (completed % 25 === 0 || completed === limitedEntries.length) {
+                        process.stdout.write(`\r[13F Live EDGAR] Processed ${completed}/${limitedEntries.length}`);
+                    }
                 }
             }
         };
 
-        await Promise.all(Array.from({ length: Math.min(concurrency, limitedEntries.length) }, () => worker()));
-        await flushBufferedWrites(true);
+        await Promise.all(Array.from({ length: Math.min(concurrency, groups.length) }, () => worker()));
+        await writeChain;
+        if (!dryRun) {
+            await touchStoreMeta(pool);
+            await pool.query('VACUUM ANALYZE f13_positions');
+        }
         console.log('');
         console.table(stats);
 
-        if (!dryRun && target && runId) {
-            await completeLiveIngestionRun(target, runId, {
-                filingsSeen: stats.filingsSeen,
-                filingsUpserted: stats.filingsUpserted,
-                holdingsInserted: stats.holdingsInserted,
-                reportQuarterMatches: stats.reportQuarterMatches,
-                skippedExisting: stats.skippedExisting,
-                skippedWrongQuarter: stats.skippedWrongQuarter,
-                skippedNoHoldings: stats.skippedNoHoldings,
-                skippedErrors: stats.skippedErrors,
-            });
-            await retainLiveTargetQuarters(target, quarter);
+        let size = await queryPostgresDatabaseSize(pool);
+        console.log(`[13F Live EDGAR] Database size ${(size / 1048576).toFixed(1)} MB / target ${(POSTGRES_13F_SIZE_TARGET_BYTES / 1048576).toFixed(0)} MB`);
+        if (!dryRun && size > COMPACT_ABOVE_BYTES) {
+            // Upserts leave reusable-but-unreturned space; rewriting the store gives it back.
+            console.log('[13F Live EDGAR] Compacting store...');
+            await compactStore(pool);
+            size = await queryPostgresDatabaseSize(pool);
+            console.log(`[13F Live EDGAR] Database size after compaction ${(size / 1048576).toFixed(1)} MB`);
         }
-
-        console.log(dryRun ? `[13F Live EDGAR] Dry run complete; no ${targetProvider} writes performed.` : '[13F Live EDGAR] Complete.');
-    } catch (error) {
-        if (!dryRun && target && runId) {
-            try {
-                await failLiveIngestionRun(target, runId, error);
-            } catch (failError) {
-                console.warn(`[13F Live EDGAR] Could not mark ingestion run as failed: ${errorMessage(failError)}`);
-            }
+        if (size > POSTGRES_13F_SIZE_TARGET_BYTES) {
+            console.warn('[13F Live EDGAR] WARNING: database is over the size target.');
+            process.exitCode = 2;
         }
-        throw error;
+        console.log(dryRun ? '[13F Live EDGAR] Dry run complete; no writes performed.' : '[13F Live EDGAR] Complete.');
     } finally {
-        if (!dryRun && target && rebuildSearchIndexes) {
-            console.log('[13F Live EDGAR] Rebuilding required 13F indexes...');
-            await ensureLiveTargetIndexes(target);
-        }
-        if (target?.provider === 'postgres') await target.pool.end();
+        await pool.end();
     }
 }
 
-async function processLiveFiling(
-    entry: IndexEntry,
-    targetQuarter: string,
-    waitForRequestSlot: () => Promise<void>
-): Promise<ProcessedLiveFiling> {
+async function processLiveFiling(entry: IndexEntry, waitForRequestSlot: () => Promise<void>): Promise<ProcessedLiveFiling> {
     const accessionNumber = accessionFromFilename(entry.filename);
-    const submissionUrl = `https://www.sec.gov/Archives/${entry.filename}`;
-    let parsed;
-    try {
-        await waitForRequestSlot();
-        const submissionText = await fetchTextWithRetry(submissionUrl, 3);
-        parsed = await parseLive13FSubmissionText(submissionText);
-    } catch (error) {
-        return {
-            accessionNumber,
-            cik: normalizeCikForStorage(entry.cik),
-            fundName: entry.name,
-            form: entry.form,
-            filingDate: entry.date,
-            reportDate: '',
-            holdings: [],
-            skippedReason: 'error',
-            errorMessage: error instanceof Error ? error.message : String(error),
-        };
-    }
-    const reportDate = parsed.reportDate;
-    const holdings = parsed.holdings;
-
-    const reportQuarter = reportDate ? quarterFromReportDate(reportDate) : null;
-    const skippedReason =
-        reportQuarter !== targetQuarter
-            ? 'wrong-quarter'
-            : holdings.length === 0
-                ? 'no-holdings'
-                : undefined;
-
-    return {
+    const base = {
         accessionNumber,
         cik: normalizeCikForStorage(entry.cik),
         fundName: entry.name,
         form: entry.form,
         filingDate: entry.date,
-        reportDate: reportDate || '',
-        holdings,
-        skippedReason,
     };
-}
-
-async function createLiveTarget(provider: IngestionTargetProvider): Promise<LiveDbTarget> {
-    if (provider === 'postgres') {
-        const pool = createPostgresPool();
-        try {
-            await assertPostgresWritable(pool, '13F Live EDGAR ingestion target');
-        } catch (error) {
-            await pool.end();
-            throw error;
-        }
-        return { provider, pool };
-    }
-    return { provider, client: createClient({ url: TURSO_URL!, authToken: TURSO_TOKEN! }) };
-}
-
-async function ensureLiveTargetSchema(target: LiveDbTarget) {
-    if (target.provider === 'postgres') await ensurePostgres13FSchema(target.pool);
-    else await ensure13FSchema(target.client);
-}
-
-async function ensureLiveTargetIndexes(target: LiveDbTarget) {
-    if (target.provider === 'postgres') await ensurePostgres13FIndexes(target.pool);
-    else await ensureRequired13FIndexes(target.client);
-}
-
-async function dropLiveTargetIndexes(target: LiveDbTarget) {
-    if (target.provider === 'postgres') await dropPostgres13FIndexes(target.pool);
-    else await dropHoldingSearchIndexes(target.client);
-}
-
-async function startLiveIngestionRun(target: LiveDbTarget, quarter: string, sourceUrl: string): Promise<string> {
-    if (target.provider === 'postgres') {
-        return startPostgresIngestionRun(target.pool, { quarter, source: 'live-edgar', sourceUrl });
-    }
-    return startIngestionRun(target.client, { quarter, source: 'live-edgar', sourceUrl });
-}
-
-async function completeLiveIngestionRun(
-    target: LiveDbTarget,
-    runId: string,
-    counts: Parameters<typeof completeIngestionRun>[2]
-) {
-    if (target.provider === 'postgres') await completePostgresIngestionRun(target.pool, runId, counts);
-    else await completeIngestionRun(target.client, runId, counts);
-}
-
-async function failLiveIngestionRun(target: LiveDbTarget, runId: string, error: unknown) {
-    if (target.provider === 'postgres') await failPostgresIngestionRun(target.pool, runId, error);
-    else await failIngestionRun(target.client, runId, error);
-}
-
-async function retainLiveTargetQuarters(target: LiveDbTarget, quarter: string) {
-    if (target.provider !== 'postgres' || hasArg('--keep-all-quarters')) return;
-    await retainPostgres13FQuarters(target.pool, [quarter, previousReportQuarter(quarter)]);
-}
-
-async function replaceLiveFilings(
-    target: LiveDbTarget,
-    filings: ProcessedLiveFiling[],
-    holdingInsertChunkSize: number
-): Promise<{ filings: number; holdings: number }> {
-    if (target.provider === 'postgres') {
-        return replacePostgresLiveFilings(target.pool, filings, holdingInsertChunkSize);
-    }
-    return replaceTursoLiveFilings(target.client, filings, holdingInsertChunkSize);
-}
-
-async function replaceTursoLiveFilings(
-    turso: ReturnType<typeof createClient>,
-    filings: ProcessedLiveFiling[],
-    holdingInsertChunkSize: number
-): Promise<{ filings: number; holdings: number }> {
-    if (filings.length === 0) return { filings: 0, holdings: 0 };
-    const ingestedAt = new Date().toISOString();
-    await batchWithRetry(turso, filings.flatMap((filing) => [
-            {
-                sql: 'INSERT OR IGNORE INTO funds (cik, name, ticker) VALUES (?, ?, ?)',
-                args: [filing.cik, filing.fundName, null],
-            },
-            {
-                sql: `
-                    INSERT OR REPLACE INTO filings
-                        (accession_number, cik, filing_date, quarter, form, report_date, source, ingested_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                `,
-                args: [
-                    filing.accessionNumber,
-                    filing.cik,
-                    filing.filingDate,
-                    quarterFromReportDate(filing.reportDate) || '',
-                    filing.form,
-                    filing.reportDate,
-                    'live-edgar',
-                    ingestedAt,
-                ],
-            },
-        ]));
-
-    for (const chunk of chunkRows(filings.map((filing) => filing.accessionNumber), 300)) {
-        const placeholders = chunk.map(() => '?').join(', ');
-        await executeWithArgsRetry(turso, `DELETE FROM holdings WHERE accession_number IN (${placeholders})`, chunk);
-    }
-
-    const holdings = filings.flatMap((filing) =>
-        filing.holdings.map((holding) => ({ filing, holding }))
-    );
-    const insertStatements: Array<{ sql: string; args: InValue[] }> = [];
-    for (const chunk of chunkRows(holdings, holdingInsertChunkSize)) {
-        const placeholders: string[] = [];
-        const args: InValue[] = [];
-        for (const { filing, holding } of chunk) {
-            placeholders.push('(?, ?, ?, ?, ?, ?, ?)');
-            args.push(
-                filing.accessionNumber,
-                holding.issuer,
-                holding.cusip,
-                holding.value,
-                holding.shares,
-                holding.putcall,
-                holding.sshPrnamtType
-            );
-        }
-        insertStatements.push({
-            sql: `
-                INSERT INTO holdings
-                    (accession_number, issuer, cusip, value, shares, putcall, ssh_prnamt_type)
-                VALUES ${placeholders.join(', ')}
-            `,
-            args,
-        });
-    }
-    for (const group of chunkRows(insertStatements, HOLDING_INSERT_STATEMENTS_PER_BATCH)) {
-        await batchStatementGroup(turso, group);
-    }
-
-    return { filings: filings.length, holdings: holdings.length };
-}
-
-async function replacePostgresLiveFilings(
-    pool: ReturnType<typeof createPostgresPool>,
-    filings: ProcessedLiveFiling[],
-    holdingInsertChunkSize: number
-): Promise<{ filings: number; holdings: number }> {
-    if (filings.length === 0) return { filings: 0, holdings: 0 };
-    const pgFilings: Postgres13FFilingInput[] = filings.map((filing) => ({
-        accessionNumber: filing.accessionNumber,
-        cik: filing.cik,
-        fundName: filing.fundName,
-        filingDate: filing.filingDate,
-        quarter: quarterFromReportDate(filing.reportDate) || '',
-        form: filing.form,
-        reportDate: filing.reportDate,
-        source: 'live-edgar',
-    }));
-    await upsertPostgres13FFilings(pool, pgFilings);
-
-    const holdings: Postgres13FHoldingInput[] = filings.flatMap((filing) =>
-        filing.holdings.map((holding) => ({
-            accessionNumber: filing.accessionNumber,
-            issuer: holding.issuer,
-            cusip: holding.cusip,
-            value: holding.value,
-            shares: holding.shares,
-            putcall: holding.putcall,
-            sshPrnamtType: holding.sshPrnamtType,
-        }))
-    );
-    const inserted = await replacePostgres13FHoldings(pool, {
-        accessions: filings.map((filing) => filing.accessionNumber),
-        holdings,
-        holdingInsertChunkSize,
-    });
-
-    return { filings: pgFilings.length, holdings: inserted };
-}
-
-async function batchStatementGroup(
-    turso: ReturnType<typeof createClient>,
-    statements: Array<{ sql: string; args: InValue[] }>
-) {
-    if (statements.length === 0) return;
     try {
-        await batchWithRetry(turso, statements, 3);
+        await waitForRequestSlot();
+        const submissionText = await fetchTextWithRetry(`https://www.sec.gov/Archives/${entry.filename}`, 3);
+        const parsed = await parseLive13FSubmissionText(submissionText);
+        return {
+            ...base,
+            reportQuarter: parsed.reportDate ? quarterFromReportDate(parsed.reportDate) : null,
+            amendmentType: parsed.amendmentType,
+            holdings: parsed.holdings,
+        };
     } catch (error) {
-        if (statements.length === 1) throw error;
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[13F Live EDGAR] Insert batch of ${statements.length} statements failed (${message}); splitting.`);
-        const midpoint = Math.ceil(statements.length / 2);
-        await batchStatementGroup(turso, statements.slice(0, midpoint));
-        await batchStatementGroup(turso, statements.slice(midpoint));
+        return { ...base, reportQuarter: null, amendmentType: null, holdings: [], errorMessage: errorMessage(error) };
     }
-}
-
-async function queryExistingAccessions(target: LiveDbTarget, quarter: string): Promise<Set<string>> {
-    if (target.provider === 'postgres') return queryPostgresExistingAccessions(target.pool, quarter);
-
-    const result = await target.client.execute({
-        sql: 'SELECT accession_number FROM filings WHERE quarter = ?',
-        args: [quarter],
-    });
-    return new Set(result.rows.map((row) => String(row.accession_number)));
 }
 
 async function loadLiveIndexEntries(
-    masterIndexUrl: string,
+    masterIndexUrls: string[],
     options: { currentFeedPages: number; dailyIndexLookbackDays: number }
 ): Promise<{
     entries: IndexEntry[];
     masterCount: number;
     currentFeedCount: number;
     dailyIndexCount: number;
-    skippedOptionalIndexes: number;
 }> {
-    const masterEntries = await downloadMasterIndex(masterIndexUrl);
+    const masterEntries: IndexEntry[] = [];
+    for (const url of masterIndexUrls) {
+        try {
+            masterEntries.push(...await downloadMasterIndex(url));
+        } catch (error) {
+            // The newest filing quarter's full index may not exist yet on its first day.
+            console.warn(`[13F Live EDGAR] Quarterly index unavailable (${url}): ${errorMessage(error)}`);
+        }
+    }
     const currentFeedEntries = await downloadCurrentFeedEntries(options.currentFeedPages);
-    const dailyResult = await downloadRecentDailyIndexEntries(options.dailyIndexLookbackDays);
+    const dailyEntries = await downloadRecentDailyIndexEntries(options.dailyIndexLookbackDays);
     return {
-        entries: mergeIndexEntries([...currentFeedEntries, ...dailyResult.entries, ...masterEntries]),
+        entries: mergeIndexEntries([...currentFeedEntries, ...dailyEntries, ...masterEntries]),
         masterCount: masterEntries.length,
         currentFeedCount: currentFeedEntries.length,
-        dailyIndexCount: dailyResult.entries.length,
-        skippedOptionalIndexes: dailyResult.skipped,
+        dailyIndexCount: dailyEntries.length,
     };
 }
 
@@ -615,18 +366,17 @@ async function downloadCurrentFeedEntries(pageCount: number): Promise<IndexEntry
     return mergeIndexEntries(entries);
 }
 
-async function downloadRecentDailyIndexEntries(lookbackDays: number): Promise<{ entries: IndexEntry[]; skipped: number }> {
-    if (lookbackDays <= 0) return { entries: [], skipped: 0 };
+async function downloadRecentDailyIndexEntries(lookbackDays: number): Promise<IndexEntry[]> {
+    if (lookbackDays <= 0) return [];
     const entries: IndexEntry[] = [];
-    let skipped = 0;
     for (const url of dailyMasterIndexUrlsForRecentDays(lookbackDays)) {
         try {
             entries.push(...await downloadMasterIndex(url));
         } catch {
-            skipped++;
+            // Weekends and holidays have no daily index.
         }
     }
-    return { entries: mergeIndexEntries(entries), skipped };
+    return mergeIndexEntries(entries);
 }
 
 export function parseCurrentFeedEntries(xml: string): IndexEntry[] {
@@ -746,10 +496,6 @@ function nonNegativeIntArg(name: string, fallback: number): number {
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
-}
-
-function maxHoldingInsertChunkSizeFor(provider: IngestionTargetProvider): number {
-    return provider === 'postgres' ? MAX_POSTGRES_HOLDING_INSERT_CHUNK_SIZE : MAX_HOLDING_INSERT_CHUNK_SIZE;
 }
 
 function createRateLimiter(delayMs: number) {

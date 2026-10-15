@@ -1,17 +1,19 @@
 name: 13F Ingestion
 
+# Keeps the compact Postgres 13F store (lib/thirteen-f-store.ts) current and commits the small precomputed
+# radar JSON in data/13f-precomputed/. No raw holdings are kept in Postgres and nothing uses Git LFS.
+
 on:
   schedule:
-    - cron: '15 11 * * *'  # Daily at 11:15 UTC (permanent)
-    - cron: '15 * * * *'   # Hourly at :15 (sprint mode, gated below)
+    - cron: '17 11 * * *'  # Daily
   workflow_dispatch:
     inputs:
       quarter:
-        description: 'Report quarter, e.g. 2026-Q1. Leave blank for most recent completed quarter.'
+        description: 'Report quarter being filed, e.g. 2026-Q3. Blank = most recent completed quarter.'
         required: false
         type: string
       mode:
-        description: 'Which ingestion stage to run.'
+        description: 'Which stage to run.'
         required: false
         default: auto
         type: choice
@@ -19,20 +21,7 @@ on:
           - auto
           - live
           - bulk
-          - both
-          - repair-indexes
-      target:
-        description: 'Database target for ingestion writes.'
-        required: false
-        default: postgres
-        type: choice
-        options:
-          - postgres
-          - turso
-      sec_zip_url:
-        description: 'Optional SEC Form 13F Data Set ZIP URL override for bulk mode.'
-        required: false
-        type: string
+          - precompute
 
 concurrency:
   group: 13f-ingestion
@@ -41,52 +30,37 @@ concurrency:
 jobs:
   ingest-13f:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     permissions:
       contents: write
     env:
-      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
       DATABASE_URL: ${{ secrets.AIVEN_DATABASE_URL || secrets.DATABASE_URL || secrets.POSTGRES_URL }}
       POSTGRES_URL: ${{ secrets.POSTGRES_URL || secrets.AIVEN_DATABASE_URL || secrets.DATABASE_URL }}
       SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'ForensicFilingAssistant contact@example.com' }}
-      ALLOW_TURSO_13F_WRITES: ${{ secrets.ALLOW_TURSO_13F_WRITES || 'false' }}
-      THIRTEEN_F_DB_PROVIDER: ${{ inputs.target || secrets.THIRTEEN_F_DB_PROVIDER || 'postgres' }}
       REQUESTED_QUARTER: ${{ inputs.quarter || '' }}
       REQUESTED_MODE: ${{ inputs.mode || 'auto' }}
-      REQUESTED_SEC_ZIP_URL: ${{ inputs.sec_zip_url || '' }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Sprint mode date gate
-        id: sprint_gate
-        run: |
-          SPRINT_END_DATE="2026-08-15"
-          CURRENT_DATE=$(date -u +%Y-%m-%d)
-          TRIGGER_HOUR=$(date -u +%H)
-          
-          # After sprint end date, only allow the daily 11 UTC run
-          if [[ "$CURRENT_DATE" > "$SPRINT_END_DATE" ]] && [[ "$TRIGGER_HOUR" != "11" ]]; then
-            echo "Sprint window ended ($SPRINT_END_DATE). Hourly run suppressed." >> "$GITHUB_STEP_SUMMARY"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Set up Node.js
-        if: steps.sprint_gate.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
       - name: Install dependencies
-        if: steps.sprint_gate.outputs.skip != 'true'
         run: npm ci
 
+      - name: Validate database configuration
+        run: |
+          if [ -z "$DATABASE_URL" ] && [ -z "$POSTGRES_URL" ]; then
+            echo "::error title=Missing Postgres database secret::Set AIVEN_DATABASE_URL, DATABASE_URL, or POSTGRES_URL."
+            exit 1
+          fi
+
       - name: Resolve ingestion schedule
-        if: steps.sprint_gate.outputs.skip != 'true'
         id: schedule
         run: |
           if [ -n "$REQUESTED_QUARTER" ]; then
@@ -95,173 +69,62 @@ jobs:
             npx tsx scripts/resolve-13f-schedule.ts --github-output
           fi
 
-      - name: Validate database target configuration
-        if: steps.sprint_gate.outputs.skip != 'true'
-        run: |
-          if [ "$THIRTEEN_F_DB_PROVIDER" = "postgres" ] && [ -z "$DATABASE_URL" ] && [ -z "$POSTGRES_URL" ]; then
-            echo "::error title=Missing Postgres database secret::Set a repository secret named AIVEN_DATABASE_URL, DATABASE_URL, or POSTGRES_URL, or run this workflow with target=turso."
-            exit 1
-          fi
-          if [ "$THIRTEEN_F_DB_PROVIDER" = "turso" ] && { [ -z "$TURSO_DATABASE_URL" ] || [ -z "$TURSO_AUTH_TOKEN" ]; }; then
-            echo "::error title=Missing Turso database secrets::Set repository secrets TURSO_DATABASE_URL and TURSO_AUTH_TOKEN, or run this workflow with target=postgres."
-            exit 1
-          fi
-
-      - name: Check official bulk status
-        if: steps.sprint_gate.outputs.skip != 'true'
-        id: bulk_status
-        run: npx tsx scripts/check-13f-ingestion-status.ts --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --source sec-bulk --github-output
-
-      - name: Check live EDGAR status
-        if: steps.sprint_gate.outputs.skip != 'true'
-        id: live_status
-        run: npx tsx scripts/check-13f-ingestion-status.ts --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --source live-edgar --github-output
-
-      - name: Turso write quota guard
-        if: steps.sprint_gate.outputs.skip != 'true' && env.THIRTEEN_F_DB_PROVIDER == 'turso' && env.ALLOW_TURSO_13F_WRITES != 'true'
-        run: |
-          echo "Turso 13F writes are disabled because ALLOW_TURSO_13F_WRITES is not true." >> "$GITHUB_STEP_SUMMARY"
-          echo "Scheduled runs will not ingest, bulk-load, or repair Turso indexes while the write quota is exhausted." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Postgres write target
-        if: steps.sprint_gate.outputs.skip != 'true' && env.THIRTEEN_F_DB_PROVIDER == 'postgres'
-        run: |
-          echo "13F ingestion target: Aiven/Postgres." >> "$GITHUB_STEP_SUMMARY"
-          echo "Turso is not used for ingestion writes in this run." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Repair required indexes
-        if: |
-          steps.sprint_gate.outputs.skip != 'true' &&
-          env.REQUESTED_MODE == 'repair-indexes' &&
-          (
-            env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
-            env.ALLOW_TURSO_13F_WRITES == 'true'
-          )
-        run: npm run repair:13f-indexes -- --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --require-all --github-summary
-
-      - name: Run live EDGAR ingestion
+      - name: Live EDGAR ingestion
         id: live_ingest
+        if: env.REQUESTED_MODE == 'live' || (env.REQUESTED_MODE == 'auto' && steps.schedule.outputs.live_active == 'true')
+        run: npx tsx scripts/ingest-live-13f.ts --quarter "${{ steps.schedule.outputs.quarter }}" --concurrency 8 --rate-limit-ms 110
+
+      - name: Resolve SEC bulk data sets for the stored pair
+        id: datasets
+        if: env.REQUESTED_MODE == 'bulk' || env.REQUESTED_MODE == 'auto'
+        run: npx tsx scripts/resolve-13f-store-datasets.ts --github-output
+
+      - name: Rebuild store from SEC bulk data
+        id: bulk_build
         if: |
-          steps.sprint_gate.outputs.skip != 'true' &&
-          (
-            env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
-            env.ALLOW_TURSO_13F_WRITES == 'true'
-          ) &&
-          (
-            env.REQUESTED_MODE == 'live' ||
-            env.REQUESTED_MODE == 'both' ||
-            (
-              env.REQUESTED_MODE == 'auto' &&
-              steps.schedule.outputs.live_active == 'true'
-            )
-          )
+          steps.datasets.outputs.complete == 'true' &&
+          (env.REQUESTED_MODE == 'bulk' || steps.datasets.outputs.up_to_date != 'true')
         run: |
-          HOLDING_CHUNK_SIZE=100
-          if [ "$THIRTEEN_F_DB_PROVIDER" = "postgres" ]; then
-            HOLDING_CHUNK_SIZE=1000
-          fi
-          LIVE_ARGS=(
-            --target "$THIRTEEN_F_DB_PROVIDER"
-            --quarter "${{ steps.schedule.outputs.quarter }}"
-            --concurrency 16
-            --rate-limit-ms 100
-            --write-batch-size 8
-            --holding-insert-chunk-size "$HOLDING_CHUNK_SIZE"
-          )
-          if [ "${{ steps.live_status.outputs.live_mode }}" = "refresh-existing" ]; then
-            LIVE_ARGS+=(--refresh-existing --rebuild-search-indexes)
-          elif [ "${{ steps.live_status.outputs.live_mode }}" = "full" ]; then
-            LIVE_ARGS+=(--rebuild-search-indexes)
-          fi
-          npm run ingest:13f-live -- "${LIVE_ARGS[@]}"
+          DIRS=()
+          for URL in ${{ steps.datasets.outputs.urls }}; do
+            NAME=$(basename "$URL" .zip)
+            mkdir -p "downloads/sec-13f-datasets/$NAME"
+            curl -fsSL -A "$SEC_USER_AGENT" -o "downloads/sec-13f-datasets/$NAME/$NAME.zip" "$URL"
+            unzip -q -o "downloads/sec-13f-datasets/$NAME/$NAME.zip" -d "downloads/sec-13f-datasets/$NAME/extracted"
+            DIRS+=("downloads/sec-13f-datasets/$NAME/extracted")
+          done
+          DATASETS=$(IFS=,; echo "${DIRS[*]}")
+          node --max-old-space-size=6144 node_modules/tsx/dist/cli.mjs scripts/build-13f-store.ts \
+            --current "${{ steps.datasets.outputs.current }}" --previous "${{ steps.datasets.outputs.previous }}" \
+            --datasets "$DATASETS"
 
-      - name: Resolve SEC bulk ZIP
-        id: sec_dataset
-        if: |
-          steps.sprint_gate.outputs.skip != 'true' &&
-          (
-            env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
-            env.ALLOW_TURSO_13F_WRITES == 'true'
-          ) &&
-          (
-            env.REQUESTED_MODE == 'bulk' ||
-            env.REQUESTED_MODE == 'both' ||
-            (
-              env.REQUESTED_MODE == 'auto' &&
-              steps.bulk_status.outputs.done != 'true' &&
-              steps.schedule.outputs.bulk_active == 'true'
-            )
-          )
-        run: |
-          if [ -n "$REQUESTED_SEC_ZIP_URL" ]; then
-            echo "sec_zip_url=$REQUESTED_SEC_ZIP_URL" >> "$GITHUB_OUTPUT"
-            echo "sec_zip_label=manual override" >> "$GITHUB_OUTPUT"
-          else
-            npx tsx scripts/resolve-sec-13f-dataset-url.ts --quarter "${{ steps.schedule.outputs.quarter }}" --github-output
-          fi
-
-      - name: Run official SEC bulk ingestion
-        id: bulk_ingest
-        if: steps.sprint_gate.outputs.skip != 'true' && steps.sec_dataset.outputs.sec_zip_url != ''
-        run: npm run ingest:13f-sec -- --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --url "${{ steps.sec_dataset.outputs.sec_zip_url }}" --rebuild-search-indexes
-
-      - name: Verify quarter ingestion
+      - name: Precompute default radar view
         if: |
           always() &&
-          steps.sprint_gate.outputs.skip != 'true' &&
-          (
-            env.THIRTEEN_F_DB_PROVIDER == 'postgres' ||
-            env.ALLOW_TURSO_13F_WRITES == 'true'
-          ) &&
-          (
-            env.REQUESTED_MODE == 'repair-indexes' ||
-            env.REQUESTED_MODE != 'auto' ||
-            steps.schedule.outputs.live_active == 'true' ||
-            steps.schedule.outputs.bulk_active == 'true'
-          )
-        run: npm run verify:13f -- --target "$THIRTEEN_F_DB_PROVIDER" --quarter "${{ steps.schedule.outputs.quarter }}" --github-summary --require-indexes
-        continue-on-error: true
+          (steps.live_ingest.outcome == 'success' || steps.bulk_build.outcome == 'success' || env.REQUESTED_MODE == 'precompute')
+        run: node --max-old-space-size=4096 node_modules/tsx/dist/cli.mjs scripts/precompute-13f-radar.ts
 
-      - name: Merge new filings into cache
-        id: merge_cache
-        if: |
-          steps.sprint_gate.outputs.skip != 'true' &&
-          env.THIRTEEN_F_DB_PROVIDER == 'postgres' &&
-          (
-            steps.live_ingest.outcome == 'success' ||
-            steps.bulk_ingest.outcome == 'success'
-          )
-        run: |
-          npx tsx scripts/merge-13f-cache.ts --quarter "${{ steps.schedule.outputs.quarter }}"
+      - name: Database size guard
+        if: always()
+        run: npx tsx scripts/size-13f-neon.ts --require-under-target
 
-      - name: Trim DB after merge
-        if: steps.sprint_gate.outputs.skip != 'true' && steps.merge_cache.outcome == 'success'
-        run: |
-          npx tsx scripts/trim-13f-db.ts --quarter "${{ steps.schedule.outputs.quarter }}"
-          echo "Trimmed Q${{ steps.schedule.outputs.quarter }} data from DB to free space for next run." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Commit and push updated cache
-        if: steps.sprint_gate.outputs.skip != 'true' && steps.merge_cache.outcome == 'success'
+      - name: Commit precomputed radar files
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/13f-radar-cache/
+          git add data/13f-precomputed/
           if git diff --staged --quiet; then
-            echo "No cache changes to commit."
-          else
-            git commit -m "Update 13F radar cache (${{ steps.schedule.outputs.quarter }})"
-            # Retry push with rebase, fallback to force-with-lease if conflicts
-            for attempt in 1 2 3; do
-              if git pull --rebase origin main && git push origin main; then
-                echo "Pushed updated 13F radar cache to repository." >> "$GITHUB_STEP_SUMMARY"
-                break
-              fi
-              if [ "$attempt" -eq 3 ]; then
-                echo "Rebase failed, using force-with-lease..."
-                git rebase --abort 2>/dev/null || true
-                git push --force-with-lease origin main
-                echo "Force-pushed updated 13F radar cache to repository." >> "$GITHUB_STEP_SUMMARY"
-              fi
-              sleep 2
-            done
+            echo "No precomputed changes to commit."
+            exit 0
           fi
+          git commit -m "Update 13F precomputed radar (${{ steps.schedule.outputs.quarter }})"
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push origin main; then
+              echo "Pushed updated 13F precomputed radar." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Could not push precomputed radar files after 3 attempts."
+          exit 1

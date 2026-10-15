@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { Download, X, Loader2, TrendingUp, Users, GitMerge, Database, Megaphone } from 'lucide-react';
 import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter, ReferenceLine } from 'recharts';
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout';
 import { getSector } from '@/lib/sectors';
 import { TickerSearch } from './TickerSearch';
 import { FollowButton } from './FollowButton';
@@ -25,7 +26,9 @@ interface WhaleData {
     filerName?: string | null;
     cik?: string;
     filingDateCurr: string;
-    filingDatePrev: string;
+    filingDatePrev: string | null;
+    /** Set when the filer hasn't reported both stored quarters, so holdings show without changes. */
+    note?: string | null;
     topHoldings: Holding[];
     topBuys: Holding[];
     topSells: Holding[];
@@ -204,12 +207,12 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         try {
             // Parallel Fetch: 13F (Holdings) + 13D (Activist)
             const [resWhale, resActivist] = await Promise.all([
-                fetch('/api/whale-tracker', {
+                fetchWithTimeout('/api/whale-tracker', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ticker })
                 }),
-                fetch('/api/whale-activist', {
+                fetchWithTimeout('/api/whale-activist', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ticker })
@@ -245,7 +248,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         setClusterData(null);
 
         try {
-            const res = await fetch('/api/whale-cluster', {
+            const res = await fetchWithTimeout('/api/whale-cluster', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ticker1: tickerA, ticker2: tickerB })
@@ -270,12 +273,12 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         try {
             // Parallel Fetch: Reverse Lookup + 13D (Activist)
             const [resReverse, resActivist] = await Promise.all([
-                fetch('/api/whale-reverse-lookup', {
+                fetchWithTimeout('/api/whale-reverse-lookup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ticker: reverseTicker })
                 }),
-                fetch('/api/whale-activist', {
+                fetchWithTimeout('/api/whale-activist', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ticker: reverseTicker })
@@ -309,7 +312,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         setError("");
         setActivistData(null);
         try {
-            const res = await fetch('/api/whale-activist', {
+            const res = await fetchWithTimeout('/api/whale-activist', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ticker: activistTicker })
@@ -402,11 +405,11 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
         setAnalyzingHistory(true);
         setHistoryData(null);
         try {
-            const res = await fetch('/api/whale-history', {
+            const res = await fetchWithTimeout('/api/whale-history', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ticker: data?.ticker || tickerA, holdingInfo: { issuer } }) // Fallback to tickerA if in compare mode
-            });
+            }, 65000); // History still fetches 8 quarters live from SEC (server limit 60s)
             const result = await res.json();
             if (!res.ok) throw new Error(result.error);
             setHistoryData(result.history);
@@ -632,7 +635,7 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                 </div>
                                 <div className="flex items-center gap-4">
                                     <div className={`text-xs font-mono ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>
-                                        {data.filingDatePrev} <span className="mx-1">→</span> {data.filingDateCurr}
+                                        {data.filingDatePrev ? <>{data.filingDatePrev} <span className="mx-1">→</span> </> : null}{data.filingDateCurr}
                                     </div>
 
                                     <button onClick={() => handleDownloadCSV(data.allChanges, `${data.ticker}_QoQ_changes`)} className={`text-xs flex items-center gap-1 font-medium hover:underline text-emerald-500`}>
@@ -640,6 +643,11 @@ export function WhaleTracker({ theme }: { theme: 'light' | 'dark' }) {
                                     </button>
                                 </div>
                             </div>
+                            {data.note && (
+                                <div className={`mx-2 rounded-lg border px-3 py-2 text-xs ${theme === 'dark' ? 'border-amber-900/70 bg-amber-950/30 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                                    {data.note}
+                                </div>
+                            )}
 
                             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                                 <div className={`col-span-1 p-6 rounded-xl border flex flex-col items-center justify-center ${theme === 'dark' ? 'bg-zinc-900/40 border-zinc-800' : 'bg-white border-gray-200'}`}>

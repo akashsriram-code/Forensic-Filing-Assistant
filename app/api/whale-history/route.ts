@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout';
 import { fetchCIK, fetchSubmission, fetchFilingContent, parse13F } from '@/lib/sec-client';
 
 export const maxDuration = 60; // Allow longer timeout for multiple fetches
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
                 // console.log(`[WhaleHistory] No rows in primary doc for ${filing.filingDate}. Checking index...`);
                 try {
                     const indexUrl = `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${accessionNoDash}/index.json`;
-                    const indexRes = await fetch(indexUrl, { headers: { 'User-Agent': process.env.SEC_USER_AGENT || "ForensicAnalyzer contact@example.com" } });
+                    const indexRes = await fetchWithTimeout(indexUrl, { headers: { 'User-Agent': process.env.SEC_USER_AGENT || "ForensicAnalyzer contact@example.com" } }, 15000);
 
                     if (indexRes.ok) {
                         const indexData = await indexRes.json();

@@ -3,19 +3,16 @@ import { buildRadarAudit } from '@/lib/thirteen-f-radar-core';
 import {
     RadarDataError,
     buildRadarNotes,
-    createRadarClientFromEnv,
-    isRadarCacheOnlyEnabled,
-    loadRadarComparison,
-    loadRadarComparisonFromCache,
+    loadRadarComparisonFromStore,
+    readAppStoreMeta,
     readRadarRequestBody,
     resolveRadarRequest,
-    resolveRadarRequestFromCache,
 } from '@/lib/thirteen-f-radar-data';
 import { buildRadarAuditWorkbook, buildRadarExportFilename } from '@/lib/thirteen-f-radar-export';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 const DEFAULT_MAX_FILER_SECURITY_AUDIT_ROWS = 1000;
 const DEFAULT_MAX_TOP_FILER_MOVE_DETAIL_ROWS = 1000;
@@ -23,15 +20,10 @@ const DEFAULT_MAX_TOP_FILER_MOVE_DETAIL_ROWS = 1000;
 export async function POST(req: Request) {
     try {
         const body = await readRadarRequestBody(req);
-        const cacheOnly = isRadarCacheOnlyEnabled();
-        const db = cacheOnly ? null : createRadarClientFromEnv();
-        const request = cacheOnly
-            ? await resolveRadarRequestFromCache(body)
-            : await resolveRadarRequest(db!, body);
-        const loaded = cacheOnly
-            ? await loadRadarComparisonFromCache(request)
-            : await loadRadarComparison(db!, request);
-        const { comparison, filings, holdings } = loaded;
+        const meta = await readAppStoreMeta();
+        if (!meta) throw new RadarDataError('The 13F database has not been built yet.', 503);
+        const request = await resolveRadarRequest(body, meta);
+        const { comparison, filings, holdings } = await loadRadarComparisonFromStore(request, meta);
         const audit = buildRadarAudit({
             currentQuarter: request.currentQuarter,
             previousQuarter: request.previousQuarter,
@@ -45,7 +37,7 @@ export async function POST(req: Request) {
             request,
             comparison,
             audit,
-            notes: buildRadarNotes(request.dbShape),
+            notes: buildRadarNotes(),
             generatedAt: new Date(),
             maxFilerSecurityAuditRows: resolveExportRowLimit(
                 'THIRTEEN_F_RADAR_EXPORT_AUDIT_ROW_LIMIT',

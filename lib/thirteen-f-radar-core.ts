@@ -154,6 +154,52 @@ export interface RadarApiResponse extends RadarComparison {
     availableQuarters: string[];
     watchlists: RadarWatchlist[];
     notes: string[];
+    /** Per-category ownership concentration. Sent instead of the (large) full holder lists, which load on demand. */
+    categoryConcentration?: CategoryConcentration[];
+}
+
+export interface CategoryConcentration {
+    key: string;
+    label: string;
+    hhi: number;
+    holders: number;
+}
+
+/** Herfindahl-Hirschman Index of share ownership (0-10,000). */
+export function calculateHHI(shares: number[]): number {
+    const total = shares.reduce((sum, s) => sum + s, 0);
+    if (total === 0) return 0;
+    const sumSquares = shares.reduce((sum, s) => {
+        const marketShare = (s / total) * 100;
+        return sum + marketShare * marketShare;
+    }, 0);
+    return Math.round(sumSquares);
+}
+
+export function buildCategoryConcentration(
+    currentHoldersByCategory: Record<string, FilerMove[]>,
+    watchlists: RadarWatchlist[]
+): CategoryConcentration[] {
+    const labels = new Map(watchlists.map((w) => [w.key, w.label]));
+    return Object.entries(currentHoldersByCategory)
+        .filter(([, holders]) => holders.length > 0)
+        .map(([key, holders]) => ({
+            key,
+            label: labels.get(key) || key,
+            hhi: calculateHHI(holders.map((h) => h.currentShares)),
+            holders: holders.length,
+        }))
+        .sort((a, b) => b.hhi - a.hhi);
+}
+
+/** Holder-table order: initiations, liquidations, increases, decreases, unchanged; then by size. */
+export function compareHoldersForTable(a: FilerMove, b: FilerMove): number {
+    const order = (action: string) =>
+        action === 'initiated' ? 0 : action === 'liquidated' ? 1 : action === 'increased' ? 2 : action === 'decreased' ? 3 : 4;
+    const orderDiff = order(a.action) - order(b.action);
+    if (orderDiff !== 0) return orderDiff;
+    if (a.action === 'liquidated') return b.previousShares - a.previousShares;
+    return b.currentShares - a.currentShares;
 }
 
 export interface SectorMovementSummary {
@@ -720,6 +766,19 @@ export function matchIssuerToWatchlists(
     return matches;
 }
 
+/** matchIssuerToWatchlists memoised per issuer string - holdings repeat the same few thousand issuers. */
+function createIssuerMatcher(watchlists: RadarWatchlist[], selectedCategories?: string[]) {
+    const cache = new Map<string, MatchResult[]>();
+    return (issuer: string): MatchResult[] => {
+        let matches = cache.get(issuer);
+        if (!matches) {
+            matches = matchIssuerToWatchlists(issuer, watchlists, selectedCategories);
+            cache.set(issuer, matches);
+        }
+        return matches;
+    };
+}
+
 export function buildIssuerSqlPatterns(watchlists: RadarWatchlist[], selectedCategories?: string[]): string[] {
     const selected = selectedCategories && selectedCategories.length > 0 ? new Set(selectedCategories) : null;
     const patterns = new Set<string>();
@@ -811,6 +870,7 @@ export function buildRadarComparison(params: {
 
     const securityStates = new Map<string, FilerSecurityState>();
     const sectorSecurityStates = new Map<string, SectorFilerState>();
+    const matchIssuer = createIssuerMatcher(selectedWatchlists, selectedCategories);
     let watchedHoldingRows = 0;
 
     for (const row of normalizedHoldings) {
@@ -825,7 +885,7 @@ export function buildRadarComparison(params: {
 
         if (!period) continue;
 
-        const matches = matchIssuerToWatchlists(row.issuer, selectedWatchlists, selectedCategories);
+        const matches = matchIssuer(row.issuer);
         if (matches.length === 0) continue;
 
         watchedHoldingRows++;
@@ -840,10 +900,10 @@ export function buildRadarComparison(params: {
         };
         if (period === 'current') {
             sectorSecurityState.currentShares += safeNumber(row.shares);
-            sectorSecurityState.currentValue += estimateActualValue(row.value, row.shares);
+            sectorSecurityState.currentValue += estimateActualValue(row.value);
         } else {
             sectorSecurityState.previousShares += safeNumber(row.shares);
-            sectorSecurityState.previousValue += estimateActualValue(row.value, row.shares);
+            sectorSecurityState.previousValue += estimateActualValue(row.value);
         }
         sectorSecurityStates.set(sectorSecurityKey, sectorSecurityState);
 
@@ -875,12 +935,12 @@ export function buildRadarComparison(params: {
 
             if (period === 'current') {
                 state.currentShares += safeNumber(row.shares);
-                state.currentValue += estimateActualValue(row.value, row.shares);
+                state.currentValue += estimateActualValue(row.value);
                 state.issuer = row.issuer || state.issuer;
                 state.cusip = row.cusip || state.cusip;
             } else {
                 state.previousShares += safeNumber(row.shares);
-                state.previousValue += estimateActualValue(row.value, row.shares);
+                state.previousValue += estimateActualValue(row.value);
                 if (!state.issuer || state.issuer === 'Unknown') state.issuer = row.issuer;
                 if (!state.cusip) state.cusip = row.cusip;
             }
@@ -1113,7 +1173,7 @@ export function buildRadarComparison(params: {
         if (!currentFiling) continue;
         if (row.quarter !== currentQuarter || row.accessionNumber !== currentFiling.accessionNumber) continue;
 
-        const matches = matchIssuerToWatchlists(row.issuer, selectedWatchlists, selectedCategories);
+        const matches = matchIssuer(row.issuer);
         if (matches.length === 0) continue;
 
         for (const match of matches) {
@@ -1130,7 +1190,7 @@ export function buildRadarComparison(params: {
                 itemStates: new Map<string, FilerMoveDetailState>(),
             };
             state.currentShares += safeNumber(row.shares);
-            state.currentValue += estimateActualValue(row.value, row.shares);
+            state.currentValue += estimateActualValue(row.value);
             currentHolderStates.set(categoryKey, state);
         }
     }
@@ -1345,6 +1405,7 @@ export function buildRadarAudit(params: {
     const previousByCik = new Map(previousFilings.map((filing) => [filing.cik, filing]));
     const comparableSet = new Set(Array.from(currentByCik.keys()).filter((cik) => previousByCik.has(cik)));
     const states = new Map<string, FilerSecurityAuditState>();
+    const matchIssuer = createIssuerMatcher(selectedWatchlists, selectedCategories);
     const rawCurrentHoldings: MatchedRawHoldingRow[] = [];
     const rawPreviousHoldings: MatchedRawHoldingRow[] = [];
 
@@ -1364,7 +1425,7 @@ export function buildRadarAudit(params: {
 
         if (!period) continue;
 
-        const matches = matchIssuerToWatchlists(row.issuer, selectedWatchlists, selectedCategories);
+        const matches = matchIssuer(row.issuer);
         if (matches.length === 0) continue;
 
         if (includeRawHoldings) {
@@ -1375,7 +1436,7 @@ export function buildRadarAudit(params: {
                 ...row,
                 period,
                 rawReportedValue: row.value,
-                estimatedValue: estimateActualValue(row.value, row.shares),
+                estimatedValue: estimateActualValue(row.value),
                 matchedCategoryKeys,
                 matchedCategories,
                 matchedItems,
@@ -1425,13 +1486,13 @@ export function buildRadarAudit(params: {
             if (period === 'current') {
                 state.currentShares += safeNumber(row.shares);
                 state.currentRawValue += safeNumber(row.value);
-                state.currentValue += estimateActualValue(row.value, row.shares);
+                state.currentValue += estimateActualValue(row.value);
                 state.issuer = row.issuer || state.issuer;
                 state.cusip = row.cusip || state.cusip;
             } else {
                 state.previousShares += safeNumber(row.shares);
                 state.previousRawValue += safeNumber(row.value);
-                state.previousValue += estimateActualValue(row.value, row.shares);
+                state.previousValue += estimateActualValue(row.value);
                 if (!state.issuer || state.issuer === 'Unknown') state.issuer = row.issuer;
                 if (!state.cusip) state.cusip = row.cusip;
             }
@@ -1546,14 +1607,14 @@ function safeNumber(value: number): number {
     return Number.isFinite(value) ? value : 0;
 }
 
-export function estimateActualValue(value: number, shares: number): number {
+/**
+ * 13F VALUE has been reported in whole dollars since January 2023, and the store only holds post-2023 quarters,
+ * so values are used as reported. (The old "value/share <= 4 means thousands" guess inflated convertible-bond
+ * and low-priced rows 1000x.)
+ */
+export function estimateActualValue(value: number): number {
     const safeValue = safeNumber(value);
-    const safeShares = safeNumber(shares);
-    if (safeValue <= 0) return 0;
-    if (safeShares <= 0) return safeValue;
-
-    const ratio = Math.abs(safeValue / safeShares);
-    return ratio > 4 ? safeValue : safeValue * 1000;
+    return safeValue > 0 ? safeValue : 0;
 }
 
 function pct(numerator: number, denominator: number): number {
