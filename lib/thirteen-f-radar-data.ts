@@ -4,11 +4,14 @@ import {
     buildCategoryConcentration,
     buildRadarComparison,
     compareHoldersForTable,
+    compareQuartersAsc,
+    quarterFilingDeadline,
     sortQuartersDesc,
     type FilerMove,
     type MovementBasis,
     type RadarApiResponse,
     type RadarComparison,
+    type RadarFilingProgress,
     type RadarFilingRow,
     type RadarHoldingRow,
     type RadarWatchlist,
@@ -125,7 +128,7 @@ export async function resolveRadarRequest(
             (!requestedCurrent || p.currentQuarter === requestedCurrent) &&
             (!requestedPrevious || p.previousQuarter === requestedPrevious)
         )
-        : await pickDefaultPair(pairs);
+        : pickDefaultPair(pairs);
     if (!pair) {
         const listed = pairs.map((p) => `${p.currentQuarter} vs ${p.previousQuarter}`).join(', ');
         throw new RadarDataError(`No stored comparison for ${requestedCurrent || '?'} vs ${requestedPrevious || '?'}. Available: ${listed}.`, 404);
@@ -150,19 +153,23 @@ export async function resolveRadarRequest(
 }
 
 /**
- * Newest pair, unless its quarter is still filing in: early in a filing season only a fraction of filers have reported,
- * so stay on the newest pair whose comparable-filer count is within DEFAULT_PAIR_COVERAGE_RATIO of the best one.
+ * Always the newest pair, even while its quarter is still filing in: the UI shows filing progress against the
+ * pair one quarter back (see buildFilingProgress), and older pairs stay selectable.
  */
-const DEFAULT_PAIR_COVERAGE_RATIO = 0.8;
+function pickDefaultPair(pairs: PrecomputedPair[]): PrecomputedPair {
+    return [...pairs].sort((a, b) => compareQuartersAsc(b.currentQuarter, a.currentQuarter))[0];
+}
 
-async function pickDefaultPair(pairs: PrecomputedPair[]): Promise<PrecomputedPair> {
-    const sorted = [...pairs].sort((a, b) => b.currentQuarter.localeCompare(a.currentQuarter));
-    const counts = await readPrecomputedComparableFilers(sorted);
-    const best = Math.max(0, ...counts.values());
-    return sorted.find((pair) => {
-        const count = counts.get(`${pair.currentQuarter}|${pair.previousQuarter}`);
-        return count === undefined ? best === 0 : count >= best * DEFAULT_PAIR_COVERAGE_RATIO;
-    }) || sorted[0];
+/** Deadline and the "fully filed" reference count (the pair one quarter back) for the filing-progress banner. */
+export async function buildFilingProgress(request: ResolvedRadarRequest): Promise<RadarFilingProgress> {
+    const pairs = await listPrecomputedPairs();
+    const baseline = pairs.find((p) => p.currentQuarter === request.previousQuarter);
+    const counts = baseline ? await readPrecomputedComparableFilers([baseline]) : new Map<string, number>();
+    return {
+        deadline: quarterFilingDeadline(request.currentQuarter),
+        baselineQuarter: baseline ? baseline.currentQuarter : null,
+        baselineComparableFilers: baseline ? counts.get(`${baseline.currentQuarter}|${baseline.previousQuarter}`) ?? null : null,
+    };
 }
 
 /** Serve a default request from its precomputed file, if one exists for the pair. */
@@ -218,6 +225,8 @@ export function toRadarApiResponse(comparison: RadarComparison, request: Resolve
         liquidations: comparison.liquidations.slice(0, 50),
         topFilerMoves: comparison.topFilerMoves.slice(0, 100),
         currentHoldersByCategory: {},
+        recentFilers: comparison.recentFilers || [],
+        recentFilerCount: comparison.recentFilerCount ?? 0,
         categoryConcentration: buildCategoryConcentration(comparison.currentHoldersByCategory || {}, request.watchlists),
         availableQuarters: request.availableQuarters,
         watchlists: request.watchlists,

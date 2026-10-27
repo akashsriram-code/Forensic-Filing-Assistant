@@ -26,7 +26,9 @@ import { classifyFiler } from '@/lib/filer-classification';
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout';
 import {
     DEFAULT_RADAR_WATCHLISTS,
+    RECENT_FILER_WINDOW_DAYS,
     calculateHHI,
+    formatQuarterLabel,
     hydrateEditableWatchlists,
     type CategoryConcentration,
     type CategorySummary,
@@ -281,6 +283,8 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
         : 'bg-white border-gray-200 text-gray-900 focus:border-gray-400';
 
     const availableQuarters = data?.availableQuarters || [];
+    const loadedQuarterLabel = data ? formatQuarterLabel(data.coverage.currentQuarter) : '';
+    const filerWatchTitle = loadedQuarterLabel ? `${loadedQuarterLabel} Filer Watch` : 'Filer Watch';
 
     const buildRequestPayload = useCallback((override?: {
         currentQuarter?: string;
@@ -469,7 +473,7 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                                     : isDark ? 'text-zinc-500 hover:text-zinc-200' : 'text-gray-500 hover:text-gray-900'
                                     }`}
                             >
-                                Q2 Filer Watch
+                                {filerWatchTitle}
                             </button>
                         </div>
                     </div>
@@ -632,13 +636,14 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
                     theme={theme}
                     moves={data.topFilerMoves}
                     panelClass={panelClass}
+                    quarterLabel={loadedQuarterLabel}
                 />
             )}
 
             {activeRadarTab === 'spacex' && !data && !loading && (
                 <div className={`rounded-xl border p-10 text-center ${panelClass}`}>
                     <Users className="mx-auto mb-3 h-7 w-7 text-sky-500" />
-                    <div className="text-sm font-semibold">Q2 Filer Watch</div>
+                    <div className="text-sm font-semibold">{filerWatchTitle}</div>
                     <div className={`mt-1 text-xs ${mutedText}`}>Run the 13F Trends scan first to load filer data.</div>
                 </div>
             )}
@@ -652,6 +657,15 @@ export function ThirteenFRadar({ theme }: ThirteenFRadarProps) {
 
             {activeRadarTab === 'trends' && data && (
                 <>
+                    <FilingSeasonPanel
+                        theme={theme}
+                        data={data}
+                        panelClass={panelClass}
+                        mutedText={mutedText}
+                        loading={loading}
+                        onViewBaseline={(quarter) => void loadRadar({ currentQuarter: quarter, previousQuarter: '' })}
+                    />
+
                     <section className="grid grid-cols-1 gap-4 md:grid-cols-4">
                         <MetricCard
                             theme={theme}
@@ -1194,6 +1208,161 @@ function CoverageList({ title, values, mutedText }: { title: string; values: Rec
             </div>
         </div>
     );
+}
+
+// Below this share of the baseline pair's comparable filers, the current pair is flagged as partial.
+const PARTIAL_COVERAGE_RATIO = 0.8;
+// Keep showing the filing-season panel this long after the deadline, while late filers and amendments land.
+const FILING_SEASON_GRACE_DAYS = 30;
+const RECENT_FILERS_COLLAPSED = 10;
+
+/** Deadline countdown, coverage vs the last fully filed pair, and who just filed. Hidden once a quarter is settled. */
+function FilingSeasonPanel({
+    theme,
+    data,
+    panelClass,
+    mutedText,
+    loading,
+    onViewBaseline,
+}: {
+    theme: 'light' | 'dark';
+    data: RadarApiResponse;
+    panelClass: string;
+    mutedText: string;
+    loading: boolean;
+    onViewBaseline: (quarter: string) => void;
+}) {
+    const isDark = theme === 'dark';
+    const [showAllRecent, setShowAllRecent] = useState(false);
+    const progress = data.filingProgress;
+    const { currentQuarter, previousQuarter, comparableFilers, latestFilingDate } = data.coverage;
+
+    const biggestMoveByCik = useMemo(() => {
+        const map = new Map<string, FilerMove>();
+        for (const move of data.topFilerMoves) {
+            const existing = map.get(move.cik);
+            if (!existing || Math.abs(move.valueDelta) > Math.abs(existing.valueDelta)) map.set(move.cik, move);
+        }
+        return map;
+    }, [data.topFilerMoves]);
+
+    if (!progress?.deadline) return null;
+    const today = new Date().toISOString().slice(0, 10);
+    const daysLeft = Math.round((Date.parse(`${progress.deadline}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000);
+    const baseline = progress.baselineComparableFilers;
+    const ratio = baseline ? comparableFilers / baseline : null;
+    const partial = ratio !== null && ratio < PARTIAL_COVERAGE_RATIO;
+    if (daysLeft < -FILING_SEASON_GRACE_DAYS && !partial) return null;
+
+    const quarterLabel = formatQuarterLabel(currentQuarter);
+    const recentFilers = data.recentFilers || [];
+    const visibleRecent = showAllRecent ? recentFilers : recentFilers.slice(0, RECENT_FILERS_COLLAPSED);
+    const deadlineText = daysLeft > 0
+        ? `${daysLeft} day${daysLeft === 1 ? '' : 's'} to the ${formatShortDate(progress.deadline)} deadline`
+        : daysLeft === 0
+            ? `Due today (${formatShortDate(progress.deadline)})`
+            : `Deadline passed ${formatShortDate(progress.deadline)}; late filers and amendments still arriving`;
+
+    return (
+        <section className={`rounded-xl border ${panelClass}`}>
+            <div className={`flex flex-col gap-4 border-b px-5 py-4 md:flex-row md:items-center md:justify-between ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+                <div>
+                    <h3 className="text-sm font-bold">{quarterLabel} filing season</h3>
+                    <div className={`mt-1 text-xs ${mutedText}`}>{deadlineText}</div>
+                </div>
+                {baseline !== null && ratio !== null && (
+                    <div className="w-full md:w-80">
+                        <div className={`mb-1 flex justify-between text-[11px] ${mutedText}`}>
+                            <span>{formatNumber(comparableFilers)} of ~{formatNumber(baseline)} comparable filers</span>
+                            <span className="font-mono">{formatPct(Math.min(ratio, 1) * 100)}</span>
+                        </div>
+                        <div className={`h-2 overflow-hidden rounded-full ${isDark ? 'bg-zinc-800' : 'bg-gray-100'}`}>
+                            <div
+                                className={`h-full rounded-full ${partial ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                style={{ width: `${Math.min(ratio, 1) * 100}%` }}
+                            />
+                        </div>
+                        <div className={`mt-1 text-[11px] ${mutedText}`}>
+                            Baseline: {formatQuarterLabel(progress.baselineQuarter || '')} comparable filers
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {partial && progress.baselineQuarter && (
+                <div className={`flex flex-col gap-2 border-b px-5 py-3 text-xs md:flex-row md:items-center md:justify-between ${isDark ? 'border-zinc-800 bg-amber-950/20 text-amber-100' : 'border-gray-100 bg-amber-50 text-amber-800'}`}>
+                    <div className="flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4 shrink-0" />
+                        Partial coverage: {quarterLabel} vs {formatQuarterLabel(previousQuarter)} counts will shift as filings arrive.
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => onViewBaseline(progress.baselineQuarter!)}
+                        disabled={loading}
+                        className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg border border-current px-3 py-1 font-semibold disabled:opacity-50"
+                    >
+                        View fully filed {formatQuarterLabel(progress.baselineQuarter)} comparison
+                    </button>
+                </div>
+            )}
+
+            {recentFilers.length > 0 && (
+                <div className="px-5 py-4">
+                    <div className="mb-3 flex items-baseline justify-between gap-3">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Just filed</div>
+                        <div className={`text-[11px] ${mutedText}`}>
+                            {formatNumber(data.recentFilerCount ?? recentFilers.length)} filers in the {RECENT_FILER_WINDOW_DAYS} days through {formatShortDate(latestFilingDate || '')}, biggest watchlist moves first
+                        </div>
+                    </div>
+                    <div className={`divide-y text-xs ${isDark ? 'divide-zinc-800' : 'divide-gray-100'}`}>
+                        {visibleRecent.map((filer) => {
+                            const move = biggestMoveByCik.get(filer.cik);
+                            return (
+                                <div key={filer.cik} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                                    <div className="min-w-0">
+                                        <div className="truncate font-medium">{filer.fundName}</div>
+                                        <div className={`font-mono text-[11px] ${mutedText}`}>Filed {formatShortDate(filer.filingDate)} · CIK {filer.cik}</div>
+                                    </div>
+                                    <div className="text-right">
+                                        {move ? (
+                                            <>
+                                                <div className={move.valueDelta >= 0 ? 'text-emerald-500' : 'text-red-500'}>
+                                                    {move.categoryLabel}: {move.action} {formatSignedMoney(move.valueDelta)}
+                                                </div>
+                                                {move.details[0] && (
+                                                    <div className={`text-[11px] ${mutedText}`}>Largest: {move.details[0].label} ({move.details[0].action})</div>
+                                                )}
+                                            </>
+                                        ) : (
+                                            <span className={mutedText}>
+                                                {filer.comparable ? 'No watchlist moves' : `New filer (no ${formatQuarterLabel(previousQuarter)} 13F)`}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    {recentFilers.length > RECENT_FILERS_COLLAPSED && (
+                        <button
+                            type="button"
+                            onClick={() => setShowAllRecent((open) => !open)}
+                            className={`mt-2 text-xs font-semibold ${isDark ? 'text-zinc-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+                        >
+                            {showAllRecent ? 'Show fewer' : `Show ${recentFilers.length - RECENT_FILERS_COLLAPSED} more`}
+                        </button>
+                    )}
+                </div>
+            )}
+        </section>
+    );
+}
+
+function formatShortDate(value: string) {
+    const time = Date.parse(`${value}T00:00:00Z`);
+    return Number.isNaN(time)
+        ? value
+        : new Date(time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
 function MetricCard({ theme, label, value, sub }: { theme: 'light' | 'dark'; label: string; value: string; sub: string }) {
@@ -2165,10 +2334,12 @@ function Q2WatchPanel({
     theme,
     moves,
     panelClass,
+    quarterLabel,
 }: {
     theme: 'light' | 'dark';
     moves: FilerMove[];
     panelClass: string;
+    quarterLabel: string;
 }) {
     const isDark = theme === 'dark';
     const [expanded, setExpanded] = useState(true);
@@ -2263,7 +2434,7 @@ function Q2WatchPanel({
                 className={`flex w-full items-center justify-between px-5 py-4 text-left ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}
             >
                 <div>
-                    <h3 className="text-sm font-bold">Q2 Filer Watch</h3>
+                    <h3 className="text-sm font-bold">{quarterLabel} Filer Watch</h3>
                     <div className={`mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
                         {foundCount} of {totalCount} named funds found in filings — click a row for full detail
                     </div>
@@ -2351,7 +2522,7 @@ function Q2WatchPanel({
                                                         </div>
                                                     ) : (
                                                         <span className={`text-xs ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>
-                                                            Not in Q2
+                                                            Not in {quarterLabel}
                                                         </span>
                                                     )}
                                                 </td>
@@ -2377,6 +2548,7 @@ function Q2WatchPanel({
                                                     <td colSpan={8} className={`p-0 ${isDark ? 'bg-zinc-900/50' : 'bg-gray-50'}`}>
                                                         <Q2FundDetailCard
                                                             theme={theme}
+                                                            quarterLabel={quarterLabel}
                                                             fund={fund}
                                                             categoryBreakdown={categoryBreakdown}
                                                             allSecurities={allSecurities}
@@ -2404,6 +2576,7 @@ function Q2WatchPanel({
 // Detail card component for Q2 Watch fund expansion
 function Q2FundDetailCard({
     theme,
+    quarterLabel,
     fund,
     categoryBreakdown,
     allSecurities,
@@ -2411,6 +2584,7 @@ function Q2FundDetailCard({
     onClose,
 }: {
     theme: 'light' | 'dark';
+    quarterLabel: string;
     fund: {
         label: string;
         cik: string;
@@ -2463,7 +2637,7 @@ function Q2FundDetailCard({
                                 <span className="font-mono">CIK {fund.cik}</span>
                             )}
                             {firstMatch && (
-                                <span>Q2 2026</span>
+                                <span>{quarterLabel}</span>
                             )}
                         </div>
                     </div>

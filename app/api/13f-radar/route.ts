@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import {
     RadarDataError,
+    buildFilingProgress,
     loadPrecomputedRadarResponse,
     loadRadarComparisonFromStore,
     readAppStoreMeta,
@@ -22,15 +23,16 @@ export async function POST(req: Request) {
             return null;
         });
         const request = await resolveRadarRequest(body, meta);
+        const filingProgress = await buildFilingProgress(request);
 
         const precomputed = await loadPrecomputedRadarResponse(request);
-        if (precomputed) return NextResponse.json(precomputed);
+        if (precomputed) return NextResponse.json({ ...precomputed, filingProgress });
 
         if (!meta) {
             throw new RadarDataError('The 13F database is unavailable, and only the built-in watchlists are precomputed. Try again shortly.', 503);
         }
         const { comparison } = await loadRadarComparisonFromStore(request, meta);
-        return NextResponse.json(toRadarApiResponse(comparison, request));
+        return NextResponse.json({ ...toRadarApiResponse(comparison, request), filingProgress });
     } catch (error) {
         console.error('[13F Radar] Error:', error);
         const status = error instanceof RadarDataError ? error.status : 500;

@@ -14,8 +14,10 @@ import {
     classifyMovement,
     compareHoldersForTable,
     estimateActualValue,
+    formatQuarterLabel,
     issuerMatchesItem,
     normalizeCik,
+    quarterFilingDeadline,
     selectLatestFilings,
     type FilerMove,
     type RadarFilingRow,
@@ -25,7 +27,7 @@ import {
 import { classifyFiler } from '../lib/filer-classification';
 import { getSector } from '../lib/sectors';
 import { buildRadarAuditWorkbook, buildRadarExportFilename } from '../lib/thirteen-f-radar-export';
-import { resolveRadarRequest, toRadarApiResponse, type ResolvedRadarRequest } from '../lib/thirteen-f-radar-data';
+import { buildFilingProgress, resolveRadarRequest, toRadarApiResponse, type ResolvedRadarRequest } from '../lib/thirteen-f-radar-data';
 import {
     getRadarWatchlistHash,
     listPrecomputedPairs,
@@ -222,6 +224,36 @@ async function run() {
         selectedCategories: ['software'],
     });
     assert.equal(mixedCikComparison.coverage.comparableFilers, 1);
+
+    // Filing-season helpers: quarter labels, deadlines, and the "just filed" list.
+    assert.equal(formatQuarterLabel('2026-Q3'), 'Q3 2026');
+    assert.equal(formatQuarterLabel('current'), 'current');
+    assert.equal(quarterFilingDeadline('2026-Q3'), '2026-11-14');
+    assert.equal(quarterFilingDeadline('2026-Q4'), '2027-02-14');
+    assert.equal(quarterFilingDeadline('bad'), null);
+    const recentComparison = buildRadarComparison({
+        currentQuarter: '2026-Q3',
+        previousQuarter: '2026-Q2',
+        filings: [
+            filing('201', 'Mover Fund', 'mover-prev', '2026-08-14', '2026-Q2'),
+            filing('201', 'Mover Fund', 'mover-curr', '2026-11-03', '2026-Q3'),
+            filing('202', 'Brand New Fund', 'new-curr', '2026-11-01', '2026-Q3'),
+            filing('203', 'Early Fund', 'early-prev', '2026-08-10', '2026-Q2'),
+            filing('203', 'Early Fund', 'early-curr', '2026-10-20', '2026-Q3'),
+        ],
+        holdings: [
+            holding('201', 'Mover Fund', 'mover-prev', '2026-08-14', '2026-Q2', 'SALESFORCE INC', '79466L302', 1000, 10),
+            holding('201', 'Mover Fund', 'mover-curr', '2026-11-03', '2026-Q3', 'SALESFORCE INC', '79466L302', 5000, 50),
+        ],
+        watchlists: DEFAULT_RADAR_WATCHLISTS,
+        selectedCategories: ['software'],
+    });
+    assert.equal(recentComparison.coverage.latestFilingDate, '2026-11-03');
+    assert.equal(recentComparison.recentFilerCount, 2);
+    assert.deepEqual(recentComparison.recentFilers, [
+        { cik: '201', fundName: 'Mover Fund', filingDate: '2026-11-03', comparable: true },
+        { cik: '202', fundName: 'Brand New Fund', filingDate: '2026-11-01', comparable: false },
+    ]);
     assert.equal(mixedCikComparison.categorySummaries[0].buyers, 1);
 
     const software = comparison.categorySummaries.find((summary) => summary.key === 'software');
@@ -531,17 +563,23 @@ async function run() {
         ]);
         assert.equal((await readPrecomputedRadar('2026-Q2', '2026-Q1'))?.response.coverage.comparableFilers, 8600);
 
-        // Early in the Q3 filing season (1,200 of ~8,600 filers) the default stays on Q2 vs Q1...
+        // Early in the Q3 filing season (1,200 of ~8,600 filers) the default is still the newest pair...
         const early = await resolveRadarRequest({}, null);
-        assert.equal(early.currentQuarter, '2026-Q2');
+        assert.equal(early.currentQuarter, '2026-Q3');
+        assert.equal(early.previousQuarter, '2026-Q2');
         assert.equal(early.isDefault, true);
         assert.equal(early.inStore, false);
         assert.deepEqual(early.availableQuarters, ['2026-Q3', '2026-Q2', '2026-Q1']);
-        // ...an explicit request still gets the newer pair...
-        assert.equal((await resolveRadarRequest({ currentQuarter: '2026-Q3' }, null)).previousQuarter, '2026-Q2');
-        // ...and once coverage catches up the default moves forward.
-        await writeCoverage('2026-Q3', '2026-Q2', 8000);
-        assert.equal((await resolveRadarRequest({}, null)).currentQuarter, '2026-Q3');
+        // ...with progress measured against the fully filed Q2 vs Q1 pair...
+        assert.deepEqual(await buildFilingProgress(early), {
+            deadline: '2026-11-14',
+            baselineQuarter: '2026-Q2',
+            baselineComparableFilers: 8600,
+        });
+        // ...and the older pair stays selectable.
+        const older = await resolveRadarRequest({ currentQuarter: '2026-Q2', previousQuarter: '2026-Q1' }, null);
+        assert.equal(older.previousQuarter, '2026-Q1');
+        assert.equal((await buildFilingProgress(older)).baselineComparableFilers, null);
         await assert.rejects(() => resolveRadarRequest({ currentQuarter: '2024-Q1' }, null), /No stored comparison/);
 
         const customRequest = await resolveRadarRequest({ watchlists: [{ key: 'x', label: 'X', items: [{ ticker: 'X', label: 'X', aliases: ['X'] }] }] }, null);

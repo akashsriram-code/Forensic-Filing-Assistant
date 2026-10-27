@@ -47,6 +47,26 @@ export interface RadarCoverage {
     comparableFilers: number;
     watchedFilers: number;
     watchedHoldingRows: number;
+    /** Newest current-quarter filing date in the data set (absent in files precomputed before it was added). */
+    latestFilingDate?: string | null;
+}
+
+/** A filer whose current-quarter 13F landed within RECENT_FILER_WINDOW_DAYS of the newest filing. */
+export interface RecentFiler {
+    cik: string;
+    fundName: string;
+    filingDate: string;
+    /** Also filed the previous quarter, so its moves are in topFilerMoves. */
+    comparable: boolean;
+}
+
+/** Filing-season context for the selected pair, attached by the API (not stored in precomputed files). */
+export interface RadarFilingProgress {
+    /** 13F-HR due date for the current quarter (YYYY-MM-DD). */
+    deadline: string | null;
+    /** The pair one quarter back (e.g. Q2 vs Q1 when viewing Q3 vs Q2), used as the "fully filed" reference. */
+    baselineQuarter: string | null;
+    baselineComparableFilers: number | null;
 }
 
 export interface CategorySummary {
@@ -148,12 +168,16 @@ export interface RadarComparison {
     topFilerMoves: FilerMove[];
     /** All current-quarter holders by category (including non-comparable filers), sorted by shares desc */
     currentHoldersByCategory: Record<string, FilerMove[]>;
+    /** Newest current-quarter filers, newest first (absent in files precomputed before it was added). */
+    recentFilers?: RecentFiler[];
+    recentFilerCount?: number;
 }
 
 export interface RadarApiResponse extends RadarComparison {
     availableQuarters: string[];
     watchlists: RadarWatchlist[];
     notes: string[];
+    filingProgress?: RadarFilingProgress;
     /** Per-category ownership concentration. Sent instead of the (large) full holder lists, which load on demand. */
     categoryConcentration?: CategoryConcentration[];
 }
@@ -702,6 +726,64 @@ export function sortQuartersDesc(quarters: string[]): string[] {
     return [...new Set(quarters)].sort((a, b) => compareQuartersAsc(b, a));
 }
 
+const DAY_MS = 86400000;
+const FILING_DEADLINE_DAYS = 45;
+export const RECENT_FILER_WINDOW_DAYS = 7;
+const RECENT_FILER_LIMIT = 50;
+
+/** "2026-Q3" -> "Q3 2026"; anything else is returned unchanged. */
+export function formatQuarterLabel(quarter: string): string {
+    const parsed = parseQuarter(quarter);
+    return parsed ? `Q${parsed.quarter} ${parsed.year}` : quarter;
+}
+
+/** 13F-HR due date, 45 days after quarter end (YYYY-MM-DD), or null for a malformed quarter. */
+export function quarterFilingDeadline(quarter: string): string | null {
+    const parsed = parseQuarter(quarter);
+    if (!parsed) return null;
+    const quarterEnd = Date.UTC(parsed.year, parsed.quarter * 3, 0);
+    return new Date(quarterEnd + FILING_DEADLINE_DAYS * DAY_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * Current-quarter filers within RECENT_FILER_WINDOW_DAYS of the newest filing date. Ranked by their biggest
+ * watchlist move (filers with no watched move last), then newest first, so the capped list stays relevant at deadline.
+ */
+function buildRecentFilers(
+    currentFilings: RadarFilingRow[],
+    comparableSet: Set<string>,
+    topFilerMoves: FilerMove[]
+): { latestFilingDate: string | null; recentFilers: RecentFiler[]; recentFilerCount: number } {
+    const dated = currentFilings
+        .filter((filing) => /^\d{4}-\d{2}-\d{2}/.test(filing.filingDate))
+        .map((filing) => ({ ...filing, filingDate: filing.filingDate.slice(0, 10) }));
+    if (dated.length === 0) return { latestFilingDate: null, recentFilers: [], recentFilerCount: 0 };
+
+    const latestFilingDate = dated.reduce((max, filing) => (filing.filingDate > max ? filing.filingDate : max), dated[0].filingDate);
+    const cutoff = new Date(Date.parse(`${latestFilingDate}T00:00:00Z`) - (RECENT_FILER_WINDOW_DAYS - 1) * DAY_MS).toISOString().slice(0, 10);
+    const biggestMoveByCik = new Map<string, number>();
+    for (const move of topFilerMoves) {
+        biggestMoveByCik.set(move.cik, Math.max(biggestMoveByCik.get(move.cik) ?? 0, Math.abs(move.valueDelta)));
+    }
+    const recent = dated
+        .filter((filing) => filing.filingDate >= cutoff)
+        .sort((a, b) =>
+            (biggestMoveByCik.get(b.cik) ?? -1) - (biggestMoveByCik.get(a.cik) ?? -1) ||
+            b.filingDate.localeCompare(a.filingDate) ||
+            a.fundName.localeCompare(b.fundName)
+        );
+    return {
+        latestFilingDate,
+        recentFilerCount: recent.length,
+        recentFilers: recent.slice(0, RECENT_FILER_LIMIT).map((filing) => ({
+            cik: filing.cik,
+            fundName: filing.fundName,
+            filingDate: filing.filingDate,
+            comparable: comparableSet.has(filing.cik),
+        })),
+    };
+}
+
 export function normalizeCik(cik: string): string {
     const raw = String(cik || '').trim();
     const digits = raw.replace(/\D/g, '');
@@ -1234,6 +1316,8 @@ export function buildRadarComparison(params: {
             .sort((a, b) => b.currentShares - a.currentShares);
     }
 
+    const { latestFilingDate, recentFilers, recentFilerCount } = buildRecentFilers(currentFilings, comparableSet, topFilerMoves);
+
     return {
         movementBasis,
         coverage: {
@@ -1244,6 +1328,7 @@ export function buildRadarComparison(params: {
             comparableFilers: comparableCiks.length,
             watchedFilers: watchedFilerSet.size,
             watchedHoldingRows,
+            latestFilingDate,
         },
         categorySummaries,
         sectorMovers,
@@ -1258,6 +1343,8 @@ export function buildRadarComparison(params: {
             .sort((a, b) => b.liquidatedFilers - a.liquidatedFilers || b.previousValue - a.previousValue),
         topFilerMoves,
         currentHoldersByCategory,
+        recentFilers,
+        recentFilerCount,
     };
 }
 
