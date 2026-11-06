@@ -1,28 +1,23 @@
 import { createClient, type InValue } from '@libsql/client';
-import { parseStringPromise } from 'xml2js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mostRecentCompletedReportQuarter, normalizeSecDate, quarterFromReportDate } from '../lib/thirteen-f-parse';
+
+export {
+    mostRecentCompletedReportQuarter,
+    normalizeSecDate,
+    parseLive13FSubmissionText,
+    parseLive13FXmlText,
+    parseNumber,
+    quarterFromReportDate,
+    type HoldingInput,
+    type ParsedLive13FXml,
+} from '../lib/thirteen-f-parse';
 
 export type TursoClient = ReturnType<typeof createClient>;
 export type IngestionSource = 'live-edgar' | 'sec-bulk';
 export type IngestionTargetProvider = 'turso' | 'postgres';
 export type TsvRow = Record<string, string>;
-
-export interface HoldingInput {
-    issuer: string;
-    cusip: string | null;
-    value: number;
-    shares: number;
-    putcall: string | null;
-    sshPrnamtType: string | null;
-}
-
-export interface ParsedLive13FXml {
-    reportDate: string | null;
-    /** Cover-page amendment type for 13F-HR/A: "RESTATEMENT" or "NEW HOLDINGS". */
-    amendmentType: string | null;
-    holdings: HoldingInput[];
-}
 
 export interface IngestionRunCounts {
     filingsSeen: number;
@@ -102,16 +97,6 @@ export function previousReportQuarter(quarterKey: string): string {
     return quarter === 1 ? `${year - 1}-Q4` : `${year}-Q${quarter - 1}`;
 }
 
-export function quarterFromReportDate(value: string): string | null {
-    const normalized = normalizeSecDate(value);
-    if (!normalized) return null;
-    const date = new Date(`${normalized}T00:00:00.000Z`);
-    if (Number.isNaN(date.getTime())) return null;
-    const month = date.getUTCMonth();
-    const quarter = Math.floor(month / 3) + 1;
-    return `${date.getUTCFullYear()}-Q${quarter}`;
-}
-
 export function normalizeCikForStorage(cik: string): string {
     const raw = String(cik || '').trim();
     const digits = raw.replace(/\D/g, '');
@@ -137,17 +122,6 @@ export function filingDeadlineDateString(quarterKey: string): string {
 export function filingIndexQuarterForReportQuarter(quarterKey: string): { year: number; quarter: number } {
     const { year, quarter } = parseQuarterKey(quarterKey);
     return quarter === 4 ? { year: year + 1, quarter: 1 } : { year, quarter: quarter + 1 };
-}
-
-export function mostRecentCompletedReportQuarter(asOf = new Date()): string {
-    const year = asOf.getUTCFullYear();
-    const month = asOf.getUTCMonth();
-    const currentQuarter = Math.floor(month / 3) + 1;
-    const currentQuarterEnd = new Date(Date.UTC(year, currentQuarter * 3, 0));
-    if (asOf.getTime() > currentQuarterEnd.getTime()) {
-        return `${year}-Q${currentQuarter}`;
-    }
-    return currentQuarter === 1 ? `${year - 1}-Q4` : `${year}-Q${currentQuarter - 1}`;
 }
 
 export function resolveIngestionSchedule(quarter = mostRecentCompletedReportQuarter(), asOf = new Date()): IngestionSchedule {
@@ -548,43 +522,6 @@ export async function fetchJsonWithRetry<T>(url: string, attempts = 5): Promise<
     return null;
 }
 
-export async function parseLive13FXmlText(xmlContent: string): Promise<ParsedLive13FXml> {
-    const cleanXml = xmlContent.replace(/<([a-zA-Z0-9]+):/g, '<').replace(/<\/([a-zA-Z0-9]+):/g, '</');
-    const parsed = await parseStringPromise(cleanXml, {
-        explicitArray: true,
-        ignoreAttrs: false,
-        tagNameProcessors: [(name: string) => name.toLowerCase()],
-    });
-    const reportDate = normalizeSecDate(findFirstTextByKeys(parsed, ['periodofreport', 'reportcalendarorquarter']) || '');
-    const amendmentType = (findFirstTextByKeys(parsed, ['amendmenttype']) || '').trim().toUpperCase() || null;
-    const infoTableRows = collectInfoTableRows(parsed);
-    const holdings = infoTableRows
-        .map(parseInfoTableHolding)
-        .filter((holding): holding is HoldingInput => holding !== null);
-    return { reportDate: reportDate || null, amendmentType, holdings };
-}
-
-export async function parseLive13FSubmissionText(submissionText: string): Promise<ParsedLive13FXml> {
-    const xmlSegments = Array.from(submissionText.matchAll(/<XML>([\s\S]*?)<\/XML>/gi)).map((match) => match[1]);
-    const candidates = xmlSegments.length > 0 ? xmlSegments : [submissionText];
-    let reportDate: string | null = null;
-    let amendmentType: string | null = null;
-    let holdings: HoldingInput[] = [];
-
-    for (const candidate of candidates) {
-        try {
-            const parsed = await parseLive13FXmlText(candidate);
-            if (!reportDate && parsed.reportDate) reportDate = parsed.reportDate;
-            if (!amendmentType && parsed.amendmentType) amendmentType = parsed.amendmentType;
-            if (parsed.holdings.length > holdings.length) holdings = parsed.holdings;
-        } catch {
-            // Filing submission wrappers often contain non-XML documents; ignore those blocks.
-        }
-    }
-
-    return { reportDate, amendmentType, holdings };
-}
-
 export function parseTsv(text: string): TsvRow[] {
     const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line.trim().length > 0);
     if (lines.length === 0) return [];
@@ -600,106 +537,12 @@ export function parseTsv(text: string): TsvRow[] {
     });
 }
 
-export function normalizeSecDate(value: string): string {
-    const trimmed = value.trim();
-    if (!trimmed) return '';
-    const yyyymmdd = trimmed.match(/^(\d{4})(\d{2})(\d{2})$/);
-    if (yyyymmdd) return `${yyyymmdd[1]}-${yyyymmdd[2]}-${yyyymmdd[3]}`;
-    const parsed = new Date(trimmed);
-    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-    return trimmed;
-}
-
-export function parseNumber(value: string | undefined): number {
-    const parsed = Number.parseFloat((value || '').replace(/,/g, ''));
-    return Number.isFinite(parsed) ? parsed : 0;
-}
-
 export function chunkRows<T>(rows: T[], size: number): T[][] {
     const chunks: T[][] = [];
     for (let i = 0; i < rows.length; i += size) {
         chunks.push(rows.slice(i, i + size));
     }
     return chunks;
-}
-
-function parseInfoTableHolding(row: unknown): HoldingInput | null {
-    const issuer = (findFirstTextByKeys(row, ['nameofissuer']) || 'Unknown').toUpperCase();
-    const cusip = findFirstTextByKeys(row, ['cusip']) || null;
-    const value = parseNumber(findFirstTextByKeys(row, ['value']) || '0');
-    const shares = parseNumber(findFirstTextByKeys(row, ['sshprnamt']) || '0');
-    if (!issuer && !cusip) return null;
-    return {
-        issuer,
-        cusip,
-        value,
-        shares,
-        putcall: findFirstTextByKeys(row, ['putcall']) || null,
-        sshPrnamtType: findFirstTextByKeys(row, ['sshprnamttype']) || null,
-    };
-}
-
-function collectInfoTableRows(node: unknown, rows: unknown[] = []): unknown[] {
-    if (Array.isArray(node)) {
-        for (const item of node) collectInfoTableRows(item, rows);
-        return rows;
-    }
-    if (!node || typeof node !== 'object') return rows;
-
-    for (const [key, value] of Object.entries(node)) {
-        if (key.toLowerCase() === 'infotable') {
-            if (Array.isArray(value)) rows.push(...value);
-            else rows.push(value);
-            continue;
-        }
-        collectInfoTableRows(value, rows);
-    }
-    return rows;
-}
-
-function findFirstTextByKeys(node: unknown, keys: string[]): string | null {
-    if (node === null || node === undefined) return null;
-    if (typeof node === 'string' || typeof node === 'number') return null;
-    if (Array.isArray(node)) {
-        for (const item of node) {
-            const found = findFirstTextByKeys(item, keys);
-            if (found) return found;
-        }
-        return null;
-    }
-    if (typeof node !== 'object') return null;
-
-    for (const [key, value] of Object.entries(node)) {
-        if (keys.includes(key.toLowerCase())) {
-            const text = firstText(value);
-            if (text) return text;
-        }
-    }
-    for (const value of Object.values(node)) {
-        const found = findFirstTextByKeys(value, keys);
-        if (found) return found;
-    }
-    return null;
-}
-
-function firstText(value: unknown): string | null {
-    if (value === null || value === undefined) return null;
-    if (typeof value === 'string' || typeof value === 'number') return String(value).trim() || null;
-    if (Array.isArray(value)) {
-        for (const item of value) {
-            const text = firstText(item);
-            if (text) return text;
-        }
-        return null;
-    }
-    if (typeof value === 'object') {
-        if ('_' in value) return firstText((value as { _: unknown })._);
-        for (const nested of Object.values(value)) {
-            const text = firstText(nested);
-            if (text) return text;
-        }
-    }
-    return null;
 }
 
 function normalizeHeader(value: string): string {

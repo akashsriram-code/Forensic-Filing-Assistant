@@ -3,8 +3,11 @@
  */
 import { normalizeCik, normalizeIssuerName } from './thirteen-f-radar-core';
 import { type PostgresExecutor } from './thirteen-f-radar-postgres';
+import { type Live13FFiling } from './thirteen-f-live';
 import {
+    buildStoreSecurityKey,
     filerComparisonPair,
+    normalizeStoreIssuer,
     positionShares,
     positionValue,
     queryPositionsByFiler,
@@ -116,6 +119,56 @@ export async function loadFilerHoldingDiff(
         })
         .filter((row) => row.sharesCurr > 0 || row.sharesPrev > 0 || row.valueCurr > 0 || row.valuePrev > 0);
     return { pair, rows };
+}
+
+/**
+ * A live EDGAR filing (newer than anything stored for the filer) diffed against the filer's newest stored quarter.
+ * Live rows are aggregated per security the same way the store aggregates them, so the two sides line up.
+ */
+export async function loadLiveFilerHoldingDiff(
+    db: PostgresExecutor,
+    directory: StoreDirectory,
+    filer: StoreFiler | null,
+    storedSide: StoreSide | null,
+    live: Live13FFiling
+): Promise<FilerHoldingDiff[]> {
+    const rows = new Map<string, FilerHoldingDiff>();
+    for (const holding of live.holdings) {
+        const key = buildStoreSecurityKey(holding.cusip, holding.issuer);
+        const row = rows.get(key) || {
+            issuer: normalizeStoreIssuer(holding.issuer),
+            cusip: holding.cusip ? holding.cusip.trim().toUpperCase() : null,
+            sharesCurr: 0,
+            sharesPrev: 0,
+            valueCurr: 0,
+            valuePrev: 0,
+        };
+        row.sharesCurr += Number.isFinite(holding.shares) ? holding.shares : 0;
+        row.valueCurr += Number.isFinite(holding.value) ? holding.value : 0;
+        rows.set(key, row);
+    }
+
+    if (filer && storedSide) {
+        for (const position of await queryPositionsByFiler(db, filer.id)) {
+            const sharesPrev = positionShares(position, storedSide);
+            const valuePrev = positionValue(position, storedSide);
+            if (sharesPrev <= 0 && valuePrev <= 0) continue;
+            const security = directory.securitiesById.get(position.securityId);
+            const key = security?.securityKey || `UNKNOWN|${position.securityId}`;
+            const row = rows.get(key) || {
+                issuer: security?.issuer || 'UNKNOWN',
+                cusip: security?.cusip || null,
+                sharesCurr: 0,
+                sharesPrev: 0,
+                valueCurr: 0,
+                valuePrev: 0,
+            };
+            row.sharesPrev += sharesPrev;
+            row.valuePrev += valuePrev;
+            rows.set(key, row);
+        }
+    }
+    return Array.from(rows.values());
 }
 
 export interface ReverseLookupRows {
