@@ -37,6 +37,7 @@ import {
     hasArg,
     isDirectRun,
     normalizeCikForStorage,
+    normalizeSecDate,
     parseLive13FSubmissionText,
     previousReportQuarter,
     quarterFromReportDate,
@@ -187,7 +188,7 @@ async function main() {
                 return;
             }
             const sideDate = await queryFilerSideFilingDate(pool, filing.cik, side);
-            if (mode === 'replace' && sideDate && filing.filingDate < sideDate) return skip(filing, 'skippedSuperseded');
+            if (mode === 'replace' && sideDate && filing.filingDate < normalizeSecDate(sideDate)) return skip(filing, 'skippedSuperseded');
             if (mode === 'add' && !sideDate) return skip(filing, 'skippedNoBase');
             const result = await applyFilingToStore(pool, {
                 side,
@@ -322,7 +323,7 @@ async function downloadMasterIndex(url: string): Promise<IndexEntry[]> {
     return parseIndexContent(content);
 }
 
-function parseIndexContent(content: string): IndexEntry[] {
+export function parseIndexContent(content: string): IndexEntry[] {
     const entries: IndexEntry[] = [];
     let processing = false;
     for (const line of content.split('\n')) {
@@ -339,7 +340,8 @@ function parseIndexContent(content: string): IndexEntry[] {
             cik: normalizeCikForStorage(parts[0].trim()),
             name: parts[1].trim(),
             form,
-            date: parts[3].trim(),
+            // Daily indexes write 20261103, quarterly ones 2026-11-03; dates are compared as strings, so unify them.
+            date: normalizeSecDate(parts[3].trim()),
             filename: parts[4].trim(),
         });
     }

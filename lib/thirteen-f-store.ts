@@ -151,6 +151,14 @@ export async function ensureStoreSchema(db: PostgresExecutor) {
     await db.query('ALTER TABLE f13_positions ADD COLUMN IF NOT EXISTS prior_shares BIGINT NOT NULL DEFAULT 0');
     await db.query('ALTER TABLE f13_positions ADD COLUMN IF NOT EXISTS prior_value BIGINT NOT NULL DEFAULT 0');
     await db.query('CREATE INDEX IF NOT EXISTS idx_f13_positions_filer ON f13_positions(filer_id)');
+    // Earlier live runs stored EDGAR daily-index dates as YYYYMMDD; filing dates are compared as YYYY-MM-DD strings.
+    for (const side of ['cur', 'prev', 'prior'] as const) {
+        await db.query(
+            `UPDATE f13_filers SET ${side}_filing_date =
+                substr(${side}_filing_date, 1, 4) || '-' || substr(${side}_filing_date, 5, 2) || '-' || substr(${side}_filing_date, 7, 2)
+             WHERE ${side}_filing_date ~ '^[0-9]{8}$'`
+        );
+    }
     await db.query(`
         CREATE TABLE IF NOT EXISTS f13_applied_filings (
             accession_number TEXT PRIMARY KEY,

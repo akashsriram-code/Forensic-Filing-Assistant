@@ -20,10 +20,18 @@ import {
     dailyMasterIndexUrlsForRecentDays,
     mergeIndexEntries,
     parseCurrentFeedEntries,
+    parseIndexContent,
     type IndexEntry,
 } from './ingest-live-13f';
 
 async function run() {
+    // Daily indexes use 20261103 and quarterly ones 2026-11-03; both must come out as YYYY-MM-DD.
+    const indexHeader = 'CIK|Company Name|Form Type|Date Filed|File Name\n--------------------------------------------------------------------------------\n';
+    const dailyEntries = parseIndexContent(`${indexHeader}1652044|Alphabet Inc.|13F-HR|20261106|edgar/data/1652044/0001652044-26-000086.txt\n`);
+    const quarterlyEntries = parseIndexContent(`${indexHeader}1652044|Alphabet Inc.|13F-HR|2026-11-06|edgar/data/1652044/0001652044-26-000086.txt\n`);
+    assert.equal(dailyEntries[0].date, '2026-11-06');
+    assert.equal(quarterlyEntries[0].date, '2026-11-06');
+
     assert.equal(quarterFromReportDate('2026-03-31'), '2026-Q1');
     assert.equal(quarterFromReportDate('20260331'), '2026-Q1');
     assert.equal(quarterEndDateString('2026-Q1'), '2026-03-31');
