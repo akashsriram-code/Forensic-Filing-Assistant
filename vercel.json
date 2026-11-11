@@ -1,8 +1,0 @@
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "functions": {
-    "app/api/ipo-analysis/route.ts": {
-      "maxDuration": 300
-    }
-  }
-}

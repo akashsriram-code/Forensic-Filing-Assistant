@@ -2,181 +2,122 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Loader2, Printer, ArrowLeft, Download } from 'lucide-react';
 import Link from 'next/link';
+import { Download, Printer } from 'lucide-react';
+import { AppHeader } from '../components/AppHeader';
+import { Button, Notice, Skeleton, buttonClass } from '../components/ui';
+
+const BACK = { href: '/?tab=downloader', label: 'Back to search results' };
 
 function ReaderContent() {
     const searchParams = useSearchParams();
     const url = searchParams.get('url');
-    const [content, setContent] = useState("");
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState("");
-    const [generatingPdf, setGeneratingPdf] = useState(false);
-
-
-
+    const [content, setContent] = useState('');
+    const [loading, setLoading] = useState(Boolean(url));
+    const [error, setError] = useState(url ? '' : 'This link is missing the filing address.');
+    const [pdfState, setPdfState] = useState<{ running: boolean; error: string }>({ running: false, error: '' });
 
     useEffect(() => {
         if (!url) return;
-
-        const fetchContent = async () => {
+        let cancelled = false;
+        (async () => {
             try {
-                // Use our existing proxy to fetch the raw HTML
                 const res = await fetch(`/api/download-proxy?url=${encodeURIComponent(url)}`);
-                if (!res.ok) throw new Error("Failed to load filing");
+                if (!res.ok) throw new Error(`The SEC returned an error (${res.status}).`);
                 const html = await res.text();
-
-                // transform content logic could go here or in a separate API, 
-                // but for now we'll just inject it and let CSS handle the cleanup
-                setContent(html);
+                if (!cancelled) setContent(html);
             } catch (err) {
-                console.error(err);
-                setError("Could not load the filing.");
+                if (!cancelled) setError(err instanceof Error ? err.message : 'The filing could not be loaded.');
             } finally {
-                setLoading(false);
+                if (!cancelled) setLoading(false);
             }
+        })();
+        return () => {
+            cancelled = true;
         };
-
-        fetchContent();
     }, [url]);
 
-    const handlePrint = () => {
-        window.print();
-    };
-
-    const handleDownloadPDF = async () => {
-        const element = document.querySelector('.sec-content-wrapper');
+    const handleDownloadPdf = async () => {
+        const element = document.querySelector('.filing-prose');
         if (!element) return;
-
-        setGeneratingPdf(true);
+        setPdfState({ running: true, error: '' });
+        // Render the PDF in light colors even when the page is dark, then restore the theme.
+        const root = document.documentElement;
+        const wasDark = root.classList.contains('dark');
+        root.classList.remove('dark');
         try {
-            // Dynamically import html2pdf to avoid SSR issues
             const html2pdf = (await import('html2pdf.js')).default;
-
-            const opt = {
-                margin: [10, 10, 10, 10] as [number, number, number, number], // top, left, bottom, right
-                filename: 'sec-filing.pdf',
-                image: { type: 'jpeg' as const, quality: 0.95 },
-                html2canvas: { scale: 1, useCORS: true, logging: true },
-                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
-            };
-
-            await html2pdf().set(opt).from(element as HTMLElement).save();
-        } catch (err: any) {
-            console.error("PDF generation failed", err);
-            alert(`Failed to generate PDF: ${err.message || err}. Check console.`);
+            await html2pdf()
+                .set({
+                    margin: [10, 10, 10, 10] as [number, number, number, number],
+                    filename: 'sec-filing.pdf',
+                    image: { type: 'jpeg' as const, quality: 0.95 },
+                    html2canvas: { scale: 1, useCORS: true, logging: false },
+                    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const },
+                })
+                .from(element as HTMLElement)
+                .save();
+            setPdfState({ running: false, error: '' });
+        } catch (err) {
+            setPdfState({
+                running: false,
+                error: `The PDF couldn't be created (${err instanceof Error ? err.message : 'unknown error'}). Use Print instead and choose "Save as PDF".`,
+            });
         } finally {
-            setGeneratingPdf(false);
+            if (wasDark) root.classList.add('dark');
         }
     };
 
-
-
-    if (loading) {
-        return (
-            <div className="flex h-screen items-center justify-center bg-gray-50">
-                <div className="flex flex-col items-center gap-4">
-                    <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
-                    <p className="text-sm font-medium text-gray-500">Preparing Reader View...</p>
-                </div>
-            </div>
-        );
-    }
-
-    if (error) {
-        return (
-            <div className="flex h-screen items-center justify-center text-red-500">
-                {error}
-            </div>
-        );
-    }
-
     return (
-        <div className="min-h-screen bg-white text-gray-900 font-serif print:p-0">
-            {/* Control Bar - Hidden when printing */}
-            <div className="sticky top-0 z-50 flex items-center justify-between px-6 py-4 bg-white/90 backdrop-blur border-b border-gray-200 print:hidden">
-                <Link href="/" className="flex items-center gap-2 text-sm font-sans font-medium text-gray-600 hover:text-black transition-colors">
-                    <ArrowLeft className="h-4 w-4" />
-                    Back to Dashboard
-                </Link>
+        <div className="min-h-screen bg-paper print:bg-white">
+            <AppHeader back={BACK} />
 
-                <div className="flex items-center gap-3">
-
-
-                    <button
-                        onClick={handleDownloadPDF}
-                        disabled={generatingPdf}
-                        className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-sans font-medium rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
-                    >
-                        {generatingPdf ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                            <Download className="h-4 w-4" />
-                        )}
-                        {generatingPdf ? "Generating..." : "Download PDF"}
-                    </button>
-                    <button
-                        onClick={handlePrint}
-                        className="flex items-center gap-2 px-4 py-2 bg-black text-white text-sm font-sans font-medium rounded-lg hover:bg-gray-800 transition-colors"
-                    >
-                        <Printer className="h-4 w-4" />
-                        Print / Save as PDF
-                    </button>
+            {!loading && !error && (
+                <div className="border-b border-rule bg-surface print:hidden">
+                    <div className="mx-auto flex max-w-[1200px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-8">
+                        <p className="text-sm text-ink-muted">Reader view of the original SEC filing. Formatting is simplified for reading and printing.</p>
+                        <div className="flex flex-wrap gap-2">
+                            <Button size="sm" onClick={handleDownloadPdf} loading={pdfState.running} icon={<Download className="h-4 w-4" aria-hidden />}>
+                                {pdfState.running ? 'Creating PDF…' : 'Download PDF'}
+                            </Button>
+                            <Button size="sm" variant="primary" onClick={() => window.print()} icon={<Printer className="h-4 w-4" aria-hidden />}>
+                                Print
+                            </Button>
+                        </div>
+                    </div>
                 </div>
-            </div>
+            )}
 
-            {/* Content Area */}
-            <div className="max-w-[900px] mx-auto py-12 px-8 md:px-12 print:max-w-none print:p-0 print:py-0">
+            <main className="mx-auto max-w-[860px] px-4 py-8 sm:px-8 sm:py-12 print:max-w-none print:p-0">
+                {pdfState.error && <Notice tone="error" className="mb-6">{pdfState.error}</Notice>}
 
-                {/* AI Summary Block */}
+                {loading && (
+                    <div role="status" aria-label="Loading the filing" className="space-y-4">
+                        <Skeleton className="h-8 w-2/3" />
+                        {Array.from({ length: 10 }, (_, index) => (
+                            <Skeleton key={index} className="h-4 w-full" />
+                        ))}
+                        <p className="pt-2 text-sm text-ink-muted">Loading the filing from the SEC…</p>
+                    </div>
+                )}
 
+                {error && (
+                    <Notice tone="error" title="This filing couldn't be opened" action={<Link href={BACK.href} className={buttonClass('secondary', 'sm')}>Back to search results</Link>}>
+                        {error} The SEC site may be busy; try again in a minute.
+                    </Notice>
+                )}
 
-                {/* 
-                   We use a shadow DOM or iframe approach usually to isolate styles, 
-                   but for simplicity here we assume SEC HTML is inline-style heavy.
-                   We'll inject it but override font-family globally. 
-                */}
-                <div
-                    className="prose prose-lg max-w-none prose-headings:font-sans prose-p:leading-relaxed sec-content-wrapper"
-                    dangerouslySetInnerHTML={{ __html: content }}
-                    style={{ fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif' }}
-                />
-            </div>
-
-            <style jsx global>{`
-                /* Specialized cleanup for SEC filings */
-                .sec-content-wrapper table {
-                    width: 100% !important;
-                    display: table !important;
-                    margin-bottom: 1.5rem;
-                }
-                .sec-content-wrapper img {
-                    max-width: 100%;
-                    height: auto;
-                }
-                /* Hide SEC header junk if identifiable */
-                .sec-content-wrapper header, 
-                .sec-content-wrapper #header {
-                    display: none !important;
-                }
-                @media print {
-                    body { 
-                        background: white; 
-                        color: black;
-                    }
-                    /* Ensure hrefs are not printed */
-                    a[href]:after {
-                        content: none !important;
-                    }
-                }
-            `}</style>
+                {!loading && !error && (
+                    <article className="filing-prose" dangerouslySetInnerHTML={{ __html: content }} />
+                )}
+            </main>
         </div>
     );
 }
 
 export default function ReaderPage() {
     return (
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<div className="min-h-screen bg-paper" />}>
             <ReaderContent />
         </Suspense>
     );

@@ -19,7 +19,6 @@
     "spacex-exposure:bulk": "tsx scripts/spacex-exposure-bulk.ts"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
     "@huggingface/inference": "^4.13.5",
     "@libsql/client": "^0.17.0",
     "@types/diff": "^7.0.2",

@@ -1,93 +1,104 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import {
+    formMatches,
+    getFollowsSnapshot,
+    getStatusSnapshot,
+    readSeen,
+    saveStatus,
+    todayIso,
+    writeSeen,
+} from '@/lib/follows';
 
+/** Check soon after the page opens, then every 5 minutes, while any page of the app is open. */
+const POLL_INTERVAL_MS = 5 * 60 * 1000;
+/** Skip the on-load check if another page view checked this recently (e.g. moving between Reader and the main app). */
+const MIN_GAP_MS = 4 * 60 * 1000;
+
+interface FilingHit {
+    accessionNumber: string;
+    filingDate: string;
+    form: string;
+    description?: string;
+    companyName?: string;
+}
+
+/**
+ * Looks for new filings from followed tickers and shows a browser notification for each one.
+ * Renders nothing; the header's Following menu shows its status.
+ */
 export function NotificationManager() {
-    const [lastChecked, setLastChecked] = useState(Date.now());
-
-    // Poll every 5 minutes (300,000 ms)
-    const POLL_INTERVAL = 5 * 60 * 1000;
-
     useEffect(() => {
-        // Request permission on mount if checking
-        if (Notification.permission === 'default') {
-            // Passive request
-        }
+        let cancelled = false;
+        let running = false;
 
-        const checkFilings = async () => {
-            const rawFollowed = JSON.parse(localStorage.getItem('follows') || '[]');
-            if (rawFollowed.length === 0) return;
+        const check = async () => {
+            if (running || cancelled) return;
+            const follows = getFollowsSnapshot();
+            const status = getStatusSnapshot();
+            if (follows.length === 0) return;
 
-            // Normalize: Convert legacy details strings to objects
-            const followed = rawFollowed.map((f: any) => typeof f === 'string' ? { ticker: f, types: ['10-K', '10-Q', '8-K', '4', 'S-1'] } : f);
+            running = true;
+            const today = todayIso();
+            // Look back to the last check (at least a day, so filings posted late yesterday aren't missed).
+            const lastCheckedDay = status.lastChecked ? new Date(status.lastChecked - 86_400_000).toISOString().slice(0, 10) : today;
+            const seen = readSeen();
+            const canNotify = typeof Notification !== 'undefined' && Notification.permission === 'granted';
+            const failed: string[] = [];
 
-            console.log("[NotificationManager] Checking filings for:", followed.map((f: any) => f.ticker));
-
-            const today = new Date().toISOString().split('T')[0];
-
-            for (const item of followed) {
-                const { ticker, types } = item;
-
+            for (const follow of follows) {
+                if (cancelled) break;
+                const startDate = lastCheckedDay > follow.since ? lastCheckedDay : follow.since;
                 try {
-                    const res = await fetch('/api/search-filings', {
+                    const response = await fetch('/api/search-filings', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            ticker,
-                            startDate: today,
-                            endDate: today,
-                            filingType: 'ALL' // Fetch all for today, filter later
-                        })
+                        body: JSON.stringify({ ticker: follow.ticker, startDate, endDate: today, filingType: 'ALL' }),
                     });
-
-                    if (!res.ok) continue;
-                    const data = await res.json();
-
-                    const seen = JSON.parse(localStorage.getItem('seenFilings') || '[]');
-                    let newSeen = [...seen];
-                    let notified = false;
-
-                    data.results?.forEach((filing: any) => {
-                        // Check if we've seen this specific filing
-                        if (!seen.includes(filing.accessionNumber)) {
-
-                            // FILTER: Check if this filing type is in user's subscribed types
-                            // (We do simple includes check or partial match)
-                            const isSubscribedFrom = types?.some((t: string) => filing.form.includes(t));
-
-                            if (isSubscribedFrom) {
-                                new Notification(`New ${filing.form} for ${ticker}`, {
-                                    body: `${filing.description || 'No description'}`,
-                                    icon: '/icon.png'
-                                });
-                            }
-
-                            // Mark as seen regardless to avoid re-notifying if they change settings later? 
-                            // Or should we only mark seen if notified?
-                            // Better: Mark seen so we don't process it again.
-                            newSeen.push(filing.accessionNumber);
-                            notified = true;
-                        }
-                    });
-
-                    if (notified) {
-                        localStorage.setItem('seenFilings', JSON.stringify(newSeen));
+                    if (!response.ok) {
+                        failed.push(follow.ticker);
+                        continue;
                     }
-
-                } catch (e) {
-                    console.error("Poll error for", ticker, e);
+                    const data = (await response.json()) as { results?: FilingHit[] };
+                    for (const filing of data.results ?? []) {
+                        if (seen.has(filing.accessionNumber)) continue;
+                        seen.add(filing.accessionNumber);
+                        if (filing.filingDate < follow.since || !formMatches(filing.form, follow.types)) continue;
+                        if (canNotify) {
+                            new Notification(`New ${filing.form} from ${filing.companyName || follow.ticker}`, {
+                                body: filing.description || `Filed ${filing.filingDate}`,
+                                icon: '/icon.png',
+                                tag: filing.accessionNumber,
+                            });
+                        }
+                    }
+                } catch {
+                    failed.push(follow.ticker);
                 }
             }
-            setLastChecked(Date.now());
+
+            writeSeen(seen);
+            if (!cancelled) {
+                saveStatus({
+                    lastChecked: Date.now(),
+                    error: failed.length > 0 ? `Couldn't reach the SEC for ${failed.join(', ')}. The next check will try again.` : null,
+                });
+            }
+            running = false;
         };
 
-        const interval = setInterval(checkFilings, POLL_INTERVAL);
+        const lastChecked = getStatusSnapshot().lastChecked;
+        const firstDelay = lastChecked && Date.now() - lastChecked < MIN_GAP_MS ? POLL_INTERVAL_MS - (Date.now() - lastChecked) : 3000;
+        const first = window.setTimeout(check, Math.max(firstDelay, 3000));
+        const interval = window.setInterval(check, POLL_INTERVAL_MS);
 
-        // Initial check on load (optional, maybe skip to avoid instant spam)
-        // setTimeout(checkFilings, 5000); 
-
-        return () => clearInterval(interval);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(first);
+            window.clearInterval(interval);
+        };
     }, []);
 
-    return null; // Invisible component
+    return null;
 }

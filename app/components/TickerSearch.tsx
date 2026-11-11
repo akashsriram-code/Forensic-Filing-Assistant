@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react';
-import { Search, Loader2 } from 'lucide-react';
+import { useEffect, useId, useRef, useState, type ChangeEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { Loader2, Search } from 'lucide-react';
+import { cn } from '@/lib/cn';
+import { controlClass, Identifier } from './ui';
 
 interface Suggestion {
     cik: string;
@@ -11,111 +13,217 @@ interface Suggestion {
 
 interface TickerSearchProps {
     value: string;
-    onChange: (val: string) => void;
+    onChange: (value: string) => void;
+    /** Called with the chosen ticker when a suggestion is picked (click or Enter). */
     onSelect?: (ticker: string) => void;
     placeholder?: string;
-    theme?: 'light' | 'dark';
     className?: string;
+    /** Visible label. Without one, the placeholder becomes the accessible name. */
+    label?: ReactNode;
+    hideLabel?: boolean;
+    hint?: ReactNode;
+    error?: ReactNode;
+    /** Upper-case what the user types (right for tickers; turn off for fund names). Default true. */
+    uppercase?: boolean;
+    /** @deprecated Ignored: colors follow the theme tokens. Kept so older callers still compile. */
+    theme?: 'light' | 'dark';
 }
 
-export function TickerSearch({ value, onChange, onSelect, placeholder = "Search Ticker...", theme = 'light', className = "" }: TickerSearchProps) {
-    const [query, setQuery] = useState(value);
+/**
+ * Ticker / company input with suggestions from /api/autocomplete, following the ARIA combobox pattern:
+ * arrow keys move through suggestions, Enter picks the highlighted one (or submits the surrounding form when none is
+ * highlighted), Esc closes the list.
+ */
+export function TickerSearch({
+    value,
+    onChange,
+    onSelect,
+    placeholder = 'Search ticker',
+    className,
+    label,
+    hideLabel,
+    hint,
+    error,
+    uppercase = true,
+}: TickerSearchProps) {
+    const baseId = useId();
+    const inputId = `${baseId}-input`;
+    const listId = `${baseId}-list`;
+    const hintId = `${baseId}-hint`;
+    const errorId = `${baseId}-error`;
+    const optionId = (index: number) => `${baseId}-opt-${index}`;
+
     const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-    const [isOpen, setIsOpen] = useState(false);
+    const [open, setOpen] = useState(false);
+    const [active, setActive] = useState(-1);
     const [loading, setLoading] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
-
-    // Sync internal state if parent updates value directly
-    useEffect(() => {
-        setQuery(value);
-    }, [value]);
+    /** The value we just filled in from a suggestion, so we don't immediately search for it again. */
+    const pickedRef = useRef<string | null>(null);
 
     useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => {
-            if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
-                setIsOpen(false);
-            }
+        const onPointerDown = (event: MouseEvent) => {
+            if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) setOpen(false);
         };
-        document.addEventListener("mousedown", handleClickOutside);
-        return () => document.removeEventListener("mousedown", handleClickOutside);
+        document.addEventListener('mousedown', onPointerDown);
+        return () => document.removeEventListener('mousedown', onPointerDown);
     }, []);
 
     useEffect(() => {
-        const timer = setTimeout(async () => {
-            if (query.length < 2) {
+        const query = value.trim();
+        const controller = new AbortController();
+        const timer = window.setTimeout(async () => {
+            if (query.length < 2 || pickedRef.current === value) {
                 setSuggestions([]);
+                setLoading(false);
                 return;
             }
-            if (query === value && !isOpen) return; // Don't search if we just selected something
-
             setLoading(true);
             try {
-                const res = await fetch(`/api/autocomplete?q=${encodeURIComponent(query)}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    setSuggestions(data.results || []);
-                    setIsOpen(true);
+                const response = await fetch(`/api/autocomplete?q=${encodeURIComponent(query)}`, { signal: controller.signal });
+                if (!response.ok) throw new Error(`Autocomplete failed (${response.status})`);
+                const data = (await response.json()) as { results?: Suggestion[] };
+                setSuggestions(Array.isArray(data.results) ? data.results : []);
+                setActive(-1);
+            } catch (fetchError) {
+                if (!controller.signal.aborted) {
+                    // Suggestions are a convenience; typing a value and searching still works without them.
+                    console.warn('Autocomplete fetch failed', fetchError);
+                    setSuggestions([]);
                 }
-            } catch (e) {
-                console.error("Autocomplete fetch failed", e);
             } finally {
-                setLoading(false);
+                if (!controller.signal.aborted) setLoading(false);
             }
-        }, 300); // 300ms Debounce
+        }, 250);
+        return () => {
+            window.clearTimeout(timer);
+            controller.abort();
+        };
+    }, [value]);
 
-        return () => clearTimeout(timer);
-    }, [query]);
+    const listVisible = open && suggestions.length > 0 && value.trim().length >= 2;
 
-    const handleSelect = (s: Suggestion) => {
-        setQuery(s.ticker);
-        onChange(s.ticker);
-        setIsOpen(false);
-        if (onSelect) onSelect(s.ticker);
+    useEffect(() => {
+        if (!listVisible || active < 0) return;
+        document.getElementById(`${baseId}-opt-${active}`)?.scrollIntoView({ block: 'nearest' });
+    }, [active, listVisible, baseId]);
+
+    const pick = (suggestion: Suggestion) => {
+        pickedRef.current = suggestion.ticker;
+        onChange(suggestion.ticker);
+        setOpen(false);
+        setActive(-1);
+        onSelect?.(suggestion.ticker);
     };
 
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const val = e.target.value.toUpperCase();
-        setQuery(val);
-        onChange(val);
-        setIsOpen(true);
+    const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
+        const next = uppercase ? event.target.value.toUpperCase() : event.target.value;
+        pickedRef.current = null;
+        onChange(next);
+        setOpen(true);
     };
+
+    const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+        const count = suggestions.length;
+        if (event.key === 'ArrowDown') {
+            if (count === 0) return;
+            event.preventDefault();
+            setOpen(true);
+            setActive((index) => (index + 1) % count);
+        } else if (event.key === 'ArrowUp') {
+            if (count === 0) return;
+            event.preventDefault();
+            setOpen(true);
+            setActive((index) => (index <= 0 ? count - 1 : index - 1));
+        } else if (event.key === 'Enter') {
+            if (listVisible && active >= 0 && suggestions[active]) {
+                event.preventDefault();
+                pick(suggestions[active]);
+            } else {
+                setOpen(false);
+            }
+        } else if (event.key === 'Escape') {
+            if (listVisible) {
+                event.preventDefault();
+                setOpen(false);
+                setActive(-1);
+            }
+        } else if (event.key === 'Tab') {
+            setOpen(false);
+        }
+    };
+
+    const describedBy = [hint && !error ? hintId : null, error ? errorId : null].filter(Boolean).join(' ') || undefined;
 
     return (
-        <div ref={wrapperRef} className={`relative w-full ${className}`}>
+        <div ref={wrapperRef} className={cn('relative min-w-0', className)}>
+            {label && (
+                <label htmlFor={inputId} className={cn('mb-1.5 block text-sm font-medium text-ink', hideLabel && 'sr-only')}>
+                    {label}
+                </label>
+            )}
             <div className="relative">
-                <Search className={`absolute left-4 top-3.5 h-5 w-5 ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-400'}`} />
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" aria-hidden />
                 <input
+                    id={inputId}
                     type="text"
+                    role="combobox"
+                    aria-label={label ? undefined : placeholder}
+                    aria-autocomplete="list"
+                    aria-expanded={listVisible}
+                    aria-controls={listId}
+                    aria-activedescendant={listVisible && active >= 0 ? optionId(active) : undefined}
+                    aria-describedby={describedBy}
+                    aria-invalid={error ? true : undefined}
+                    autoComplete="off"
+                    spellCheck={false}
                     placeholder={placeholder}
-                    className={`w-full pl-12 pr-4 py-3 rounded-lg border outline-none transition-all font-mono text-sm ${theme === 'dark' ? 'bg-black/20 border-zinc-800 focus:border-white text-white placeholder-zinc-600' : 'bg-gray-50 border-gray-200 focus:border-black text-gray-900 placeholder-gray-400'}`}
-                    value={query}
+                    value={value}
                     onChange={handleChange}
-                    onFocus={() => query.length > 1 && setIsOpen(true)}
+                    onKeyDown={handleKeyDown}
+                    onFocus={() => setOpen(true)}
+                    className={cn(controlClass, 'h-10 pl-9 pr-9')}
                 />
                 {loading && (
-                    <div className="absolute right-4 top-3.5">
-                        <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
-                    </div>
+                    <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-ink-muted" aria-hidden />
                 )}
             </div>
 
-            {isOpen && suggestions.length > 0 && (
-                <div className={`absolute z-50 w-full mt-2 rounded-lg border shadow-xl max-h-60 overflow-y-auto ${theme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'}`}>
-                    {suggestions.map((s) => (
-                        <div
-                            key={s.cik}
-                            onClick={() => handleSelect(s)}
-                            className={`px-4 py-3 cursor-pointer flex justify-between items-center transition-colors ${theme === 'dark' ? 'hover:bg-zinc-800 border-b border-zinc-800/50' : 'hover:bg-gray-50 border-b border-gray-100'}`}
-                        >
-                            <div>
-                                <span className={`font-bold mr-2 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>{s.ticker}</span>
-                                <span className={`text-xs truncate max-w-[200px] inline-block align-bottom ${theme === 'dark' ? 'text-zinc-500' : 'text-gray-500'}`}>{s.title}</span>
-                            </div>
-                            <span className="text-[10px] font-mono opacity-40">CIK: {s.cik}</span>
-                        </div>
-                    ))}
-                </div>
-            )}
+            <ul
+                id={listId}
+                role="listbox"
+                aria-label="Suggestions"
+                hidden={!listVisible}
+                className="absolute z-30 mt-1 max-h-72 w-full overflow-y-auto rounded-md border border-rule bg-surface py-1 shadow-lg"
+            >
+                {suggestions.map((suggestion, index) => (
+                    <li
+                        key={`${suggestion.cik}-${suggestion.ticker}`}
+                        id={optionId(index)}
+                        role="option"
+                        aria-selected={index === active}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => pick(suggestion)}
+                        onMouseEnter={() => setActive(index)}
+                        className={cn(
+                            'flex cursor-pointer flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-3 py-2',
+                            index === active ? 'bg-surface-2' : 'bg-surface'
+                        )}
+                    >
+                        <span className="min-w-0">
+                            <span className="mr-2 font-semibold text-ink">{suggestion.ticker}</span>
+                            <span className="text-sm text-ink-muted">{suggestion.title}</span>
+                        </span>
+                        <Identifier label="CIK" value={suggestion.cik} className="text-xs" />
+                    </li>
+                ))}
+            </ul>
+            <span className="sr-only" aria-live="polite">
+                {listVisible ? `${suggestions.length} suggestion${suggestions.length === 1 ? '' : 's'}. Use the arrow keys to choose.` : ''}
+            </span>
+
+            {hint && !error && <p id={hintId} className="mt-1.5 text-sm text-ink-muted">{hint}</p>}
+            {error && <p id={errorId} className="mt-1.5 text-sm font-medium text-loss">{error}</p>}
         </div>
     );
 }
