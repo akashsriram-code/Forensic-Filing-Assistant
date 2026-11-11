@@ -1,0 +1,61 @@
+name: CI
+
+# Typecheck, lint, unit tests and a production build on every push and pull request, so a broken change shows up
+# here instead of in front of a reporter on deadline.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # Files below still have older lint errors. Remove a line once its file is fixed; every other file in app/,
+      # lib/ and scripts/ (including all new files) must lint clean.
+      - name: Lint
+        run: >
+          npx eslint app lib scripts
+          --ignore-pattern app/api/insider-analysis/route.ts
+          --ignore-pattern app/api/whale-activist/route.ts
+          --ignore-pattern app/api/whale-history/route.ts
+          --ignore-pattern lib/diff-engine.ts
+          --ignore-pattern lib/sc13d-parser.ts
+          --ignore-pattern lib/search-index.ts
+          --ignore-pattern scripts/ingest-13f-raw.ts
+          --ignore-pattern scripts/ingest-turso-direct.ts
+          --ignore-pattern scripts/migrate-turso.ts
+          --ignore-pattern scripts/retry-ingest.ts
+
+      - name: Unit tests
+        run: |
+          npm run test:13f-radar
+          npm run test:13f-ingestion
+          npm run test:spacex-exposure-radar
+
+      - name: Production build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1

@@ -55,7 +55,8 @@ const SEC_DATASETS_PAGE = 'https://www.sec.gov/data-research/sec-markets-data/fo
 const TURSO_REQUEST_TIMEOUT_MS = 45000;
 const SEC_FETCH_TIMEOUT_MS = 30000;
 
-export const SEC_USER_AGENT = process.env.SEC_USER_AGENT || 'ForensicAnalyzer contact@example.com';
+import { SEC_USER_AGENT } from '../lib/sec-http';
+export { SEC_USER_AGENT };
 
 export const REQUIRED_HOLDINGS_INDEXES = [
     'idx_holdings_accession',

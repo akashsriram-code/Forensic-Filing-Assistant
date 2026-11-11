@@ -6,8 +6,57 @@ import Link from 'next/link';
 import { Download, Printer } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { Button, Notice, Skeleton, buttonClass } from '../components/ui';
+import { isSecUrl } from '@/lib/sec-http';
 
 const BACK = { href: '/?tab=downloader', label: 'Back to search results' };
+
+const RETRY_HINT = ' The SEC site may be busy; try again in a minute.';
+
+/**
+ * Filing HTML is injected into our page, so strip anything that could run code or take over the page: scripts, event
+ * handlers and javascript: links (DOMPurify defaults), plus <base> (would redirect every link), forms and embeds.
+ * Relative image and link paths (filings use them for logos and charts) are resolved against the filing's own sec.gov
+ * address so they load; links that leave sec.gov open in a new tab.
+ */
+async function sanitizeFilingHtml(html: string, filingUrl: string): Promise<string> {
+    const DOMPurify = (await import('dompurify')).default;
+    DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+        const element = node as Element;
+        if (element.tagName === 'IMG' && element.getAttribute('src')) {
+            // sec.gov refuses direct image requests from browsers (403), so load filing images through our SEC-only
+            // proxy. That also keeps them same-origin for "Download PDF". Images hosted elsewhere are dropped.
+            try {
+                const resolved = new URL(element.getAttribute('src') as string, filingUrl).href;
+                if (isSecUrl(resolved)) element.setAttribute('src', `/api/download-proxy?url=${encodeURIComponent(resolved)}`);
+                else element.removeAttribute('src');
+            } catch {
+                element.removeAttribute('src');
+            }
+        }
+        const href = element.tagName === 'A' ? element.getAttribute('href') : null;
+        if (href && !href.startsWith('#')) {
+            try {
+                const resolved = new URL(href, filingUrl);
+                element.setAttribute('href', resolved.href);
+                if (resolved.hostname !== 'www.sec.gov' && resolved.hostname !== 'sec.gov') {
+                    element.setAttribute('target', '_blank');
+                    element.setAttribute('rel', 'noopener noreferrer');
+                }
+            } catch {
+                element.removeAttribute('href');
+            }
+        }
+    });
+    try {
+        return DOMPurify.sanitize(html, {
+            FORBID_TAGS: ['base', 'link', 'meta', 'form', 'input', 'button', 'textarea', 'select', 'iframe', 'frame', 'object', 'embed'],
+            FORBID_ATTR: ['formaction', 'srcset'],
+            ADD_ATTR: ['target'],
+        });
+    } finally {
+        DOMPurify.removeHook('afterSanitizeAttributes');
+    }
+}
 
 function ReaderContent() {
     const searchParams = useSearchParams();
@@ -23,11 +72,16 @@ function ReaderContent() {
         (async () => {
             try {
                 const res = await fetch(`/api/download-proxy?url=${encodeURIComponent(url)}`);
-                if (!res.ok) throw new Error(`The SEC returned an error (${res.status}).`);
+                if (!res.ok) {
+                    const body = await res.json().catch(() => null) as { error?: string } | null;
+                    // 4xx means the link itself is wrong, so retrying won't help; only suggest it for SEC/server errors.
+                    const message = body?.error || `The SEC returned an error (${res.status}).`;
+                    throw new Error(res.status >= 500 ? message + RETRY_HINT : message);
+                }
                 const html = await res.text();
-                if (!cancelled) setContent(html);
+                if (!cancelled) setContent(await sanitizeFilingHtml(html, url));
             } catch (err) {
-                if (!cancelled) setError(err instanceof Error ? err.message : 'The filing could not be loaded.');
+                if (!cancelled) setError(err instanceof Error ? err.message : 'The filing could not be loaded.' + RETRY_HINT);
             } finally {
                 if (!cancelled) setLoading(false);
             }
@@ -103,7 +157,7 @@ function ReaderContent() {
 
                 {error && (
                     <Notice tone="error" title="This filing couldn't be opened" action={<Link href={BACK.href} className={buttonClass('secondary', 'sm')}>Back to search results</Link>}>
-                        {error} The SEC site may be busy; try again in a minute.
+                        {error}
                     </Notice>
                 )}
 

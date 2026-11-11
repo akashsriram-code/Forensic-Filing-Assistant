@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchFilingContent } from '@/lib/sec-client';
+import { isSecUrl } from '@/lib/sec-http';
 import { cleanHtml, generateDiff, extractSections } from '@/lib/diff-engine';
 import * as cheerio from 'cheerio';
 
@@ -7,6 +8,10 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
         const { url1, url2 } = body;
+
+        if (!isSecUrl(url1) || !isSecUrl(url2)) {
+            return NextResponse.json({ error: 'Only filings on sec.gov can be compared.' }, { status: 400 });
+        }
 
         console.log(`[DiffAPI] Comparing:\nA: ${url1}\nB: ${url2}`);
 
@@ -56,8 +61,8 @@ export async function POST(req: NextRequest) {
             truncated: fullDiff.length > limit
         });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("[DiffAPI] Error:", error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        return NextResponse.json({ error: error instanceof Error ? error.message : 'The comparison failed.' }, { status: 500 });
     }
 }

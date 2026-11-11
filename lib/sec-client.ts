@@ -1,8 +1,7 @@
 import { parseStringPromise } from 'xml2js';
-import * as cheerio from 'cheerio';
 import { fetchWithTimeout } from './fetch-with-timeout';
+import { SEC_USER_AGENT, isSecUrl } from './sec-http';
 
-const SEC_USER_AGENT = "ForensicAnalyzer contact@example.com"; // Replace with real info in prod
 // Every SEC call gives up after this, so a slow EDGAR response can't hang an API route.
 const SEC_FETCH_TIMEOUT_MS = 15000;
 
@@ -103,8 +102,8 @@ export async function fetchCIK(query: string): Promise<string | null> {
                 }
             }
 
-            if (entry && (entry as any).cik_str) {
-                return (entry as any).cik_str.toString().padStart(10, '0');
+            if (entry?.cik_str) {
+                return entry.cik_str.toString().padStart(10, '0');
             }
         }
     } catch (error) {
@@ -165,12 +164,17 @@ export async function fetchSubmission(cik: string): Promise<SecSubmission | null
     }
 }
 
+/** Fetches a filing document. Only sec.gov URLs are fetched (callers such as /api/diff pass user-supplied URLs). */
 export async function fetchFilingContent(url: string): Promise<string | null> {
+    if (!isSecUrl(url)) {
+        console.warn('Refused to fetch a non-SEC URL:', url);
+        return null;
+    }
     try {
         const response = await fetchWithTimeout(url, {
             headers: { "User-Agent": SEC_USER_AGENT },
         }, SEC_FETCH_TIMEOUT_MS);
-        if (!response.ok) return null;
+        if (!response.ok || !isSecUrl(response.url)) return null;
         return await response.text();
     } catch (error) {
         console.error("Error fetching filing content:", error);

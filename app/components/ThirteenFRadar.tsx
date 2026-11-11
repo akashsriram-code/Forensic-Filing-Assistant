@@ -31,6 +31,7 @@ import {
     type RadarPayload,
 } from './radar/radar-api';
 import { buildRadarTakeaway, getFilingSeason } from './radar/radar-takeaway';
+import { useUrlParams } from './useUrlState';
 
 type RadarView = 'trends' | 'watch';
 
@@ -59,14 +60,38 @@ const VIEWS = [
     { id: 'watch' as const, label: 'Funds to watch' },
 ];
 
-export function ThirteenFRadar() {
-    const [view, setView] = useState<RadarView>('trends');
-    const [query, setQuery] = useState<RadarQuery>({
-        currentQuarter: '',
-        previousQuarter: '',
-        categories: DEFAULT_RADAR_WATCHLISTS.map((watchlist) => watchlist.key),
+const QUARTER_PATTERN = /^\d{4}-Q[1-4]$/;
+const DEFAULT_CATEGORY_KEYS = DEFAULT_RADAR_WATCHLISTS.map((watchlist) => watchlist.key);
+
+/** Starting query from a shared link (?quarter=2026-Q3&vs=2026-Q2&categories=mag7,energy), ignoring anything invalid. */
+function queryFromUrl(params: URLSearchParams): RadarQuery {
+    const current = params.get('quarter') || '';
+    const previous = params.get('vs') || '';
+    const requested = (params.get('categories') || '').split(',').filter((key) => DEFAULT_CATEGORY_KEYS.includes(key));
+    return {
+        currentQuarter: QUARTER_PATTERN.test(current) ? current : '',
+        previousQuarter: QUARTER_PATTERN.test(current) && QUARTER_PATTERN.test(previous) ? previous : '',
+        categories: requested.length > 0 ? requested : DEFAULT_CATEGORY_KEYS,
         watchlists: DEFAULT_RADAR_WATCHLISTS,
-    });
+    };
+}
+
+export function ThirteenFRadar() {
+    const { params, setParams } = useUrlParams();
+    const [view, setView] = useState<RadarView>(() => (params.get('view') === 'watch' ? 'watch' : 'trends'));
+    const [query, setQuery] = useState<RadarQuery>(() => queryFromUrl(new URLSearchParams(params.toString())));
+
+    // Keep the address bar in step with the view, so copying it shares exactly this comparison. Watchlist edits are
+    // too long for a URL and stay local.
+    const categoriesParam = query.categories.length === DEFAULT_CATEGORY_KEYS.length ? null : query.categories.join(',');
+    useEffect(() => {
+        setParams({
+            quarter: query.currentQuarter || null,
+            vs: query.previousQuarter || null,
+            categories: categoriesParam,
+            view: view === 'watch' ? 'watch' : null,
+        });
+    }, [query.currentQuarter, query.previousQuarter, categoriesParam, view, setParams]);
     const [reloadToken, setReloadToken] = useState(0);
     const [result, setResult] = useState<RadarResult>({ key: '', data: null, payload: null, error: '' });
     const [exporting, setExporting] = useState(false);

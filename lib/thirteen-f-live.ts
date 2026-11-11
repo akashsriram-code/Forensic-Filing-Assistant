@@ -5,8 +5,7 @@
 import { compareQuartersAsc } from './thirteen-f-radar-core';
 import { fetchWithTimeout } from './fetch-with-timeout';
 import { parseLive13FSubmissionText, quarterFromReportDate, type HoldingInput } from './thirteen-f-parse';
-
-const SEC_USER_AGENT = process.env.SEC_USER_AGENT || 'ForensicAnalyzer contact@example.com';
+import { SEC_USER_AGENT } from './sec-http';
 
 export interface Live13FFiling {
     filerName: string;

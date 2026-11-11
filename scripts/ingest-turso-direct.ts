@@ -52,7 +52,7 @@ interface DirectoryData {
 }
 
 // --- Configuration ---
-const SEC_USER_AGENT = "ForensicAnalyzer contact@example.com";
+import { SEC_USER_AGENT } from '../lib/sec-http';
 const RATE_LIMIT_DELAY = 250; // ms (Values > 100ms help stay under 10reqs/sec)
 const CONCURRENCY = 5; // Reduced from 20 to 5 to avoid triggering aggressive bans
 

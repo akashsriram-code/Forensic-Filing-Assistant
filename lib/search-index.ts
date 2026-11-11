@@ -1,6 +1,5 @@
 import { Index } from "flexsearch";
-
-const SEC_USER_AGENT = "ForensicAnalyzer contact@example.com";
+import { SEC_USER_AGENT } from "./sec-http";
 
 interface CompanyTicker {
     cik_str: number;

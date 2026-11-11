@@ -25,6 +25,7 @@ import { TickerSearch } from '../TickerSearch';
 import { PairedBars } from './charts';
 import { PositionHistoryDialog, type HistoryTarget } from './PositionHistoryDialog';
 import { ModeIntro, RequestError, ResultSkeleton, SearchForm, Updating, useRequest, useShowMore } from './shared';
+import { useRunFromUrlOnce, useUrlParams } from '../useUrlState';
 import {
     downloadCsv,
     formatQuarter,
@@ -132,6 +133,7 @@ function buildView(data: ClusterResponse) {
 }
 
 export function CompareFunds() {
+    const { params, setParams } = useUrlParams();
     const [fundA, setFundA] = useState('');
     const [fundB, setFundB] = useState('');
     const [errors, setErrors] = useState<{ a?: string; b?: string }>({});
@@ -146,8 +148,15 @@ export function CompareFunds() {
         if (next.a || next.b) return;
         rows.reset();
         setExpanded(new Set());
+        setParams({ fundA: a.trim(), fundB: b.trim() });
         void run({ a: a.trim(), b: b.trim() }, `${a.trim()} and ${b.trim()}`);
     };
+
+    useRunFromUrlOnce([params.get('fundA'), params.get('fundB')], (a, b) => {
+        setFundA(a);
+        setFundB(b);
+        compare(a, b);
+    });
 
     const data = state.result;
     const view = useMemo(() => (data ? buildView(data) : null), [data]);

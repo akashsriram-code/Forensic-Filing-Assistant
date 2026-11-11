@@ -29,6 +29,7 @@ import { TickerSearch } from '../TickerSearch';
 import { RankedBars, Sparkline } from './charts';
 import { PositionHistoryDialog, type HistoryTarget } from './PositionHistoryDialog';
 import { ModeIntro, RequestError, ResultSkeleton, SearchForm, Updating, useRequest, useShowMore } from './shared';
+import { useRunFromUrlOnce, useUrlParams } from '../useUrlState';
 import {
     downloadCsv,
     formatQuarter,
@@ -120,6 +121,7 @@ function sortFunds(funds: FundRow[], sort: Sort): FundRow[] {
 }
 
 export function WhoOwns() {
+    const { params, setParams } = useUrlParams();
     const [ticker, setTicker] = useState('');
     const [inputError, setInputError] = useState<string | null>(null);
     const [state, run] = useRequest(loadHolders);
@@ -137,8 +139,14 @@ export function WhoOwns() {
         setInputError(null);
         setFilter('all');
         rows.reset();
+        setParams({ stock: q });
         void run(q, q);
     };
+
+    useRunFromUrlOnce([params.get('stock')], (stock) => {
+        setTicker(stock.toUpperCase());
+        search(stock);
+    });
 
     const data = state.result;
     const searched = state.query ?? '';

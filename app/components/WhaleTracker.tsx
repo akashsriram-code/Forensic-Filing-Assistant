@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Briefcase, Building2, GitCompare, Megaphone } from 'lucide-react';
 import { Tabs, tabPanelProps, type TabItem } from './ui';
+import { useUrlParams } from './useUrlState';
 import { ActivistStakes } from './whale/ActivistStakes';
 import { CompareFunds } from './whale/CompareFunds';
 import { FundHoldings } from './whale/FundHoldings';
@@ -24,11 +25,20 @@ const ID_PREFIX = 'whale';
  * its own search, loading state, error and results when you switch tabs, and nothing is fetched until you search.
  */
 export function WhaleTracker() {
-    const [mode, setMode] = useState<Mode>('fund');
+    const { params, setParams } = useUrlParams();
+    const [mode, setMode] = useState<Mode>(() => {
+        const fromUrl = params.get('mode');
+        return MODES.some((item) => item.id === fromUrl) ? (fromUrl as Mode) : 'fund';
+    });
+
+    const changeMode = (next: Mode) => {
+        setMode(next);
+        setParams({ mode: next === 'fund' ? null : next });
+    };
 
     return (
         <div className="space-y-8">
-            <Tabs items={MODES} value={mode} onChange={setMode} label="Whale Tracker views" idPrefix={ID_PREFIX} variant="segmented" />
+            <Tabs items={MODES} value={mode} onChange={changeMode} label="Whale Tracker views" idPrefix={ID_PREFIX} variant="segmented" />
             <div {...tabPanelProps(ID_PREFIX, 'fund')} hidden={mode !== 'fund'}>
                 <FundHoldings />
             </div>

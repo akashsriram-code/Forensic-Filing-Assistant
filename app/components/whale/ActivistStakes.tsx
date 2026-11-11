@@ -22,6 +22,7 @@ import {
 } from '../ui';
 import { TickerSearch } from '../TickerSearch';
 import { ModeIntro, RequestError, ResultSkeleton, SearchForm, Updating, useRequest, useShowMore } from './shared';
+import { useRunFromUrlOnce, useUrlParams } from '../useUrlState';
 import { activistFormLabel, postJson, readActivistField, slugify, type ActivistFiling, type ActivistResponse } from './model';
 
 // /api/whale-activist resolves the query with fetchCIK (ticker, company or fund name, or CIK) and lists the 13D filings
@@ -72,6 +73,7 @@ function buildView(data: ActivistResponse & { fetchedOn: string }, query: string
 }
 
 export function ActivistStakes() {
+    const { params, setParams } = useUrlParams();
     const [query, setQuery] = useState('');
     const [inputError, setInputError] = useState<string | null>(null);
     const [state, run] = useRequest(loadFilings);
@@ -87,8 +89,14 @@ export function ActivistStakes() {
         setInputError(null);
         setExpanded(new Set());
         rows.reset();
+        setParams({ activist: q });
         void run(q, q);
     };
+
+    useRunFromUrlOnce([params.get('activist')], (value) => {
+        setQuery(value);
+        search(value);
+    });
 
     const data = state.result;
     const view = useMemo(() => (data ? buildView(data, state.query ?? '') : null), [data, state.query]);

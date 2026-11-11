@@ -4,7 +4,7 @@ import { parseStringPromise } from 'xml2js';
 
 // --- Configuration ---
 const DB_PATH = 'whale_data.db';
-const SEC_USER_AGENT = "ForensicAnalyzer contact@example.com";
+import { SEC_USER_AGENT } from '../lib/sec-http';
 const QUARTERS = [
     { year: 2024, qtr: 4 },
     // { year: 2024, qtr: 3 } 

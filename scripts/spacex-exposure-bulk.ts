@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { secUserAgent } from '../lib/sec-http';
 import {
     DEFAULT_SPACEX_EXPOSURE_FORMS,
     defaultSpaceXExposureEndDate,
@@ -148,7 +149,7 @@ function parseArgs(argv: string[]): BulkCliOptions | null {
         openArenaReviewLimit: DEFAULT_BULK_OPENARENA_REVIEW_LIMIT,
         requestSpacingMs: DEFAULT_BULK_REQUEST_SPACING_MS,
         concurrency: DEFAULT_BULK_CONCURRENCY,
-        secUserAgent: process.env.SEC_USER_AGENT || 'ForensicAnalyzer contact@example.com',
+        secUserAgent: secUserAgent(),
     };
 
     for (let index = 0; index < normalized.length; index += 1) {

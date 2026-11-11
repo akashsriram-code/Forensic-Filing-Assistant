@@ -31,6 +31,7 @@ import { TickerSearch } from '../TickerSearch';
 import { DivergingBars, RankedBars } from './charts';
 import { PositionHistoryDialog, type HistoryTarget } from './PositionHistoryDialog';
 import { ModeIntro, RequestError, ResultSkeleton, SearchForm, Updating, useRequest, useShowMore } from './shared';
+import { useRunFromUrlOnce, useUrlParams } from '../useUrlState';
 import { downloadCsv, formatQuarter, postJson, quarterEndDate, slugify, toFundHoldings, type FundHolding, type FundHoldingsResponse } from './model';
 
 type Filter = 'all' | ChangeKind;
@@ -141,6 +142,7 @@ function buildView(data: FundHoldingsResponse) {
 }
 
 export function FundHoldings() {
+    const { params, setParams } = useUrlParams();
     const [query, setQuery] = useState('');
     const [inputError, setInputError] = useState<string | null>(null);
     const [state, run] = useRequest(loadFund);
@@ -157,8 +159,15 @@ export function FundHoldings() {
         setInputError(null);
         setFilter('all');
         rows.reset();
+        setParams({ fund: q });
         void run(q, q);
     };
+
+    // A shared link like ?tab=whale&fund=Berkshire+Hathaway opens straight to the result.
+    useRunFromUrlOnce([params.get('fund')], (fund) => {
+        setQuery(fund);
+        search(fund);
+    });
 
     const data = state.result;
     const view = useMemo(() => (data ? buildView(data) : null), [data]);

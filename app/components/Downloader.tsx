@@ -8,7 +8,8 @@ import { Download, FileText, FolderDown, Search, Split } from 'lucide-react';
 import { formatDate, formatNumber, joinList, plural } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { FollowButton } from './FollowButton';
-import { TokenInput } from './TokenInput';
+import { TokenInput, splitTokens } from './TokenInput';
+import { useRunFromUrlOnce, useUrlParams } from './useUrlState';
 import {
     Button,
     EmptyState,
@@ -107,6 +108,32 @@ function loadSearch(): SavedSearch {
     }
 }
 
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A shared link (?companies=NVDA,AAPL&keywords=going concern&from=2023-01-01&to=2026-11-11&form=10-K) wins over the
+ * search saved in this tab. Returns the starting state and whether the link's search still needs to run.
+ */
+function initialSearch(params: URLSearchParams): { state: SavedSearch; runFromLink: boolean } {
+    const saved = loadSearch();
+    const companies = splitTokens(params.get('companies') || '');
+    if (companies.length === 0) return { state: saved, runFromLink: false };
+
+    const from = params.get('from') || '';
+    const to = params.get('to') || '';
+    const form = params.get('form') || 'ALL';
+    const fromLink = {
+        entities: companies,
+        keywords: splitTokens(params.get('keywords') || ''),
+        startDate: DATE_PATTERN.test(from) ? from : saved.startDate,
+        endDate: DATE_PATTERN.test(to) ? to : saved.endDate,
+        filingType: FORM_OPTIONS.some((option) => option.value === form) ? form : 'ALL',
+    };
+    // Coming back from Reader/Compare to the same search: keep the saved results instead of searching again.
+    if (saved.searched && JSON.stringify(saved.searched) === JSON.stringify(fromLink)) return { state: saved, runFromLink: false };
+    return { state: { ...defaultSearch(), ...fromLink }, runFromLink: true };
+}
+
 function escapeRegExp(value: string) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -145,7 +172,9 @@ function findPrevious(results: FilingResult[], index: number): FilingResult | un
 const canCompare = (form: string) => form === '10-K' || form === '10-Q' || form === '10-K/A' || form === '10-Q/A';
 
 export function Downloader() {
-    const [state, setState] = useState<SavedSearch>(loadSearch);
+    const { params, setParams } = useUrlParams();
+    const [initial] = useState(() => initialSearch(new URLSearchParams(params.toString())));
+    const [state, setState] = useState<SavedSearch>(initial.state);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [shown, setShown] = useState(PAGE_SIZE);
@@ -193,12 +222,24 @@ export function Downloader() {
                 partial: Boolean(data.partial),
                 searched: { entities, keywords, startDate, endDate, filingType },
             });
+            setParams({
+                companies: entities.join(','),
+                keywords: keywords.length > 0 ? keywords.join(',') : null,
+                from: startDate,
+                to: endDate,
+                form: filingType === 'ALL' ? null : filingType,
+            });
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : 'The search failed.');
         } finally {
             setLoading(false);
         }
     };
+
+    // The form is already filled from the link (see initialSearch); run it once.
+    useRunFromUrlOnce([initial.runFromLink ? 'run' : null], () => {
+        void handleSearch();
+    });
 
     const downloadFile = (url: string, filename: string) => {
         const safeFilename = filename.replace(/\.htm$/i, '.html');

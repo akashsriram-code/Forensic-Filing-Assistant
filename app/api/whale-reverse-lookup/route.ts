@@ -7,6 +7,7 @@ import {
     type MovementAction,
 } from '@/lib/thirteen-f-radar-core';
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout';
+import { SEC_USER_AGENT } from '@/lib/sec-http';
 import { RadarDataError, getAppPostgresPool, readAppStoreMeta } from '@/lib/thirteen-f-radar-data';
 import { findSecuritiesByCusip, findSecuritiesForCompany, loadReverseLookupRows } from '@/lib/thirteen-f-lookup';
 import { loadStoreDirectory } from '@/lib/thirteen-f-store';
@@ -94,7 +95,7 @@ export interface ReverseLookupBuildResult {
 async function getCompanyName(ticker: string): Promise<string | null> {
     try {
         const response = await fetchWithTimeout('https://www.sec.gov/files/company_tickers.json', {
-            headers: { 'User-Agent': process.env.SEC_USER_AGENT || 'ForensicAnalyzer contact@example.com' },
+            headers: { 'User-Agent': SEC_USER_AGENT },
             next: { revalidate: CACHE_REVALIDATE },
         }, SEC_TICKER_TIMEOUT_MS);
         if (!response.ok) return null;

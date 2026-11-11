@@ -1,5 +1,6 @@
 import * as cheerio from 'cheerio';
 import { parseStringPromise } from 'xml2js';
+import { secUserAgent } from './sec-http';
 
 export type SpaceXRelationshipType =
     | 'direct_holding'
@@ -1184,7 +1185,7 @@ async function fetchTextWithRetry(
         try {
             const response = await fetchImpl(url, {
                 headers: {
-                    'User-Agent': process.env.SEC_USER_AGENT || 'ForensicAnalyzer contact@example.com',
+                    'User-Agent': secUserAgent(),
                     'Accept': accept,
                 },
             });
