@@ -68,7 +68,7 @@ export function NotificationManager() {
                         if (canNotify) {
                             new Notification(`New ${filing.form} from ${filing.companyName || follow.ticker}`, {
                                 body: filing.description || `Filed ${filing.filingDate}`,
-                                icon: '/icon.png',
+                                icon: '/apple-icon.png',
                                 tag: filing.accessionNumber,
                             });
                         }

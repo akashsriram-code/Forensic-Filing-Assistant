@@ -3,6 +3,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
+import { BrandMark } from './BrandMark';
 import { FollowingMenu } from './FollowingMenu';
 import { Guide } from './Guide';
 import { NotificationManager } from './NotificationManager';
@@ -31,10 +32,7 @@ export function AppHeader({ tabs, back }: { tabs?: ReactNode; back?: { href: str
             <NotificationManager />
             <div className="mx-auto flex h-14 max-w-[1200px] items-center justify-between gap-3 px-4 sm:px-8">
                 <Link href="/" className="flex min-w-0 items-center gap-3 rounded-md">
-                    <svg viewBox="0 0 24 24" className="h-7 w-7 shrink-0 text-accent" aria-hidden>
-                        <rect x="4" y="2.5" width="16" height="19" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
-                        <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                    </svg>
+                    <BrandMark className="h-8 w-8 shrink-0" />
                     <span className="min-w-0">
                         <span className="block truncate font-serif text-lg font-semibold leading-tight text-ink">SEC Filings Assistant</span>
                         <span className="hidden text-xs text-ink-muted sm:block">by Akash Sriram</span>
