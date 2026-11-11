@@ -38,6 +38,24 @@ export function Guide() {
                 size="lg"
             >
                 <div className="space-y-8">
+                    <GuideSection title="Company and fund pages">
+                        <p>
+                            Use the search box at the top of every page to open a <strong>company page</strong> (for example NVDA) or a
+                            {' '}<strong>fund page</strong> (for example Berkshire Hathaway). A company page gathers its latest filings, what
+                            changed in its last annual report, insider trades, which funds own it and any activist stakes. A fund page shows
+                            what the fund holds and what it changed.
+                        </p>
+                        <p>Names in tables across the app link to these pages, so you can move from a stock to its owners and back.</p>
+                    </GuideSection>
+
+                    <GuideSection title="Citing what you find">
+                        <p>
+                            Every filing in the app has a <strong>Copy citation</strong> button. It copies the filer, form, filing date, SEC
+                            accession number and a link to the filing on sec.gov. <strong>Copy sentence with sources</strong> under a headline
+                            copies the sentence together with the filings it is based on.
+                        </p>
+                    </GuideSection>
+
                     <GuideSection title="13F Radar">
                         <p>
                             See what big investment funds bought and sold last quarter. Funds that manage more than $100M in US stocks file a
@@ -59,6 +77,11 @@ export function Guide() {
                         <p><strong>Compare funds</strong>: two funds side by side, and the stocks they both own.</p>
                         <p><strong>Who owns a stock</strong>: every fund that reported a stock, and who added or cut.</p>
                         <p><strong>Activist stakes</strong>: Schedule 13D filings, made when an investor buys more than 5% of a company and may push for change.</p>
+                        <p>
+                            <strong>Insider trades</strong>: Form 4 filings by executives, directors and 10% owners. Open-market buys and
+                            sells come first; awards, option exercises and shares withheld for tax are listed separately, and trades made
+                            under a pre-arranged 10b5-1 plan are marked.
+                        </p>
                         <p>Choose a holding to see how the fund&apos;s position changed over past filings.</p>
                     </GuideSection>
 
@@ -69,8 +92,9 @@ export function Guide() {
                         </p>
                         <p>
                             <strong>Read</strong> opens a clean, printable view. <strong>Compare with previous</strong> (10-K and 10-Q only)
-                            shows word-level changes against the company&apos;s previous filing of the same type, focused on risk factors and
-                            MD&amp;A. <strong>Download all</strong> saves every result as one ZIP file.
+                            lists the risk factors and passages that were added, removed or reworded since the company&apos;s previous filing
+                            of the same type, with a keyword filter, and keeps the full word-by-word comparison underneath.
+                            {' '}<strong>Download all</strong> saves every result as one ZIP file.
                         </p>
                     </GuideSection>
 

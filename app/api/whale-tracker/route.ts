@@ -62,6 +62,9 @@ export async function POST(req: NextRequest) {
                 previousQuarter: diff?.pair.currentQuarter ?? null,
                 filingDateCurr: live.filingDate,
                 filingDatePrev: diff?.pair.currentFilingDate ?? null,
+                // Accession numbers let the client cite the exact filings (lib/citation.ts).
+                accessionCurr: live.accessionNumber,
+                accessionPrev: diff?.pair.currentAccession ?? null,
                 source: 'live-edgar',
                 note: notes.join(' '),
                 ...buildComparison(rows, !diff),
@@ -97,6 +100,8 @@ export async function POST(req: NextRequest) {
             previousQuarter: pair.previousQuarter,
             filingDateCurr: pair.currentFilingDate,
             filingDatePrev: pair.previousFilingDate,
+            accessionCurr: pair.currentAccession,
+            accessionPrev: pair.previousAccession,
             source: 'store',
             note: notes.join(' ') || null,
             ...buildComparison(diff.rows, snapshotOnly),

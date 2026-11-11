@@ -71,7 +71,7 @@ export const GLOSSARY = {
     },
     rawValue: {
         term: 'Raw 13F value',
-        definition: 'The market value exactly as it appears in the filing, before the app converts it to dollars. It is kept in the audit workbook.',
+        definition: 'The market value exactly as it appears in the filing, kept in the audit workbook. Filings since 2023 report whole dollars, so it matches the value shown.',
     },
     cumulativeOwnership: {
         term: 'Cumulative ownership curve',
@@ -79,7 +79,7 @@ export const GLOSSARY = {
     },
     estimatedValue: {
         term: 'Value',
-        definition: 'Market value reported in the filing. Filings before 2023 reported thousands of dollars, so the app estimates which scale each filing used and converts to dollars. That estimate can be wrong for a few filers, so check any dollar figure against the filing before publishing it.',
+        definition: 'The market value the fund reported in its filing, in dollars, as of the quarter end. 13F filings have reported whole dollars since January 2023.',
     },
     concentration: {
         term: 'Ownership concentration',
@@ -122,6 +122,14 @@ export const GLOSSARY = {
     tradeValue: {
         term: 'Estimated value bought or sold',
         definition: 'The change in shares multiplied by this quarter’s price per share, worked out from the filing (value ÷ shares). It is a rough guide to size, not the price the fund actually paid or received.',
+    },
+    openMarketTrade: {
+        term: 'Open-market trade',
+        definition: 'An insider buying (Form 4 code P) or selling (code S) shares on the stock market at the going price. Awards, option exercises and shares withheld for tax are not open-market trades.',
+    },
+    plan10b5: {
+        term: 'Planned trade (10b5-1 plan)',
+        definition: 'A trade made under a plan the insider set up in advance, often months earlier, so the timing was fixed before the trade. The insider ticks a box on Form 4 when this applies.',
     },
 } satisfies Record<string, GlossaryEntry>;
 

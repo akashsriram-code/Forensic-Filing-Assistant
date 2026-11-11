@@ -1,6 +1,7 @@
 import { parseStringPromise } from 'xml2js';
 import { fetchWithTimeout } from './fetch-with-timeout';
 import { SEC_USER_AGENT, isSecUrl } from './sec-http';
+import { primaryDocUrl } from './sec-urls';
 
 // Every SEC call gives up after this, so a slow EDGAR response can't hang an API route.
 const SEC_FETCH_TIMEOUT_MS = 15000;
@@ -173,6 +174,8 @@ export async function fetchFilingContent(url: string): Promise<string | null> {
     try {
         const response = await fetchWithTimeout(url, {
             headers: { "User-Agent": SEC_USER_AGENT },
+            // A filing never changes once it is filed, so keep it for a day (Next skips caching responses over 2 MB).
+            next: { revalidate: 86400 },
         }, SEC_FETCH_TIMEOUT_MS);
         if (!response.ok || !isSecUrl(response.url)) return null;
         return await response.text();
@@ -208,7 +211,7 @@ export async function parseForm4(xmlContent: string) {
     }
 }
 
+/** URL of a filing's document. Kept for existing callers; new code should use primaryDocUrl from lib/sec-urls. */
 export function generateSecUrl(cik: string, accessionNumber: string, primaryDocument: string): string {
-    const accessionNoDash = accessionNumber.replace(/-/g, '');
-    return `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${accessionNoDash}/${primaryDocument}`;
+    return primaryDocUrl(cik, accessionNumber, primaryDocument) ?? '';
 }

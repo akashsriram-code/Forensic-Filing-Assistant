@@ -19,6 +19,13 @@ import {
 } from '../lib/thirteen-f-radar-postgres';
 import { compareQuartersAsc } from '../lib/thirteen-f-radar-core';
 import {
+    describeLateAmendment,
+    findPeriodOverride,
+    isLateAmendment,
+    loadPeriodOverrides,
+    type PeriodOverrideIndex,
+} from '../lib/thirteen-f-period-overrides';
+import {
     applyFilingToStore,
     ensureStoreSchema,
     markFilingSeen,
@@ -61,6 +68,8 @@ interface ProcessedLiveFiling {
     form: string;
     filingDate: string;
     reportQuarter: string | null;
+    /** True when data/13f-period-overrides.json set reportQuarter. */
+    overridden: boolean;
     amendmentType: string | null;
     holdings: HoldingInput[];
     errorMessage?: string;
@@ -182,13 +191,15 @@ async function main() {
             if (filing.holdings.length === 0) return skip(filing, 'skippedNoHoldings');
             // Placeholder filings with no reported value would otherwise wipe the filer's real holdings.
             if (totalValue <= 0) return skip(filing, 'skippedZeroValue');
-            const mode = filing.amendmentType === 'NEW HOLDINGS' ? 'add' : 'replace';
+            let mode: 'add' | 'replace' = filing.amendmentType === 'NEW HOLDINGS' ? 'add' : 'replace';
             if (dryRun) {
                 stats.applied++;
                 return;
             }
             const sideDate = await queryFilerSideFilingDate(pool, filing.cik, side);
             if (mode === 'replace' && sideDate && filing.filingDate < normalizeSecDate(sideDate)) return skip(filing, 'skippedSuperseded');
+            // A hand-checked override whose quarter has no base yet (the original was an empty stub) becomes the base.
+            if (mode === 'add' && !sideDate && filing.overridden) mode = 'replace';
             if (mode === 'add' && !sideDate) return skip(filing, 'skippedNoBase');
             const result = await applyFilingToStore(pool, {
                 side,
@@ -279,15 +290,36 @@ async function processLiveFiling(entry: IndexEntry, waitForRequestSlot: () => Pr
         await waitForRequestSlot();
         const submissionText = await fetchTextWithRetry(`https://www.sec.gov/Archives/${entry.filename}`, 3);
         const parsed = await parseLive13FSubmissionText(submissionText);
+        const statedQuarter = parsed.reportDate ? quarterFromReportDate(parsed.reportDate) : null;
         return {
             ...base,
-            reportQuarter: parsed.reportDate ? quarterFromReportDate(parsed.reportDate) : null,
+            ...resolveLiveReportQuarter({ ...base, statedQuarter }),
             amendmentType: parsed.amendmentType,
             holdings: parsed.holdings,
         };
     } catch (error) {
-        return { ...base, reportQuarter: null, amendmentType: null, holdings: [], errorMessage: errorMessage(error) };
+        return { ...base, reportQuarter: null, overridden: false, amendmentType: null, holdings: [], errorMessage: errorMessage(error) };
     }
+}
+
+/**
+ * The report quarter a live filing counts toward: data/13f-period-overrides.json wins over the stated period. Late
+ * amendments (period 2+ quarters back) are logged for review and otherwise left alone.
+ */
+export function resolveLiveReportQuarter(
+    filing: { accessionNumber: string; cik: string; fundName?: string; form: string; filingDate: string; statedQuarter: string | null },
+    overrides: PeriodOverrideIndex = loadPeriodOverrides(),
+    log: (message: string) => void = (message) => console.warn(`\n${message}`)
+): { reportQuarter: string | null; overridden: boolean } {
+    const override = findPeriodOverride(overrides, filing.accessionNumber, filing.cik);
+    if (override) {
+        log(`[13F Live EDGAR] Override: ${filing.accessionNumber} assigned to ${override.quarter} (stated ${filing.statedQuarter}). ${override.note}`);
+        return { reportQuarter: override.quarter, overridden: true };
+    }
+    if (isLateAmendment(filing.form, filing.statedQuarter, filing.filingDate)) {
+        log(`[13F Live EDGAR] Review: ${describeLateAmendment({ ...filing, filerName: filing.fundName, periodQuarter: filing.statedQuarter })}`);
+    }
+    return { reportQuarter: filing.statedQuarter, overridden: false };
 }
 
 async function loadLiveIndexEntries(

@@ -163,7 +163,7 @@ function StoryBody({
         for (const breakdown of stats.filerTypeBreakdown.slice(0, 8)) {
             lines.push(`${breakdown.type} (${formatNumber(breakdown.count)} funds): ${breakdown.pct.toFixed(1)}% of shares`);
         }
-        lines.push('', 'Source: SEC 13F filings, Forensic Filing Assistant. Dollar values are estimates; check them against the filings.');
+        lines.push('', 'Source: SEC 13F filings, Forensic Filing Assistant. Dollar values are the market values the funds reported for the quarter end.');
         return lines.join('\n');
     };
 
@@ -205,7 +205,7 @@ function StoryBody({
                 <StatStrip>
                     <Stat label="Holders" value={formatNumber(stats.holderCount)} note="Funds reporting any shares" />
                     <Stat label="Total shares" value={formatShares(stats.totalShares)} note={formatNumber(stats.totalShares)} />
-                    <Stat label="Total value" term="estimatedValue" value={formatMoney(stats.totalValue)} note="Estimated from the filings" />
+                    <Stat label="Total value" term="estimatedValue" value={formatMoney(stats.totalValue)} note="As reported at quarter end" />
                     <Stat
                         label="Ownership concentration"
                         term="concentration"

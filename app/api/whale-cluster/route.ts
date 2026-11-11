@@ -40,8 +40,10 @@ async function getFundHoldings(
     return {
         ticker: query,
         filerName: filer.name,
+        cik: filer.cik.padStart(10, '0'),
         quarter: diff.pair.currentQuarter,
         filingDate: diff.pair.currentFilingDate,
+        accession: diff.pair.currentAccession,
         holdings,
     };
 }
@@ -95,8 +97,8 @@ export async function POST(req: NextRequest) {
         intersection.sort((a, b) => b.combinedValue - a.combinedValue);
 
         return NextResponse.json({
-            fundA: { ticker: fundA.ticker, name: fundA.filerName, quarter: fundA.quarter, date: fundA.filingDate, totalHoldings: fundA.holdings.size, uniqueCount: uniqueA, overlapValue: overlapValueA },
-            fundB: { ticker: fundB.ticker, name: fundB.filerName, quarter: fundB.quarter, date: fundB.filingDate, totalHoldings: fundB.holdings.size, uniqueCount: uniqueB, overlapValue: overlapValueB },
+            fundA: { ticker: fundA.ticker, name: fundA.filerName, cik: fundA.cik, accession: fundA.accession, quarter: fundA.quarter, date: fundA.filingDate, totalHoldings: fundA.holdings.size, uniqueCount: uniqueA, overlapValue: overlapValueA },
+            fundB: { ticker: fundB.ticker, name: fundB.filerName, cik: fundB.cik, accession: fundB.accession, quarter: fundB.quarter, date: fundB.filingDate, totalHoldings: fundB.holdings.size, uniqueCount: uniqueB, overlapValue: overlapValueB },
             overlap: { count: intersection.length, holdings: intersection.slice(0, 50) },
         });
     } catch (error) {

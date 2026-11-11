@@ -1,5 +1,9 @@
 import { classifyFiler, type FilerType } from './filer-classification';
 import { getSector } from './sectors';
+import { buildSecAccessionFolderUrl, buildSecSubmissionTextUrl } from './sec-urls';
+
+// Moved to lib/sec-urls.ts; re-exported so existing imports keep working.
+export { buildSecAccessionFolderUrl, buildSecSubmissionTextUrl };
 
 export type MovementBasis = 'filer-count';
 
@@ -56,6 +60,8 @@ export interface RecentFiler {
     cik: string;
     fundName: string;
     filingDate: string;
+    /** The 13F-HR filed (absent in comparisons precomputed before this field existed). */
+    accessionNumber?: string;
     /** Also filed the previous quarter, so its moves are in topFilerMoves. */
     comparable: boolean;
 }
@@ -130,6 +136,9 @@ export interface FilerMove {
     initiatedCount: number;
     liquidatedCount: number;
     details: FilerMoveDetail[];
+    /** The fund's current-quarter 13F-HR (absent in comparisons precomputed before this field existed). */
+    accessionNumber?: string;
+    filingDate?: string;
 }
 
 export interface FilerMoveDetail {
@@ -797,6 +806,7 @@ function buildRecentFilers(
             cik: filing.cik,
             fundName: filing.fundName,
             filingDate: filing.filingDate,
+            accessionNumber: filing.accessionNumber || undefined,
             comparable: comparableSet.has(filing.cik),
         })),
     };
@@ -1336,6 +1346,17 @@ export function buildRadarComparison(params: {
 
     const { latestFilingDate, recentFilers, recentFilerCount } = buildRecentFilers(currentFilings, comparableSet, topFilerMoves);
 
+    // Every fund-level row carries the 13F-HR it came from, so the UI can cite the exact filing.
+    const citeCurrentFiling = (move: FilerMove) => {
+        const filing = currentByCik.get(move.cik);
+        if (filing?.accessionNumber) {
+            move.accessionNumber = filing.accessionNumber;
+            move.filingDate = filing.filingDate ? filing.filingDate.slice(0, 10) : undefined;
+        }
+    };
+    topFilerMoves.forEach(citeCurrentFiling);
+    Object.values(currentHoldersByCategory).forEach((moves) => moves.forEach(citeCurrentFiling));
+
     return {
         movementBasis,
         coverage: {
@@ -1732,23 +1753,6 @@ function pushSample(samples: string[], value: string) {
     if (!samples.includes(value)) samples.push(value);
 }
 
-export function buildSecAccessionFolderUrl(cik: string, accessionNumber: string): string | null {
-    const cikPath = normalizeCikPath(cik);
-    const accessionNoDash = accessionNumber.replace(/-/g, '');
-    if (!cikPath || !accessionNoDash) return null;
-    return `https://www.sec.gov/Archives/edgar/data/${cikPath}/${accessionNoDash}/`;
-}
-
-export function buildSecSubmissionTextUrl(cik: string, accessionNumber: string): string | null {
-    const folderUrl = buildSecAccessionFolderUrl(cik, accessionNumber);
-    if (!folderUrl || !accessionNumber) return null;
-    return `${folderUrl}${accessionNumber}.txt`;
-}
-
-function normalizeCikPath(cik: string): string | null {
-    const digits = cik.replace(/\D/g, '').replace(/^0+/, '');
-    return digits || null;
-}
 
 function uniqueStrings(values: string[]): string[] {
     return Array.from(new Set(values.filter(Boolean))).sort();

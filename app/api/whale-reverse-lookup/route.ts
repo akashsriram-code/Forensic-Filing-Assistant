@@ -79,6 +79,8 @@ export interface ReverseFund {
     valueDelta: number;
     currentFilingDate: string;
     previousFilingDate: string | null;
+    currentAccession: string;
+    previousAccession: string | null;
     currentQuarter: string;
     previousQuarter: string | null;
     issuerSamples: string[];
@@ -220,6 +222,9 @@ export function buildReverseLookupFunds(params: {
             valueDelta,
             currentFilingDate: current.date,
             previousFilingDate: previous?.date || null,
+            // For citations: the fund's 13F-HR behind the current and previous figures.
+            currentAccession: currentFiling.accessionNumber,
+            previousAccession: quarterFilings.length > 1 ? quarterFilings[quarterFilings.length - 2].accessionNumber : null,
             currentQuarter: current.quarter,
             previousQuarter: previous?.quarter || null,
             issuerSamples: latestAggregate?.issuerSamples || [],

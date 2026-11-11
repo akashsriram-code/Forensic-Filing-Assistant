@@ -1,20 +1,22 @@
 ﻿"use client";
 
 import { useState } from 'react';
-import { Briefcase, Building2, GitCompare, Megaphone } from 'lucide-react';
+import { Briefcase, Building2, GitCompare, Megaphone, UserRound } from 'lucide-react';
 import { Tabs, tabPanelProps, type TabItem } from './ui';
 import { useUrlParams } from './useUrlState';
 import { ActivistStakes } from './whale/ActivistStakes';
 import { CompareFunds } from './whale/CompareFunds';
 import { FundHoldings } from './whale/FundHoldings';
+import { InsiderLookup } from './whale/InsiderLookup';
 import { WhoOwns } from './whale/WhoOwns';
 
-type Mode = 'fund' | 'compare' | 'owners' | 'activist';
+type Mode = 'fund' | 'compare' | 'owners' | 'insider' | 'activist';
 
 const MODES: TabItem<Mode>[] = [
     { id: 'fund', label: 'Fund holdings', icon: <Briefcase className="h-4 w-4" aria-hidden /> },
     { id: 'compare', label: 'Compare funds', icon: <GitCompare className="h-4 w-4" aria-hidden /> },
     { id: 'owners', label: 'Who owns a stock', icon: <Building2 className="h-4 w-4" aria-hidden /> },
+    { id: 'insider', label: 'Insider trades', icon: <UserRound className="h-4 w-4" aria-hidden /> },
     { id: 'activist', label: 'Activist stakes', icon: <Megaphone className="h-4 w-4" aria-hidden /> },
 ];
 
@@ -47,6 +49,9 @@ export function WhaleTracker() {
             </div>
             <div {...tabPanelProps(ID_PREFIX, 'owners')} hidden={mode !== 'owners'}>
                 <WhoOwns />
+            </div>
+            <div {...tabPanelProps(ID_PREFIX, 'insider')} hidden={mode !== 'insider'}>
+                <InsiderLookup />
             </div>
             <div {...tabPanelProps(ID_PREFIX, 'activist')} hidden={mode !== 'activist'}>
                 <ActivistStakes />

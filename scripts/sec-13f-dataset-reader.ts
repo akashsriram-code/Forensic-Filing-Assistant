@@ -6,6 +6,13 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { normalizeCik } from '../lib/thirteen-f-radar-core';
+import {
+    describeLateAmendment,
+    findPeriodOverride,
+    isLateAmendment,
+    loadPeriodOverrides,
+    type PeriodOverrideIndex,
+} from '../lib/thirteen-f-period-overrides';
 
 export type TsvRecord = Record<string, string>;
 
@@ -71,27 +78,62 @@ export function secDateToQuarter(value: string): string | null {
     return match ? `${match[1]}-Q${Math.ceil(Number(match[2]) / 3)}` : null;
 }
 
-/** Every 13F-HR / 13F-HR/A in the given data set folders whose period of report falls in one of `quarters`. */
-export async function readDatasetFilings(dirs: string[], quarters: string[]): Promise<DatasetFiling[]> {
+const LATE_AMENDMENT_LOG_LIMIT = 25;
+
+export interface ReadDatasetFilingsOptions {
+    /** Defaults to data/13f-period-overrides.json. */
+    overrides?: PeriodOverrideIndex;
+    /** Defaults to console.warn. */
+    log?: (message: string) => void;
+}
+
+/**
+ * Every 13F-HR / 13F-HR/A in the given data set folders whose report quarter is one of `quarters`. The quarter is the
+ * stated period of report unless data/13f-period-overrides.json assigns the accession to another quarter. Amendments
+ * whose stated period is 2+ quarters old are logged for review (not changed).
+ */
+export async function readDatasetFilings(dirs: string[], quarters: string[], options: ReadDatasetFilingsOptions = {}): Promise<DatasetFiling[]> {
     const wanted = new Set(quarters);
+    const overrides = options.overrides ?? loadPeriodOverrides();
+    const log = options.log ?? ((message: string) => console.warn(message));
     const filings = new Map<string, DatasetFiling>();
+    let lateAmendments = 0;
     for (const dir of dirs) {
         const cover = new Map<string, TsvRecord>();
         await readTsv(path.join(dir, 'COVERPAGE.tsv'), (row) => cover.set(row.ACCESSION_NUMBER, row));
         await readTsv(path.join(dir, 'SUBMISSION.tsv'), (row) => {
             if (row.SUBMISSIONTYPE !== '13F-HR' && row.SUBMISSIONTYPE !== '13F-HR/A') return;
-            const quarter = secDateToQuarter(row.PERIODOFREPORT);
-            if (!quarter || !wanted.has(quarter)) return;
+            const statedQuarter = secDateToQuarter(row.PERIODOFREPORT);
+            const override = findPeriodOverride(overrides, row.ACCESSION_NUMBER, row.CIK);
+            const filingDate = secDateToIso(row.FILING_DATE);
             const coverRow = cover.get(row.ACCESSION_NUMBER);
+            if (!override && isLateAmendment(row.SUBMISSIONTYPE, statedQuarter, filingDate)) {
+                lateAmendments++;
+                if (lateAmendments <= LATE_AMENDMENT_LOG_LIMIT) {
+                    log(`[13F Dataset] Review: ${describeLateAmendment({
+                        accessionNumber: row.ACCESSION_NUMBER,
+                        cik: normalizeCik(row.CIK),
+                        filerName: coverRow?.FILINGMANAGER_NAME,
+                        periodQuarter: statedQuarter,
+                        filingDate,
+                    })}`);
+                }
+            }
+            const quarter = override?.quarter ?? statedQuarter;
+            if (!quarter || !wanted.has(quarter)) return;
+            if (override) log(`[13F Dataset] Override: ${row.ACCESSION_NUMBER} assigned to ${override.quarter} (stated ${statedQuarter}). ${override.note}`);
             filings.set(row.ACCESSION_NUMBER, {
                 accessionNumber: row.ACCESSION_NUMBER,
                 cik: normalizeCik(row.CIK),
                 filerName: coverRow?.FILINGMANAGER_NAME || normalizeCik(row.CIK),
-                filingDate: secDateToIso(row.FILING_DATE),
+                filingDate,
                 quarter,
                 mode: coverRow?.AMENDMENTTYPE === 'NEW HOLDINGS' ? 'add' : 'replace',
             });
         });
+    }
+    if (lateAmendments > LATE_AMENDMENT_LOG_LIMIT) {
+        log(`[13F Dataset] Review: ${lateAmendments - LATE_AMENDMENT_LOG_LIMIT} more late 13F-HR/A filings not listed.`);
     }
     return Array.from(filings.values());
 }
@@ -99,7 +141,9 @@ export async function readDatasetFilings(dirs: string[], quarters: string[]): Pr
 /**
  * Pick the filings that make up each filer's position for each quarter:
  * the latest 'replace' report (original or restatement), plus any 'add' amendments filed after it.
- * Reports with $0 total value (placeholder stubs) are dropped so they don't read as full liquidations.
+ * Reports with $0 total value (placeholder stubs) are dropped so they don't read as full liquidations. When the only
+ * 'replace' reports for a filer-quarter are stubs (e.g. a confidential-treatment placeholder), the earliest non-empty
+ * 'add' amendment for that quarter becomes the base: its holdings are the only ones disclosed.
  */
 export function selectDatasetFilings(filings: DatasetFiling[], totalValueByAccession: Map<string, number>): SelectedDatasetFilings {
     const zeroValueFilings = filings.filter((f) => f.mode === 'replace' && !totalValueByAccession.get(f.accessionNumber));
@@ -111,6 +155,11 @@ export function selectDatasetFilings(filings: DatasetFiling[], totalValueByAcces
     for (const filing of filings.filter((f) => f.mode === 'replace' && !zero.has(f.accessionNumber)).sort(byDateDesc)) {
         const key = `${filing.quarter}|${filing.cik}`;
         if (!baseByFilerQuarter.has(key)) baseByFilerQuarter.set(key, filing);
+    }
+    const stubOnlyKeys = new Set(zeroValueFilings.map((f) => `${f.quarter}|${f.cik}`).filter((key) => !baseByFilerQuarter.has(key)));
+    for (const filing of filings.filter((f) => f.mode === 'add' && totalValueByAccession.get(f.accessionNumber)).sort(byDateDesc).reverse()) {
+        const key = `${filing.quarter}|${filing.cik}`;
+        if (stubOnlyKeys.has(key) && !baseByFilerQuarter.has(key)) baseByFilerQuarter.set(key, filing);
     }
 
     const byAccession = new Map<string, DatasetFiling>();

@@ -5,7 +5,8 @@ import { CalendarClock, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { formatDate, formatNumber, formatShortDate, formatSignedMoney, plural } from '@/lib/format';
 import { RECENT_FILER_WINDOW_DAYS, formatQuarterLabel, type FilerMove, type RadarApiResponse } from '@/lib/thirteen-f-radar-core';
-import { Button, ChangeBadge, Identifier, Table, TableFooter, THead, Th, Td, Term, changeKindFromAction, rowClass, signedClass } from '../ui';
+import { Button, ChangeBadge, Table, TableFooter, THead, Th, Td, Term, changeKindFromAction, rowClass, signedClass } from '../ui';
+import { FundCell } from './FundCell';
 import { deadlineSentence, type FilingSeason } from './radar-takeaway';
 import { actionWord } from './radar-format';
 import { useShowMore } from './radar-hooks';
@@ -136,8 +137,7 @@ function JustFiledTable({ data, previousLabel }: { data: RadarApiResponse; previ
                         return (
                             <tr key={filer.cik} className={rowClass}>
                                 <Td>
-                                    <div className="font-medium text-ink">{filer.fundName}</div>
-                                    <Identifier label="CIK" value={filer.cik} />
+                                    <FundCell cik={filer.cik} fundName={filer.fundName} accessionNumber={filer.accessionNumber} filingDate={filer.filingDate} />
                                 </Td>
                                 <Td className="whitespace-nowrap text-ink-muted">{formatShortDate(filer.filingDate)}</Td>
                                 <Td>

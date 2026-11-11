@@ -346,7 +346,7 @@ function buildReadMeRows(input: RadarExportWorkbookInput): SheetRow[] {
         { section: 'Methodology', field: 'Liquidated', value: 'Previous shares were positive and current shares are zero. This is a subset of sellers.' },
         { section: 'Methodology', field: 'Net Buyers', value: 'Buyer count minus seller count.' },
         { section: 'Methodology', field: 'Raw 13F Value', value: 'The reported value as ingested from the source table.' },
-        { section: 'Methodology', field: 'Estimated Value', value: 'Dashboard-normalized holding value; when source value appears to be Form 13F thousands, it is multiplied by 1,000.' },
+        { section: 'Methodology', field: 'Estimated Value', value: 'Market value as reported in the 13F filing, in whole dollars (13F filings have reported dollars since January 2023). Negative values are counted as zero.' },
         { section: 'Methodology', field: 'Watched Universe', value: 'Sector movers are computed from matched watched holdings, not the full 13F market universe.' },
         { section: 'Methodology', field: 'Filer Type', value: 'First-pass deterministic classification from local CIK overrides and filer-name keyword rules.' },
         { section: 'Methodology', field: 'Timing Caveat', value: 'Form 13F reports quarter-end holdings and does not reveal exact trade dates.' },

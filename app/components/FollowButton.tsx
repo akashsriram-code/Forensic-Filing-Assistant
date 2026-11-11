@@ -23,6 +23,8 @@ interface FollowButtonProps {
  */
 export function FollowButton({ ticker, className }: FollowButtonProps) {
     const symbol = ticker.trim().toUpperCase();
+    // A bare CIK means nothing to a reader, so funds followed by CIK just say "Follow" / "Following".
+    const shown = /^\d+$/.test(symbol) ? '' : ` ${symbol}`;
     const follows = useSyncExternalStore(subscribeFollows, getFollowsSnapshot, getFollowsServerSnapshot);
     const follow = follows.find((item) => item.ticker === symbol);
     const [open, setOpen] = useState(false);
@@ -66,7 +68,7 @@ export function FollowButton({ ticker, className }: FollowButtonProps) {
                 title={symbol ? `Get a browser alert when ${symbol} files` : 'Enter a company first'}
                 icon={<Bell className="h-4 w-4" aria-hidden />}
             >
-                {symbol ? `Follow ${symbol}` : 'Follow'}
+                {`Follow${shown}`}
             </Button>
         );
     }
@@ -81,7 +83,7 @@ export function FollowButton({ ticker, className }: FollowButtonProps) {
                 className="inline-flex h-10 items-center gap-2 rounded-md border border-gain/50 bg-gain/10 px-4 text-base font-medium text-gain transition-colors hover:bg-gain/15"
             >
                 <BellRing className="h-4 w-4" aria-hidden />
-                Following {symbol}
+                {`Following${shown}`}
                 <ChevronDown className="h-4 w-4" aria-hidden />
             </button>
 

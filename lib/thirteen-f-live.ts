@@ -6,6 +6,7 @@ import { compareQuartersAsc } from './thirteen-f-radar-core';
 import { fetchWithTimeout } from './fetch-with-timeout';
 import { parseLive13FSubmissionText, quarterFromReportDate, type HoldingInput } from './thirteen-f-parse';
 import { SEC_USER_AGENT } from './sec-http';
+import { findPeriodOverride, loadPeriodOverrides } from './thirteen-f-period-overrides';
 
 export interface Live13FFiling {
     filerName: string;
@@ -14,6 +15,8 @@ export interface Live13FFiling {
     reportQuarter: string;
     /** Equity rows only (options excluded), matching what the store keeps. */
     holdings: HoldingInput[];
+    /** "13F-HR", or "13F-HR/A" when the original was an empty stub and an amendment for the same quarter was used. */
+    form?: string;
 }
 
 interface SubmissionsRecent {
@@ -23,9 +26,14 @@ interface SubmissionsRecent {
     reportDate: string[];
 }
 
+/** How many same-quarter filings to try after an empty original before giving up. */
+const MAX_FALLBACK_ATTEMPTS = 3;
+
 /**
  * The filer's newest original 13F-HR on EDGAR, if it reports a quarter later than `newerThan`; otherwise null.
- * Amendments are left to the daily ingestion. Throws on SEC/network errors so callers can fall back to the store.
+ * When that original is a stub (no holdings or zero total value, e.g. a confidential-treatment placeholder), the newest
+ * non-stub 13F-HR or 13F-HR/A for the same report quarter is used instead; if there is none, null.
+ * Throws on SEC/network errors so callers can fall back to the store.
  */
 export async function fetchNewerLive13F(cik: string, newerThan: string | null, timeoutMs: number): Promise<Live13FFiling | null> {
     const deadline = Date.now() + timeoutMs;
@@ -35,21 +43,49 @@ export async function fetchNewerLive13F(cik: string, newerThan: string | null, t
     const recent = body.filings?.recent;
     if (!recent) return null;
 
+    const overrides = loadPeriodOverrides();
+    // The quarter a filing counts toward: a hand-checked override, else its stated period.
+    const listedQuarterOf = (i: number) =>
+        findPeriodOverride(overrides, recent.accessionNumber[i], cikInt)?.quarter ?? quarterFromReportDate(recent.reportDate[i] || '');
+
     const index = recent.form.findIndex((form) => form === '13F-HR');
     if (index === -1) return null;
-    const listedQuarter = quarterFromReportDate(recent.reportDate[index] || '');
+    const listedQuarter = listedQuarterOf(index);
     if (!listedQuarter || (newerThan && compareQuartersAsc(listedQuarter, newerThan) <= 0)) return null;
 
-    const accessionNumber = recent.accessionNumber[index];
+    const original = await readFiling(cikInt, recent, index, listedQuarter, deadline);
+    if (original) return { ...original, filerName: body.name || `CIK ${cikInt}` };
+
+    // The original was a stub: try other 13F-HR / 13F-HR/A filings for the same quarter, newest first (recent is
+    // already newest first).
+    let attempts = 0;
+    for (let i = 0; i < recent.form.length && attempts < MAX_FALLBACK_ATTEMPTS; i++) {
+        if (i === index || (recent.form[i] !== '13F-HR' && recent.form[i] !== '13F-HR/A')) continue;
+        if (listedQuarterOf(i) !== listedQuarter) continue;
+        attempts++;
+        const candidate = await readFiling(cikInt, recent, i, listedQuarter, deadline);
+        if (candidate && candidate.reportQuarter === listedQuarter) return { ...candidate, filerName: body.name || `CIK ${cikInt}` };
+    }
+    return null;
+}
+
+/** Reads one filing; null when it is a stub (same guard as live ingestion: no holdings or no value isn't a real quarter). */
+async function readFiling(
+    cikInt: string,
+    recent: SubmissionsRecent,
+    i: number,
+    listedQuarter: string,
+    deadline: number
+): Promise<Omit<Live13FFiling, 'filerName'> | null> {
+    const accessionNumber = recent.accessionNumber[i];
     const response = await fetchSec(`https://www.sec.gov/Archives/edgar/data/${cikInt}/${accessionNumber}.txt`, deadline);
     const parsed = await parseLive13FSubmissionText(await response.text());
-    const reportQuarter = (parsed.reportDate && quarterFromReportDate(parsed.reportDate)) || listedQuarter;
+    const override = findPeriodOverride(loadPeriodOverrides(), accessionNumber, cikInt);
+    const reportQuarter = override?.quarter ?? ((parsed.reportDate && quarterFromReportDate(parsed.reportDate)) || listedQuarter);
     const holdings = parsed.holdings.filter((h) => !h.putcall);
     const totalValue = holdings.reduce((sum, h) => sum + (Number.isFinite(h.value) ? h.value : 0), 0);
-    // Same guard as live ingestion: placeholder filings with no holdings or no value aren't a real quarter.
     if (holdings.length === 0 || totalValue <= 0) return null;
-
-    return { filerName: body.name || `CIK ${cikInt}`, accessionNumber, filingDate: recent.filingDate[index], reportQuarter, holdings };
+    return { accessionNumber, filingDate: recent.filingDate[i], reportQuarter, holdings, form: recent.form[i] };
 }
 
 async function fetchSec(url: string, deadline: number): Promise<Response> {

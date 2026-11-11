@@ -21,8 +21,20 @@ import {
     mergeIndexEntries,
     parseCurrentFeedEntries,
     parseIndexContent,
+    resolveLiveReportQuarter,
     type IndexEntry,
 } from './ingest-live-13f';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { readDatasetFilingTotals, readDatasetFilings, selectDatasetFilings } from './sec-13f-dataset-reader';
+import {
+    amendmentLagQuarters,
+    buildPeriodOverrideIndex,
+    isLateAmendment,
+    loadPeriodOverrides,
+    parsePeriodOverrides,
+} from '../lib/thirteen-f-period-overrides';
 
 async function run() {
     // Daily indexes use 20261103 and quarterly ones 2026-11-03; both must come out as YYYY-MM-DD.
@@ -219,7 +231,145 @@ async function run() {
         ]
     );
 
+    await testDatasetSelection();
+    testPeriodOverrides();
+
     console.log('13F ingestion unit tests passed.');
+}
+
+const NORGES_CIK = '1374170';
+// Accessions below are made up (other than the format); see testDatasetSelection for the scenario.
+const ACC = {
+    aOriginal: '0000000100-26-000001',
+    aNewHoldings: '0000000100-26-000002',
+    bOriginal: '0000000200-26-000001',
+    bRestatement: '0000000200-26-000002',
+    cStub: '0000000300-26-000001',
+    dStub: '0000000400-26-000001',
+    dNewHoldings: '0000000400-26-000002',
+    nStub: '0001374170-26-900023',
+    nAmendment: '0001374170-26-900021',
+};
+
+/** Writes an extracted SEC 13F data set folder (SUBMISSION, COVERPAGE, INFOTABLE) with the given rows. */
+async function writeDataset(dir: string) {
+    const tsv = (header: string[], rows: string[][]) => [header.join('\t'), ...rows.map((r) => r.join('\t'))].join('\n') + '\n';
+    const submissions: string[][] = [
+        [ACC.aOriginal, '15-MAY-2026', '13F-HR', '100', '31-MAR-2026'],
+        [ACC.aNewHoldings, '20-MAY-2026', '13F-HR/A', '100', '31-MAR-2026'],
+        [ACC.bOriginal, '14-MAY-2026', '13F-HR', '200', '31-MAR-2026'],
+        [ACC.bRestatement, '01-JUN-2026', '13F-HR/A', '200', '31-MAR-2026'],
+        [ACC.cStub, '15-MAY-2026', '13F-HR', '300', '31-MAR-2026'],
+        [ACC.dStub, '15-MAY-2026', '13F-HR', '400', '31-MAR-2026'],
+        [ACC.dNewHoldings, '10-JUN-2026', '13F-HR/A', '400', '31-MAR-2026'],
+        // Norges-like: an empty Q1 2026 report, plus a NEW HOLDINGS amendment whose stated period is a year earlier.
+        [ACC.nStub, '11-MAY-2026', '13F-HR', NORGES_CIK, '31-MAR-2026'],
+        [ACC.nAmendment, '11-MAY-2026', '13F-HR/A', NORGES_CIK, '31-MAR-2025'],
+    ];
+    const cover: string[][] = [
+        [ACC.aOriginal, '', 'FUND A'],
+        [ACC.aNewHoldings, 'NEW HOLDINGS', 'FUND A'],
+        [ACC.bOriginal, '', 'FUND B'],
+        [ACC.bRestatement, 'RESTATEMENT', 'FUND B'],
+        [ACC.cStub, '', 'FUND C'],
+        [ACC.dStub, '', 'FUND D'],
+        [ACC.dNewHoldings, 'NEW HOLDINGS', 'FUND D'],
+        [ACC.nStub, '', 'NORGES BANK'],
+        [ACC.nAmendment, 'NEW HOLDINGS', 'NORGES BANK'],
+    ];
+    const info: string[][] = [
+        [ACC.aOriginal, 'APPLE INC', '037833100', '1000', '10', 'SH', ''],
+        [ACC.aNewHoldings, 'NVIDIA CORP', '67066G104', '500', '5', 'SH', ''],
+        [ACC.bOriginal, 'APPLE INC', '037833100', '1000', '10', 'SH', ''],
+        [ACC.bRestatement, 'APPLE INC', '037833100', '2000', '20', 'SH', ''],
+        [ACC.cStub, 'APPLE INC', '037833100', '0', '0', 'SH', ''],
+        [ACC.dNewHoldings, 'MICROSOFT CORP', '594918104', '700', '7', 'SH', ''],
+        [ACC.nAmendment, 'NVIDIA CORP', '67066G104', '9000', '90', 'SH', ''],
+    ];
+    await writeFile(path.join(dir, 'SUBMISSION.tsv'), tsv(['ACCESSION_NUMBER', 'FILING_DATE', 'SUBMISSIONTYPE', 'CIK', 'PERIODOFREPORT'], submissions));
+    await writeFile(path.join(dir, 'COVERPAGE.tsv'), tsv(['ACCESSION_NUMBER', 'AMENDMENTTYPE', 'FILINGMANAGER_NAME'], cover));
+    await writeFile(path.join(dir, 'INFOTABLE.tsv'), tsv(['ACCESSION_NUMBER', 'NAMEOFISSUER', 'CUSIP', 'VALUE', 'SSHPRNAMT', 'SSHPRNAMTTYPE', 'PUTCALL'], info));
+}
+
+async function testDatasetSelection() {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'f13-dataset-'));
+    try {
+        await writeDataset(dir);
+        const select = async (overrides: ReturnType<typeof buildPeriodOverrideIndex>) => {
+            const logs: string[] = [];
+            const filings = await readDatasetFilings([dir], ['2026-Q1'], { overrides, log: (m) => logs.push(m) });
+            const totals = await readDatasetFilingTotals([dir], new Set(filings.map((f) => f.accessionNumber)));
+            return { filings, logs, selected: selectDatasetFilings(filings, totals) };
+        };
+
+        // Without overrides: the mis-dated amendment stays in its stated quarter (2025-Q1) and is only logged.
+        const plain = await select(buildPeriodOverrideIndex([]));
+        assert.equal(plain.filings.some((f) => f.accessionNumber === ACC.nAmendment), false);
+        assert.equal(plain.logs.filter((m) => m.includes('Review') && m.includes(ACC.nAmendment)).length, 1);
+        assert.equal(plain.logs.some((m) => m.includes(ACC.bRestatement)), false, 'an on-time restatement is not flagged');
+        const base = plain.selected.baseByFilerQuarter;
+
+        // NEW HOLDINGS amendment added on top of the original.
+        assert.equal(base.get('2026-Q1|100')?.accessionNumber, ACC.aOriginal);
+        assert.equal(plain.selected.byAccession.has(ACC.aNewHoldings), true);
+        // RESTATEMENT replaces the original.
+        assert.equal(base.get('2026-Q1|200')?.accessionNumber, ACC.bRestatement);
+        assert.equal(plain.selected.byAccession.has(ACC.bOriginal), false);
+        // Zero-value stub dropped, not read as a liquidation.
+        assert.equal(base.has('2026-Q1|300'), false);
+        assert.equal(plain.selected.byAccession.has(ACC.cStub), false);
+        assert.ok(plain.selected.zeroValueFilings.some((f) => f.accessionNumber === ACC.cStub));
+        // A stub followed by a NEW HOLDINGS amendment: the amendment's holdings are the quarter's holdings.
+        assert.equal(base.get('2026-Q1|400')?.accessionNumber, ACC.dNewHoldings);
+        assert.equal(plain.selected.byAccession.has(ACC.dStub), false);
+        // Norges' empty Q1 2026 report alone: no position at all for the quarter.
+        assert.equal(base.has(`2026-Q1|${NORGES_CIK}`), false);
+
+        // Override applied: the amendment counts toward 2026-Q1 whatever its stated period, replacing the empty stub.
+        const overridden = await select(
+            buildPeriodOverrideIndex(parsePeriodOverrides([{ cik: '0001374170', accession: '000137417026900021', quarter: '2026-Q1', note: 'Test.' }]))
+        );
+        const nFiling = overridden.filings.find((f) => f.accessionNumber === ACC.nAmendment);
+        assert.equal(nFiling?.quarter, '2026-Q1');
+        assert.equal(nFiling?.mode, 'add');
+        assert.equal(overridden.selected.baseByFilerQuarter.get(`2026-Q1|${NORGES_CIK}`)?.accessionNumber, ACC.nAmendment);
+        assert.equal(overridden.selected.byAccession.has(ACC.nStub), false);
+        assert.equal(overridden.logs.some((m) => m.includes('Override') && m.includes(ACC.nAmendment)), true);
+        assert.equal(overridden.logs.some((m) => m.includes('Review') && m.includes(ACC.nAmendment)), false, 'overridden filings are not re-flagged');
+        // An override with the wrong CIK is ignored.
+        const wrongCik = await select(buildPeriodOverrideIndex(parsePeriodOverrides([{ cik: '999', accession: ACC.nAmendment, quarter: '2026-Q1', note: '' }])));
+        assert.equal(wrongCik.filings.some((f) => f.accessionNumber === ACC.nAmendment), false);
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+}
+
+function testPeriodOverrides() {
+    // The checked-in file must always parse.
+    assert.ok(loadPeriodOverrides() instanceof Map);
+    assert.throws(() => parsePeriodOverrides({}), /array/);
+    assert.throws(() => parsePeriodOverrides([{ cik: '1', accession: '123', quarter: '2026-Q1', note: '' }]), /accession/);
+    assert.throws(() => parsePeriodOverrides([{ cik: '1', accession: '0000000001-26-000001', quarter: 'Q1 2026', note: '' }]), /quarter/);
+
+    // Lag: quarters between the stated period and the newest quarter reportable on the filing date.
+    assert.equal(amendmentLagQuarters('2026-Q1', '2026-05-15'), 0);
+    assert.equal(amendmentLagQuarters('2025-Q4', '2026-05-15'), 1);
+    assert.equal(amendmentLagQuarters('2025-Q1', '2026-05-11'), 4);
+    assert.equal(isLateAmendment('13F-HR/A', '2025-Q1', '2026-05-11'), true);
+    assert.equal(isLateAmendment('13F-HR/A', '2025-Q4', '20260515'), false);
+    assert.equal(isLateAmendment('13F-HR/A', '2025-Q3', '2026-05-15'), true);
+    assert.equal(isLateAmendment('13F-HR', '2025-Q1', '2026-05-11'), false, 'only amendments are flagged');
+
+    // Live ingestion: override wins; late amendments are logged but keep their stated quarter.
+    const logs: string[] = [];
+    const overrides = buildPeriodOverrideIndex(parsePeriodOverrides([{ cik: NORGES_CIK, accession: ACC.nAmendment, quarter: '2026-Q1', note: 'Test.' }]));
+    const live = (accessionNumber: string, statedQuarter: string) =>
+        resolveLiveReportQuarter({ accessionNumber, cik: NORGES_CIK, form: '13F-HR/A', filingDate: '2026-05-11', statedQuarter }, overrides, (m) => logs.push(m));
+    assert.deepEqual(live(ACC.nAmendment, '2025-Q1'), { reportQuarter: '2026-Q1', overridden: true });
+    assert.deepEqual(live('0001374170-25-000102', '2024-Q3'), { reportQuarter: '2024-Q3', overridden: false });
+    assert.equal(logs.length, 2);
+    assert.ok(logs[0].includes('Override'));
+    assert.ok(logs[1].includes('Review') && logs[1].includes('0001374170-25-000102'));
 }
 
 function submission(accession: string, form: string, period: string): TsvRow {

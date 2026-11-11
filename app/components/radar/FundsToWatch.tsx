@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { classifyFiler } from '@/lib/filer-classification';
@@ -24,6 +25,7 @@ import {
 } from '../ui';
 import { BarList } from './BarList';
 import { secFilingsUrl } from './radar-format';
+import { fundPageHref } from './FundCell';
 import { useShowMore } from './radar-hooks';
 
 /** Well-known hedge funds and activists to check every filing season. Matched by name against the loaded fund moves. */
@@ -225,16 +227,21 @@ function FundDetail({ fund, quarterLabel }: { fund: WatchFundRow; quarterLabel: 
                     {fund.label} · {fund.filerType} · {quarterLabel}
                 </p>
                 {fund.cik && (
-                    <a
-                        href={secFilingsUrl(fund.cik)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
-                    >
-                        13F filings on SEC.gov
-                        <ExternalLink className="h-3.5 w-3.5" aria-hidden />
-                        <span className="sr-only">(opens in a new tab)</span>
-                    </a>
+                    <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                        <Link href={fundPageHref(fund.cik)} className="text-sm font-medium text-accent hover:underline">
+                            Fund page
+                        </Link>
+                        <a
+                            href={secFilingsUrl(fund.cik)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+                        >
+                            13F filings on SEC.gov
+                            <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                            <span className="sr-only">(opens in a new tab)</span>
+                        </a>
+                    </span>
                 )}
             </div>
 

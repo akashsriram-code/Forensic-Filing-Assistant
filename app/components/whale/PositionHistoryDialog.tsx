@@ -44,7 +44,10 @@ export function PositionHistoryDialog({ target, onClose }: { target: HistoryTarg
     );
 }
 
-type LoadState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; points: HistoryPoint[] };
+type LoadState =
+    | { status: 'loading' }
+    | { status: 'error'; message: string }
+    | { status: 'ready'; points: HistoryPoint[]; skippedFilings?: number };
 
 function HistoryBody({ target, onRetry }: { target: HistoryTarget; onRetry: () => void }) {
     const [state, setState] = useState<LoadState>(() =>
@@ -63,7 +66,7 @@ function HistoryBody({ target, onRetry }: { target: HistoryTarget; onRetry: () =
             .then((response) => {
                 if (cancelled) return;
                 const points = (response.history || []).map(historyPointFromApi);
-                setState({ status: 'ready', points });
+                setState({ status: 'ready', points, skippedFilings: response.skippedFilings });
             })
             .catch((error: unknown) => {
                 if (!cancelled) setState({ status: 'error', message: errorMessage(error) });
@@ -108,7 +111,7 @@ function HistoryBody({ target, onRetry }: { target: HistoryTarget; onRetry: () =
     const first = points[0];
     const last = points[points.length - 1];
     const summary = `${metric === 'shares' ? 'Shares held' : 'Reported value'} across ${plural(points.length, 'filing')}, from ${formatShares(first.shares)} shares to ${formatShares(last.shares)} shares.`;
-    const matchWord = target.issuer.toUpperCase().split(' ')[0];
+    const skipped = state.skippedFilings ?? 0;
 
     const exportCsv = () =>
         downloadCsv(
@@ -123,11 +126,16 @@ function HistoryBody({ target, onRetry }: { target: HistoryTarget; onRetry: () =
 
     return (
         <div className="space-y-5">
-            {target.kind === 'fetch' && (
+            {target.kind === 'fetch' && target.cusip && (
+                <p className="text-sm text-ink-muted">
+                    Read live from the fund’s last {plural(points.length, '13F filing')}, matched by CUSIP {target.cusip}.
+                    {skipped > 0 && ` ${plural(skipped, 'filing')} with no holdings listed ${skipped === 1 ? 'was' : 'were'} left out.`}
+                </p>
+            )}
+            {target.kind === 'fetch' && !target.cusip && (
                 <Notice tone="caution">
-                    Read live from the fund’s last {plural(points.length, '13F filing')}. Rows are matched by CUSIP and by any
-                    company name containing “{matchWord}”, so other companies or share classes with that word can be added in.
-                    Check the filing before citing these numbers.
+                    This holding has no CUSIP, so rows are matched by the company name “{target.issuer}”. Check the filing
+                    before citing these numbers.
                 </Notice>
             )}
 

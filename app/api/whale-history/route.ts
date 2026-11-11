@@ -1,166 +1,207 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout';
 import { SEC_USER_AGENT } from '@/lib/sec-http';
-import { fetchCIK, fetchSubmission, fetchFilingContent, parse13F } from '@/lib/sec-client';
+import { fetchCIK, fetchFilingContent, parse13F } from '@/lib/sec-client';
+import { buildSecAccessionFolderUrl, filingIndexUrl, formatAccession, primaryDocUrl } from '@/lib/sec-urls';
+import { byFilingDateDesc, loadSubmission, recentFilings, type RecentFiling } from '@/lib/edgar-submissions';
+import { SEC_MIN_REQUEST_INTERVAL_MS, mapWithConcurrency } from '@/lib/concurrency';
 
 export const maxDuration = 60; // Allow longer timeout for multiple fetches
 
-export async function POST(req: NextRequest) {
+/** How many of the fund's newest original 13F-HR filings to read. */
+const FILING_LIMIT = 8;
+const FETCH_CONCURRENCY = 4;
+
+/**
+ * One quarter of the position. `value` is exactly as reported in that filing's information table: whole dollars for
+ * filings made on or after 2023-01-03, thousands of dollars before (SEC rule change). The client converts by filing
+ * date (historyPointFromApi in app/components/whale/model.ts).
+ */
+interface HistoryPointResponse {
+    /** Filing date (kept as `date` for existing callers). */
+    date: string;
+    filingDate: string;
+    /** Period of report (quarter end), YYYY-MM-DD, when EDGAR lists it. */
+    reportDate: string | null;
+    accessionNumber: string;
+    form: string;
+    /** Filing index page on sec.gov: the link to cite. */
+    url: string | null;
+    shares: number;
+    value: number;
+}
+
+interface InfoTableRow {
+    nameOfIssuer?: string[];
+    cusip?: string[];
+    value?: string[];
+    shrsOrPrnAmt?: { sshPrnamt?: string[]; sshPrnamtType?: string[] }[];
+}
+
+type Parsed13F = {
+    informationTable?: { infoTable?: InfoTableRow[] } | { infoTable?: InfoTableRow[] }[];
+    edgarSubmission?: unknown;
+} | null;
+
+interface IndexItem {
+    name?: string;
+    type?: string;
+}
+
+function first<T>(value: T | T[] | undefined): T | undefined {
+    return Array.isArray(value) ? value[0] : value;
+}
+
+/** Holdings rows from a parsed 13F information table (either a bare informationTable or one inside edgarSubmission). */
+function infoTableRows(parsed: Parsed13F): InfoTableRow[] {
+    const iRoot = first(parsed?.informationTable);
+    if (iRoot?.infoTable) return iRoot.infoTable;
+    const sRoot = first(parsed?.edgarSubmission as { formData?: { informationTable?: { infoTable?: InfoTableRow[] }[] }[] } | undefined);
+    return sRoot?.formData?.[0]?.informationTable?.[0]?.infoTable || [];
+}
+
+const normalizeCusip = (value: unknown) => String(value ?? '').trim().toUpperCase();
+/** "Apple Inc." and "APPLE INC" compare equal. */
+const normalizeIssuer = (value: unknown) => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+
+const numberOf = (value: string | undefined) => {
+    const n = Number.parseFloat(String(value ?? '').replace(/,/g, ''));
+    return Number.isFinite(n) ? n : 0;
+};
+
+/** Reads the filing's information table: the XML the filing index labels as such, else the primary document. */
+async function readInfoTable(cik: string, filing: RecentFiling): Promise<InfoTableRow[] | null> {
+    const folder = buildSecAccessionFolderUrl(cik, filing.accessionNumber);
+    if (!folder) return null;
     try {
-        const { ticker, holdingInfo } = await req.json();
-
-        if (!ticker || !holdingInfo) {
-            return NextResponse.json({ error: "Missing ticker or holding info" }, { status: 400 });
-        }
-
-        const cleanHoldingName = holdingInfo.issuer.toUpperCase().split(' ')[0]; // Basic matching keyword
-        const targetCusip = holdingInfo.cusip;
-
-        console.log(`[WhaleHistory] Analyzing ${ticker} for holding: ${holdingInfo.issuer} (Keyword: ${cleanHoldingName}, CUSIP: ${targetCusip})`);
-
-        // 1. Get Fund CIK
-        const cik = await fetchCIK(ticker);
-        if (!cik) {
-            console.log(`[WhaleHistory] Fund not found for ticker: ${ticker}`);
-            return NextResponse.json({ error: "Fund not found" }, { status: 404 });
-        }
-
-        // 2. Get Submission History
-        const submission = await fetchSubmission(cik);
-        if (!submission) {
-            console.log(`[WhaleHistory] No submissions found for CIK: ${cik}`);
-            return NextResponse.json({ error: "No filings found" }, { status: 404 });
-        }
-
-        // 3. Filter for last 8 13F-HR filings
-        const recentFilings = [];
-        const accessionNumbers = submission.filings.recent.accessionNumber;
-        const forms = submission.filings.recent.form;
-        const filingDates = submission.filings.recent.filingDate;
-        const primaryDocs = submission.filings.recent.primaryDocument;
-
-        for (let i = 0; i < accessionNumbers.length; i++) {
-            if (forms[i] === '13F-HR') { // Only base filings, ignoring amendments for simplicity
-                recentFilings.push({
-                    accessionNumber: accessionNumbers[i],
-                    filingDate: filingDates[i],
-                    primaryDocument: primaryDocs[i]
+        const indexRes = await fetchWithTimeout(`${folder}index.json`, { headers: { 'User-Agent': SEC_USER_AGENT }, next: { revalidate: 86400 } }, 15000);
+        if (indexRes.ok) {
+            const indexData = (await indexRes.json()) as { directory?: { item?: IndexItem[] } };
+            const items = indexData.directory?.item || [];
+            const primaryName = filing.primaryDocument.split('/').pop();
+            const infoTableFile =
+                items.find((item) => item.type?.toUpperCase().includes('INFORMATION TABLE')) ||
+                items.find((item) => {
+                    const name = (item.name || '').toLowerCase();
+                    return name.endsWith('.xml') && name.includes('info');
+                }) ||
+                items.find((item) => {
+                    const name = (item.name || '').toLowerCase();
+                    return name.endsWith('.xml') && item.name !== primaryName && !name.includes('primary_doc') && !name.includes('xsl') && !name.includes('xsd');
                 });
-                if (recentFilings.length >= 8) break;
+            if (infoTableFile?.name) {
+                const url = primaryDocUrl(cik, filing.accessionNumber, infoTableFile.name);
+                const content = url ? await fetchFilingContent(url) : null;
+                const rows = content ? infoTableRows((await parse13F(content)) as Parsed13F) : [];
+                if (rows.length > 0) return rows;
             }
         }
+    } catch (error) {
+        console.error(`[WhaleHistory] Couldn’t read the index for ${filing.accessionNumber}:`, error);
+    }
 
-        console.log(`[WhaleHistory] Found ${recentFilings.length} recent 13F-HR filings.`);
+    // Older filings may carry the table in the primary document itself.
+    const primaryUrl = primaryDocUrl(cik, filing.accessionNumber, filing.primaryDocument);
+    const content = primaryUrl ? await fetchFilingContent(primaryUrl) : null;
+    if (!content) return null;
+    return infoTableRows((await parse13F(content)) as Parsed13F);
+}
 
-        // 4. Parallel Fetch of Historical Data
-        const historyPromises = recentFilings.map(async (filing) => {
-            const accessionNoDash = filing.accessionNumber.replace(/-/g, '');
-            let targetUrl = `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${accessionNoDash}/${filing.primaryDocument}`;
-            // ... (rest of logic)
+export async function POST(req: NextRequest) {
+    let body: { ticker?: unknown; holdingInfo?: { issuer?: unknown; cusip?: unknown } };
+    try {
+        body = await req.json();
+    } catch {
+        return NextResponse.json({ error: 'Send a JSON body with ticker and holdingInfo.' }, { status: 400 });
+    }
+    const ticker = typeof body?.ticker === 'string' ? body.ticker.trim() : '';
+    const issuer = typeof body?.holdingInfo?.issuer === 'string' ? body.holdingInfo.issuer.trim() : '';
+    const targetCusip = normalizeCusip(body?.holdingInfo?.cusip);
+    if (!ticker || (!issuer && !targetCusip)) {
+        return NextResponse.json({ error: 'Missing the fund (ticker) or the holding (issuer or CUSIP).' }, { status: 400 });
+    }
 
-            // Logic to find the XML table if primary doc is html/txt (Copied/simplified from tracker)
-            // 1. Initial attempt: Use primary document
-            let content = await fetchFilingContent(targetUrl);
-            let parsed = content ? await parse13F(content) : null;
+    // A CUSIP identifies one security exactly, so when we have one it is the only thing matched. The issuer name is a
+    // fallback for the rare holding without a CUSIP, and must match the whole name, not just a word of it.
+    const matchedBy: 'cusip' | 'name' = targetCusip ? 'cusip' : 'name';
+    const targetName = normalizeIssuer(issuer);
 
-            // Helper to try extraction strings from known paths
-            const getRows = (p: any) => {
-                const iRoot = Array.isArray(p?.informationTable) ? p.informationTable[0] : p?.informationTable;
-                const sRoot = Array.isArray(p?.edgarSubmission) ? p.edgarSubmission[0] : p?.edgarSubmission;
-                // Try sRoot form data path or iRoot direct path
-                return iRoot?.infoTable || sRoot?.formData?.[0]?.informationTable?.[0]?.infoTable || [];
-            };
+    try {
+        const cik = await fetchCIK(ticker);
+        if (!cik) return NextResponse.json({ error: `No fund found for “${ticker}”.` }, { status: 404 });
 
-            let rows = getRows(parsed);
+        const loaded = await loadSubmission(cik);
+        if (!loaded.ok) return NextResponse.json({ error: loaded.error }, { status: loaded.status });
 
-            // 2. Fallback: If no rows found (e.g. primary doc was cover page), search index.json
-            if (rows.length === 0) {
-                // console.log(`[WhaleHistory] No rows in primary doc for ${filing.filingDate}. Checking index...`);
-                try {
-                    const indexUrl = `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${accessionNoDash}/index.json`;
-                    const indexRes = await fetchWithTimeout(indexUrl, { headers: { 'User-Agent': SEC_USER_AGENT } }, 15000);
+        // Original 13F-HR reports only (amendments would double-count or partly restate a quarter).
+        const filings = recentFilings(loaded.submission)
+            .filter((f) => f.form === '13F-HR')
+            .sort(byFilingDateDesc)
+            .slice(0, FILING_LIMIT);
 
-                    if (indexRes.ok) {
-                        const indexData = await indexRes.json();
-                        const items = indexData.directory.item;
+        let skippedStubs = 0;
+        let unreadable = 0;
+        const points = await mapWithConcurrency(filings, FETCH_CONCURRENCY, async (filing): Promise<HistoryPointResponse | null> => {
+            const rows = await readInfoTable(cik, filing);
+            if (rows === null) {
+                unreadable++;
+                return null;
+            }
+            // A filing with no holdings or no reported value is a placeholder (e.g. a confidential-treatment stub),
+            // not a sign the fund sold out, so it is left out rather than plotted as "not held".
+            const totalValue = rows.reduce((sum, r) => sum + numberOf(r.value?.[0]), 0);
+            if (rows.length === 0 || totalValue <= 0) {
+                skippedStubs++;
+                return null;
+            }
 
-                        // Find the Information Table
-                        let infoTableFile = items.find((item: any) =>
-                            (item.type && item.type.includes('INFORMATION TABLE')) ||
-                            (item.name && item.name.includes('.xml') && (item.name.toLowerCase().includes('info') || item.type?.includes('INFORMATION')))
-                        );
+            const matches = rows.filter((r) =>
+                matchedBy === 'cusip' ? normalizeCusip(r.cusip?.[0]) === targetCusip : normalizeIssuer(r.nameOfIssuer?.[0]) === targetName
+            );
 
-                        // Robust Fallback: If no clear Info Table, grab first XML that isn't primary or stylesheet
-                        if (!infoTableFile) {
-                            infoTableFile = items.find((item: any) =>
-                                item.name.endsWith('.xml') &&
-                                item.name !== filing.primaryDocument &&
-                                !item.name.includes('primary_doc') &&
-                                !item.name.toLowerCase().includes('xsl') &&
-                                !item.name.toLowerCase().includes('xsd')
-                            );
-                        }
-
-                        if (infoTableFile) {
-                            const newTargetUrl = `https://www.sec.gov/Archives/edgar/data/${parseInt(cik)}/${accessionNoDash}/${infoTableFile.name}`;
-                            content = await fetchFilingContent(newTargetUrl);
-                            parsed = content ? await parse13F(content) : null;
-                            rows = getRows(parsed);
-                        }
-                    }
-                } catch (e) {
-                    console.error(`[WhaleHistory] Error checking index for ${filing.filingDate}:`, e);
+            // Shares and principal rows only; option rows (calls/puts) are reported separately and aren't summed.
+            let shares = 0;
+            let value = 0;
+            for (const m of matches) {
+                const type = (m.shrsOrPrnAmt?.[0]?.sshPrnamtType?.[0] || 'SH').toUpperCase();
+                if (type === 'SH' || type === 'PRN') {
+                    shares += numberOf(m.shrsOrPrnAmt?.[0]?.sshPrnamt?.[0]);
+                    value += numberOf(m.value?.[0]);
                 }
             }
 
-            // if (rows.length === 0) return { date: filing.filingDate, shares: 0, value: 0, price: 0 };
-
-            // console.log(`[WhaleHistory] ${filing.filingDate}: Extracted ${rows.length} rows.`);
-
-            // Find specific holding
-            // We use simple includes match on the issuer name provided
-            const matches = rows.filter((r: any) => {
-                const issuer = (r.nameOfIssuer?.[0] || "").toUpperCase();
-                const rCusip = r.cusip?.[0];
-                const nameMatch = issuer.includes(cleanHoldingName);
-                const cusipMatch = targetCusip && rCusip === targetCusip;
-
-                return nameMatch || cusipMatch;
-            });
-
-            // console.log(`[WhaleHistory] ${filing.filingDate}: Found ${matches.length} matches. (NameMatch: ${matches.some((m:any) => (m.nameOfIssuer?.[0] || "").toUpperCase().includes(cleanHoldingName))}, CusipMatch: ${matches.some((m:any) => targetCusip && m.cusip?.[0] === targetCusip)})`);
-
-            if (matches.length === 0) return { date: filing.filingDate, shares: 0, value: 0, price: 0 };
-
-            // Sum up if multiple rows (e.g. Call/Put/Share split rows) - but strictly we usually want SH (Shares)
-            // Filter only for 'SH' or 'PRN' (Shares/Principal) to avoid mixing Calls/Puts unless requested
-            // For simplicity, we sum all 'SH' rows.
-            let totalShares = 0;
-            let totalValue = 0;
-
-            matches.forEach((m: any) => {
-                const type = m.shrsOrPrnAmt?.[0]?.sshPrnamtType?.[0] || 'SH';
-                if (type === 'SH' || type === 'PRN') {
-                    totalShares += parseFloat(m.shrsOrPrnAmt?.[0]?.sshPrnamt?.[0] || '0');
-                    totalValue += parseFloat(m.value?.[0] || '0');
-                }
-            });
-
+            const accessionNumber = formatAccession(filing.accessionNumber);
             return {
                 date: filing.filingDate,
-                shares: totalShares,
-                value: totalValue, // in thousands
-                price: totalShares > 0 ? (totalValue * 1000) / totalShares : 0 // Implied price
+                filingDate: filing.filingDate,
+                reportDate: filing.reportDate || null,
+                accessionNumber,
+                form: filing.form,
+                url: filingIndexUrl(cik, accessionNumber),
+                shares,
+                value,
             };
+            // Each filing takes two requests (index + information table), so space starts twice as far apart.
+        }, { minIntervalMs: SEC_MIN_REQUEST_INTERVAL_MS * 2 });
+
+        const history = points.filter((p): p is HistoryPointResponse => p !== null).sort((a, b) => a.date.localeCompare(b.date));
+        const warnings: string[] = [];
+        if (skippedStubs > 0) warnings.push(`${skippedStubs} filing(s) listed no holdings (placeholder or confidential filings) and were left out.`);
+        if (unreadable > 0) warnings.push(`${unreadable} filing(s) couldn’t be read from EDGAR and were left out.`);
+
+        return NextResponse.json({
+            history,
+            holding: issuer || targetCusip,
+            cik,
+            matchedBy,
+            cusip: targetCusip || null,
+            filingsChecked: filings.length,
+            skippedFilings: skippedStubs + unreadable,
+            warnings,
         });
-
-        const results = await Promise.all(historyPromises);
-        const validResults = results.filter(r => r !== null).sort((a, b) => a!.date.localeCompare(b!.date));
-
-        return NextResponse.json({ history: validResults, holding: holdingInfo.issuer });
-
-    } catch (error: any) {
-        console.error("Historical Analysis Failed:", error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
+    } catch (error) {
+        console.error('[WhaleHistory] Historical analysis failed:', error);
+        const message = error instanceof Error && error.message ? error.message : 'Something went wrong reading EDGAR.';
+        return NextResponse.json({ error: message }, { status: 502 });
     }
 }

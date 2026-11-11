@@ -3,7 +3,8 @@
 import { cn } from '@/lib/cn';
 import { formatNumber, formatSignedMoney } from '@/lib/format';
 import type { FilerMove } from '@/lib/thirteen-f-radar-core';
-import { ChangeBadge, Identifier, Panel, SectionHeader, Table, TableEmpty, TableFooter, THead, Th, Td, Term, changeKindFromAction, rowClass, signedClass } from '../ui';
+import { ChangeBadge, Panel, SectionHeader, Table, TableEmpty, TableFooter, THead, Th, Td, Term, changeKindFromAction, rowClass, signedClass } from '../ui';
+import { FundCell } from './FundCell';
 import { actionWord } from './radar-format';
 import { useShowMore } from './radar-hooks';
 
@@ -45,8 +46,7 @@ export function FilerMovesTable({ moves }: { moves: FilerMove[] }) {
                             return (
                                 <tr key={`${move.cik}-${move.categoryKey}-${move.action}`} className={rowClass}>
                                     <Td>
-                                        <div className="font-medium text-ink">{move.fundName}</div>
-                                        <Identifier label="CIK" value={move.cik} />
+                                        <FundCell cik={move.cik} fundName={move.fundName} accessionNumber={move.accessionNumber} filingDate={move.filingDate} />
                                     </Td>
                                     <Td className="text-ink-muted">{move.categoryLabel}</Td>
                                     <Td>

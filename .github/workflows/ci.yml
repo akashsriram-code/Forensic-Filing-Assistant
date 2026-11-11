@@ -38,12 +38,6 @@ jobs:
       - name: Lint
         run: >
           npx eslint app lib scripts
-          --ignore-pattern app/api/insider-analysis/route.ts
-          --ignore-pattern app/api/whale-activist/route.ts
-          --ignore-pattern app/api/whale-history/route.ts
-          --ignore-pattern lib/diff-engine.ts
-          --ignore-pattern lib/sc13d-parser.ts
-          --ignore-pattern lib/search-index.ts
           --ignore-pattern scripts/ingest-13f-raw.ts
           --ignore-pattern scripts/ingest-turso-direct.ts
           --ignore-pattern scripts/migrate-turso.ts
@@ -54,6 +48,9 @@ jobs:
           npm run test:13f-radar
           npm run test:13f-ingestion
           npm run test:spacex-exposure-radar
+          npm run test:diff
+          npm run test:entity
+          npm run test:form4
 
       - name: Production build
         run: npm run build

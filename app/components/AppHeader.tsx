@@ -4,6 +4,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { BrandMark } from './BrandMark';
+import { EntitySearch } from './EntitySearch';
 import { FollowingMenu } from './FollowingMenu';
 import { Guide } from './Guide';
 import { NotificationManager } from './NotificationManager';
@@ -38,6 +39,7 @@ export function AppHeader({ tabs, back }: { tabs?: ReactNode; back?: { href: str
                         <span className="hidden text-xs text-ink-muted sm:block">by Akash Sriram</span>
                     </span>
                 </Link>
+                <EntitySearch />
                 <div className="flex shrink-0 items-center gap-1">
                     <FollowingMenu />
                     <Guide />

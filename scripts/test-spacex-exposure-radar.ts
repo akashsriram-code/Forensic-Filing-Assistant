@@ -122,11 +122,16 @@ async function run() {
     assert.equal(nportRows[0].pctValue, 2.110329151105);
     assert.equal(nportRows[0].assetCategory, 'EP');
 
-    const thirteenFRows = await parse13FXmlForSpaceX(THIRTEEN_F_XML);
+    // 13F VALUE is whole dollars for filings made on or after 2023-01-03, thousands before.
+    const thirteenFRows = await parse13FXmlForSpaceX(THIRTEEN_F_XML, '2024-05-15');
     assert.equal(thirteenFRows.length, 1);
     assert.equal(thirteenFRows[0].relationshipType, 'direct_holding');
-    assert.equal(thirteenFRows[0].valueUsd, 1200000);
+    assert.equal(thirteenFRows[0].valueUsd, 1200);
     assert.equal(thirteenFRows[0].sharesOrBalance, 100);
+    assert.equal((await parse13FXmlForSpaceX(THIRTEEN_F_XML, '2023-01-03'))[0].valueUsd, 1200);
+    assert.equal((await parse13FXmlForSpaceX(THIRTEEN_F_XML, '2022-11-14'))[0].valueUsd, 1200000);
+    // Unknown filing date: the unit can't be known, so no dollar figure is given.
+    assert.equal((await parse13FXmlForSpaceX(THIRTEEN_F_XML))[0].valueUsd, null);
 
     const commercial = parseHtmlOrTextForSpaceX(COMMERCIAL_HTML);
     assert.equal(commercial.length, 1);

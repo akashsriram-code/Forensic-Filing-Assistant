@@ -5,7 +5,9 @@ import { Check, Copy } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { formatDate } from '@/lib/format';
 import { Term } from './Term';
+import { SourceList } from './Citation';
 import type { GlossaryKey } from '@/lib/glossary';
+import { formatSources, type Citation } from '@/lib/citation';
 
 /** The one panel style: 8px radius, 1px rule border, surface background, no shadow. */
 export function Panel({ className, children, as: Tag = 'div' }: { className?: string; children: ReactNode; as?: 'div' | 'section' | 'article' }) {
@@ -62,6 +64,7 @@ export function Takeaway({
     asOf,
     note,
     updating = false,
+    sources = [],
 }: {
     children: ReactNode;
     /** Plain-text version of the sentence for the clipboard. */
@@ -71,13 +74,16 @@ export function Takeaway({
     note?: ReactNode;
     /** Dims the sentence while fresh data loads. */
     updating?: boolean;
+    /** Filings the sentence is based on: listed under "Sources" and appended to the copied text. */
+    sources?: Citation[];
 }) {
     const [copied, setCopied] = useState(false);
 
     const copy = async () => {
         if (!copyText) return;
+        const sourceBlock = formatSources(sources);
         try {
-            await navigator.clipboard.writeText(copyText);
+            await navigator.clipboard.writeText(sourceBlock ? `${copyText}\n\n${sourceBlock}` : copyText);
             setCopied(true);
             window.setTimeout(() => setCopied(false), 2000);
         } catch {
@@ -98,10 +104,15 @@ export function Takeaway({
                         className="inline-flex items-center gap-1.5 rounded px-1 font-medium text-accent hover:underline"
                     >
                         {copied ? <Check className="h-3.5 w-3.5" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
-                        {copied ? 'Copied' : 'Copy sentence'}
+                        {copied ? 'Copied' : sources.length > 0 ? 'Copy sentence with sources' : 'Copy sentence'}
                     </button>
                 )}
             </div>
+            {sources.length > 0 && (
+                <div className="mt-2">
+                    <SourceList sources={sources} />
+                </div>
+            )}
         </div>
     );
 }

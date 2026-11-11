@@ -39,6 +39,9 @@ export interface FundHoldingsResponse {
     previousQuarter?: string | null;
     filingDateCurr: string;
     filingDatePrev: string | null;
+    /** The 13F-HR accession numbers behind the current and previous figures (for citations). */
+    accessionCurr?: string | null;
+    accessionPrev?: string | null;
     source?: string;
     note?: string | null;
     allChanges: ApiHolding[];
@@ -47,6 +50,8 @@ export interface FundHoldingsResponse {
 export interface ClusterFund {
     ticker: string;
     name?: string | null;
+    cik?: string | null;
+    accession?: string | null;
     quarter?: string | null;
     date: string;
     totalHoldings: number;
@@ -96,6 +101,8 @@ export interface ReverseFund {
     valueDelta: number;
     currentFilingDate: string;
     previousFilingDate: string | null;
+    currentAccession?: string | null;
+    previousAccession?: string | null;
     currentQuarter: string;
     previousQuarter: string | null;
     history: ReverseHistoryPoint[];
@@ -123,6 +130,14 @@ export interface ActivistFiling {
     percentClass?: string;
     shares?: string;
     purpose?: string;
+    /** CIK of the EDGAR record the filing was listed under (with accessionNumber, enough to cite it). */
+    cik?: string;
+    /** Filing index page on sec.gov. */
+    indexUrl?: string | null;
+    /** False for older filings the route listed without opening. */
+    parsed?: boolean;
+    /** The company the stake is in, when the filing states it (structured filings since Dec 2024). */
+    subjectCompany?: string | null;
 }
 
 export interface ActivistResponse {
@@ -130,18 +145,35 @@ export interface ActivistResponse {
     cik?: string;
     companyName?: string;
     filings: ActivistFiling[];
+    parsedCount?: number;
+    warnings?: string[];
 }
 
 interface HistoryApiPoint {
+    /** Filing date. */
     date: string;
     shares: number;
     /** As reported in that filing; see the unit table at the top of this file. */
     value: number;
+    filingDate?: string;
+    /** Quarter end the filing reports, YYYY-MM-DD. */
+    reportDate?: string | null;
+    accessionNumber?: string;
+    form?: string;
+    /** Filing index page on sec.gov. */
+    url?: string | null;
 }
 
 export interface HistoryResponse {
     history: HistoryApiPoint[];
     holding?: string;
+    cik?: string;
+    /** How rows were matched: by the holding's CUSIP, or (only when it has none) by its exact issuer name. */
+    matchedBy?: 'cusip' | 'name';
+    filingsChecked?: number;
+    /** Filings left out: placeholders with no holdings, or ones EDGAR wouldn't serve. */
+    skippedFilings?: number;
+    warnings?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +185,11 @@ export interface HistoryPoint {
     quarter: string | null;
     shares: number;
     valueUsd: number;
+    /** The 13F filing this point comes from, for citations. */
+    accessionNumber?: string;
+    cik?: string;
+    form?: string;
+    url?: string | null;
 }
 
 export interface FundHolding {
@@ -179,11 +216,15 @@ const DOLLAR_REPORTING_START = '2023-01-03';
 /** Converts one /api/whale-history point, whose value is in the unit its own filing used. */
 export function historyPointFromApi(point: HistoryApiPoint): HistoryPoint {
     const raw = Number.isFinite(point.value) ? point.value : 0;
+    const quarterMatch = /^(\d{4})-(\d{2})-\d{2}$/.exec(point.reportDate || '');
     return {
         date: point.date,
-        quarter: null,
+        quarter: quarterMatch ? `${quarterMatch[1]}-Q${Math.ceil(Number(quarterMatch[2]) / 3)}` : null,
         shares: Number.isFinite(point.shares) ? point.shares : 0,
         valueUsd: point.date >= DOLLAR_REPORTING_START ? raw : raw * 1000,
+        ...(point.accessionNumber ? { accessionNumber: point.accessionNumber } : {}),
+        ...(point.form ? { form: point.form } : {}),
+        ...(point.url !== undefined ? { url: point.url } : {}),
     };
 }
 

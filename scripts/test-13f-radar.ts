@@ -258,9 +258,13 @@ async function run() {
     assert.equal(recentComparison.coverage.latestFilingDate, '2026-11-03');
     assert.equal(recentComparison.recentFilerCount, 2);
     assert.deepEqual(recentComparison.recentFilers, [
-        { cik: '201', fundName: 'Mover Fund', filingDate: '2026-11-03', comparable: true },
-        { cik: '202', fundName: 'Brand New Fund', filingDate: '2026-11-01', comparable: false },
+        { cik: '201', fundName: 'Mover Fund', filingDate: '2026-11-03', accessionNumber: 'mover-curr', comparable: true },
+        { cik: '202', fundName: 'Brand New Fund', filingDate: '2026-11-01', accessionNumber: 'new-curr', comparable: false },
     ]);
+    // Fund-level rows carry the current 13F-HR so the UI can cite it.
+    const citedMove = recentComparison.topFilerMoves.find((move) => move.cik === '201');
+    assert.equal(citedMove?.accessionNumber, 'mover-curr');
+    assert.equal(citedMove?.filingDate, '2026-11-03');
     assert.equal(mixedCikComparison.categorySummaries[0].buyers, 1);
 
     const software = comparison.categorySummaries.find((summary) => summary.key === 'software');
@@ -502,7 +506,16 @@ async function run() {
     assert.equal(storeRows.filings.length, 8);
     const storeComparison = buildRadarComparison({ ...request, filings: storeRows.filings, holdings: storeRows.holdings });
     assert.deepEqual(storeComparison.categorySummaries, comparison.categorySummaries);
-    assert.deepEqual(storeComparison.topFilerMoves, comparison.topFilerMoves);
+    // Same moves either way; only the cited filing differs (the two fixtures use different accessions and dates).
+    const withoutCitation = (moves: typeof comparison.topFilerMoves) =>
+        moves.map((move) => {
+            const copy = { ...move };
+            delete copy.accessionNumber;
+            delete copy.filingDate;
+            return copy;
+        });
+    assert.deepEqual(withoutCitation(storeComparison.topFilerMoves), withoutCitation(comparison.topFilerMoves));
+    assert.ok(storeComparison.topFilerMoves.every((move) => move.accessionNumber?.endsWith('-curr')));
     assert.deepEqual(matchStoreSecurities(directory, DEFAULT_RADAR_WATCHLISTS, ['energy']), [2]);
 
     // Each filer is compared on its own latest two filed quarters: cur vs prev once it has filed the newest quarter,

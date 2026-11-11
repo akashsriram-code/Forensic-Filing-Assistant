@@ -12,6 +12,7 @@ import { TokenInput, splitTokens } from './TokenInput';
 import { useRunFromUrlOnce, useUrlParams } from './useUrlState';
 import {
     Button,
+    CopyCitation,
     EmptyState,
     FormMark,
     IconButton,
@@ -32,7 +33,7 @@ import {
     rowClass,
 } from './ui';
 
-interface FilingResult {
+export interface FilingResult {
     accessionNumber: string;
     filingDate: string;
     form: string;
@@ -241,10 +242,7 @@ export function Downloader() {
         void handleSearch();
     });
 
-    const downloadFile = (url: string, filename: string) => {
-        const safeFilename = filename.replace(/\.htm$/i, '.html');
-        window.location.href = `/api/download-proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(safeFilename)}`;
-    };
+    const downloadFile = downloadFiling;
 
     const handleDownloadAll = async () => {
         if (!results || results.length === 0) return;
@@ -486,7 +484,9 @@ export function Downloader() {
                                     <tr key={`${item.companyCik}-${item.accessionNumber}`} className={rowClass}>
                                         <Td className="tabular whitespace-nowrap">{formatDate(item.filingDate)}</Td>
                                         <Td className="min-w-44">
-                                            <div className="font-medium">{item.companyName}</div>
+                                            <Link href={companyHref(item)} className="font-medium text-ink hover:text-accent hover:underline">
+                                                {item.companyName}
+                                            </Link>
                                             {item.companyTicker && <div className="text-sm text-ink-muted">{item.companyTicker}</div>}
                                         </Td>
                                         <Td className="min-w-72">
@@ -508,7 +508,10 @@ export function Downloader() {
                         {visible.map((item, index) => (
                             <Panel key={`${item.companyCik}-${item.accessionNumber}`} as="article" className="p-4">
                                 <div className="flex items-baseline justify-between gap-3">
-                                    <p className="font-medium">{item.companyName}{item.companyTicker && <span className="text-ink-muted"> ({item.companyTicker})</span>}</p>
+                                    <p className="font-medium">
+                                        <Link href={companyHref(item)} className="text-ink hover:text-accent hover:underline">{item.companyName}</Link>
+                                        {item.companyTicker && <span className="text-ink-muted"> ({item.companyTicker})</span>}
+                                    </p>
                                     <p className="tabular shrink-0 text-sm text-ink-muted">{formatDate(item.filingDate)}</p>
                                 </div>
                                 <div className="mt-2">
@@ -534,7 +537,18 @@ export function Downloader() {
     );
 }
 
-function FilingSummary({ item, keywords }: { item: FilingResult; keywords: string[] }) {
+/** The company page for a result: by ticker when there is one, else by CIK. */
+function companyHref(item: FilingResult): string {
+    return `/company/${encodeURIComponent(item.companyTicker || String(Number(item.companyCik)) || item.companyName)}`;
+}
+
+/** Saves one filing through the SEC-only proxy (the browser download dialog opens). */
+export function downloadFiling(url: string, filename: string) {
+    const safeFilename = filename.replace(/\.htm$/i, '.html');
+    window.location.href = `/api/download-proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(safeFilename)}`;
+}
+
+export function FilingSummary({ item, keywords }: { item: FilingResult; keywords: string[] }) {
     return (
         <div className="space-y-2">
             <div className="flex flex-wrap items-baseline gap-2">
@@ -555,15 +569,15 @@ function FilingSummary({ item, keywords }: { item: FilingResult; keywords: strin
     );
 }
 
-function FilingActions({
+export function FilingActions({
     item,
     previous,
-    onDownload,
+    onDownload = downloadFiling,
     align = 'end',
 }: {
     item: FilingResult;
     previous: FilingResult | undefined;
-    onDownload: (url: string, filename: string) => void;
+    onDownload?: (url: string, filename: string) => void;
     align?: 'start' | 'end';
 }) {
     return (
@@ -594,6 +608,15 @@ function FilingActions({
                         Compare with previous
                     </span>
                 ))}
+            <CopyCitation
+                citation={{
+                    entity: item.companyName || item.companyTicker,
+                    form: item.form,
+                    filingDate: item.filingDate,
+                    accession: item.accessionNumber,
+                    cik: item.companyCik,
+                }}
+            />
             <IconButton label={`Download this ${item.form} as HTML`} size="sm" onClick={() => onDownload(item.downloadUrl, item.primaryDocument)}>
                 <Download className="h-4 w-4" aria-hidden />
             </IconButton>

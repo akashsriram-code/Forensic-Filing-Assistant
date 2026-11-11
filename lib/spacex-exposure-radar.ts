@@ -425,9 +425,24 @@ export async function parseNPortXmlForSpaceX(content: string): Promise<ParsedHol
     return candidates;
 }
 
-export async function parse13FXmlForSpaceX(content: string): Promise<ParsedHoldingCandidate[]> {
+/** SEC 13F filings made on or after this date report VALUE in whole dollars; earlier ones in thousands of dollars. */
+const THIRTEEN_F_DOLLAR_REPORTING_START = '2023-01-03';
+
+/** The unit a 13F information table's VALUE column uses, from the filing date. Null when the date is unknown. */
+export function thirteenFValueUnit(filingDate: string | null | undefined): 'dollars' | 'thousands' | null {
+    const date = (filingDate || '').trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+    return date >= THIRTEEN_F_DOLLAR_REPORTING_START ? 'dollars' : 'thousands';
+}
+
+/**
+ * `filingDate` (YYYY-MM-DD) decides the VALUE unit: dollars from 2023-01-03, thousands before. Without it the value
+ * is left empty rather than guessed.
+ */
+export async function parse13FXmlForSpaceX(content: string, filingDate?: string | null): Promise<ParsedHoldingCandidate[]> {
     const parsed = await parseXml(content);
     if (!parsed) return [];
+    const unit = thirteenFValueUnit(filingDate);
 
     const candidates: ParsedHoldingCandidate[] = [];
     for (const record of collectObjects(parsed)) {
@@ -448,13 +463,17 @@ export async function parse13FXmlForSpaceX(content: string): Promise<ParsedHoldi
             cusip: normalizeNullable(firstText(record, ['cusip'])),
             sharesOrBalance: shares,
             units: normalizeNullable(firstTextDeep(record, ['sshPrnamtType'])),
-            valueUsd: reportedValue === null ? null : reportedValue * 1000,
+            valueUsd: reportedValue === null || unit === null ? null : unit === 'thousands' ? reportedValue * 1000 : reportedValue,
             pctValue: null,
             assetCategory: null,
             issuerCategory: null,
             investmentCountry: null,
             snippet: buildCompactSnippet(`${issuer} | ${title || ''} | CUSIP ${firstText(record, ['cusip']) || ''} | value ${reportedValue ?? ''}`, issuer),
-            notes: 'Parsed from Form 13F information table; reported 13F value is normalized from thousands to dollars.',
+            notes: unit === 'thousands'
+                ? 'Parsed from Form 13F information table; filed before 2023-01-03, so the reported value (thousands) is multiplied by 1,000.'
+                : unit === 'dollars'
+                    ? 'Parsed from Form 13F information table; reported value is in whole dollars (filed on or after 2023-01-03).'
+                    : 'Parsed from Form 13F information table; filing date unknown, so the value unit (dollars or thousands) could not be determined.',
         });
     }
 
@@ -676,7 +695,7 @@ async function parseStructuredXmlCandidates(hit: SecSearchHit, content: string):
         if (nport.length > 0) return nport;
     }
     if (form.startsWith('13F')) {
-        const thirteenF = await parse13FXmlForSpaceX(content);
+        const thirteenF = await parse13FXmlForSpaceX(content, hit.filingDate);
         if (thirteenF.length > 0) return thirteenF;
     }
 

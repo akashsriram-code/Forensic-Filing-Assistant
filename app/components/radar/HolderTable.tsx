@@ -1,10 +1,12 @@
 "use client";
 
 import { Fragment, useState } from 'react';
+import Link from 'next/link';
 import { cn } from '@/lib/cn';
 import { formatMoney, formatNumber, formatShares } from '@/lib/format';
 import type { FilerMove } from '@/lib/thirteen-f-radar-core';
-import { ChangeBadge, Identifier, RowToggle, Table, TableEmpty, TableFooter, THead, Th, Td, Term, changeKindFromAction, rowClass, signedClass } from '../ui';
+import { ChangeBadge, CopyCitation, Identifier, RowToggle, Table, TableEmpty, TableFooter, THead, Th, Td, Term, changeKindFromAction, rowClass, signedClass } from '../ui';
+import { fundPageHref } from './FundCell';
 import { actionOrder, formatShareChange, sharePctChange } from './radar-format';
 import { useShowMore } from './radar-hooks';
 
@@ -69,10 +71,23 @@ export function HolderTable({ moves }: { moves: EnrichedFilerMove[] }) {
                                                 {move.fundName}
                                             </RowToggle>
                                         ) : (
-                                            <div className="font-medium text-ink">{move.fundName}</div>
+                                            <Link href={fundPageHref(move.cik)} className="font-medium text-ink hover:text-accent hover:underline">
+                                                {move.fundName}
+                                            </Link>
                                         )}
-                                        <div className={cn('flex flex-wrap gap-x-3', hasDetails && 'pl-[22px]')}>
+                                        <div className={cn('flex flex-wrap items-center gap-x-3', hasDetails && 'pl-[22px]')}>
                                             <Identifier label="CIK" value={move.cik} />
+                                            {hasDetails && (
+                                                <Link href={fundPageHref(move.cik)} className="text-sm font-medium text-accent hover:underline">
+                                                    Fund page
+                                                </Link>
+                                            )}
+                                            {move.accessionNumber && (
+                                                <CopyCitation
+                                                    citation={{ entity: move.fundName, form: '13F-HR', filingDate: move.filingDate ?? null, accession: move.accessionNumber, cik: move.cik }}
+                                                    className="-my-1.5"
+                                                />
+                                            )}
                                             {hasDetails && <span className="text-sm text-ink-muted">{formatNumber(move.details.length)} {move.details.length === 1 ? 'stock' : 'stocks'}</span>}
                                         </div>
                                     </Td>
