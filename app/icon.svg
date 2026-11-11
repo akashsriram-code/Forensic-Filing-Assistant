@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <!--
-    SEC Filings Assistant mark: a filing page with one highlighted passage. Keep in sync with app/components/BrandMark.tsx.
+    SCOUT mark: a filing page with one highlighted passage. Keep in sync with app/components/BrandMark.tsx.
     Edges sit on even coordinates so every line lands on whole pixels at 16px.
   -->
   <rect width="32" height="32" rx="7" fill="#2347B5"/>

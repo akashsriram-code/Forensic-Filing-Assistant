@@ -34,9 +34,11 @@ export function AppHeader({ tabs, back }: { tabs?: ReactNode; back?: { href: str
             <div className="mx-auto flex h-14 max-w-[1200px] items-center justify-between gap-3 px-4 sm:px-8">
                 <Link href="/" className="flex min-w-0 items-center gap-3 rounded-md">
                     <BrandMark className="h-8 w-8 shrink-0" />
-                    <span className="min-w-0">
-                        <span className="block truncate font-serif text-lg font-semibold leading-tight text-ink">SEC Filings Assistant</span>
-                        <span className="hidden text-xs text-ink-muted sm:block">by Akash Sriram</span>
+                    <span className="min-w-0" title="SCOUT: SEC Company & Ownership Update Tracker">
+                        <span className="block truncate font-serif text-lg font-semibold leading-tight tracking-wide text-ink">SCOUT</span>
+                        {/* The full name only fits beside the search box on wide screens. */}
+                        <span className="hidden text-xs text-ink-muted sm:block xl:hidden">by Akash Sriram</span>
+                        <span className="hidden text-xs text-ink-muted xl:block">SEC Company &amp; Ownership Update Tracker, by Akash Sriram</span>
                     </span>
                 </Link>
                 <EntitySearch />

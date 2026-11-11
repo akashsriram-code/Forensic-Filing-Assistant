@@ -15,8 +15,9 @@ const sourceSerif = Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "SEC Filings Assistant",
-  description: "Search and download SEC filings, and see what big investment funds bought and sold.",
+  title: "SCOUT: SEC Company & Ownership Update Tracker",
+  description: "SCOUT tracks SEC filings by companies and funds: what investment funds bought and sold, insider trades, activist stakes and what changed in annual reports.",
+  applicationName: "SCOUT",
 };
 
 /**

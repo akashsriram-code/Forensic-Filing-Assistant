@@ -1,6 +1,6 @@
-# Forensic Filing Assistant
+# SCOUT
 
-A sophisticated, minimalist financial intelligence tool designed for investigating SEC filings and tracking institutional "whale" activity.
+**SEC Company & Ownership Update Tracker.** A tool for reporters investigating SEC filings: what big funds bought and sold, insider trades, activist stakes, and what changed in companies' annual reports.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Next.js](https://img.shields.io/badge/built%20with-Next.js-black)
@@ -49,8 +49,8 @@ Analyze institutional 13-F filings to see what the "smart money" is doing.
 
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/iamjohnwatson/Forensic-Filing-Assistant.git
-    cd Forensic-Filing-Assistant
+    git clone https://github.com/akashsriram-code/SCOUT.git
+    cd SCOUT
     ```
 
 2.  Install dependencies:

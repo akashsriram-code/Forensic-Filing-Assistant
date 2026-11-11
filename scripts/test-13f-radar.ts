@@ -663,6 +663,36 @@ async function run() {
         restoreEnv(routeEnvSnapshot);
     }
 
+    // New watchlists: issuer names as actually filed (13F store, 2026-Q2/Q3), including the near-misses that must not match.
+    const watchItem = (key: string, ticker: string) => {
+        const item = DEFAULT_RADAR_WATCHLISTS.find((w) => w.key === key)?.items.find((i) => i.ticker === ticker);
+        assert.ok(item, `${key}/${ticker} is in the default watchlists`);
+        return item!;
+    };
+    const mstr = watchItem('dat', 'MSTR');
+    assert.equal(issuerMatchesItem('STRATEGY INC CLASS A', mstr), true);
+    assert.equal(issuerMatchesItem('STRATEGY INC', mstr), true);
+    assert.equal(issuerMatchesItem('MICROSTRATEGY INC', mstr), true);
+    assert.equal(issuerMatchesItem('LITE STRATEGY INC', mstr), false);
+    assert.equal(issuerMatchesItem('FT VEST BITCOIN STRATEGY & TARGET INCOME ETF', mstr), false);
+    assert.equal(issuerMatchesItem('ACME STRATEGY INCOME FUND', mstr), false);
+    assert.equal(issuerMatchesItem('STRATEGY INCOME FUND', mstr), false);
+    const strive = watchItem('dat', 'ASST');
+    assert.equal(issuerMatchesItem('STRIVE INC.', strive), true);
+    assert.equal(issuerMatchesItem('STRIVE INC-A', strive), true);
+    assert.equal(issuerMatchesItem('STRIVE TOTAL RETURN BOND ETF', strive), false);
+    assert.equal(issuerMatchesItem('BITMINE IMMERSION TECNOLOGIE', watchItem('dat', 'BMNR')), true);
+    assert.equal(issuerMatchesItem('BITMINE IMMERSION TECHS INC COM NEW', watchItem('dat', 'BMNR')), true);
+    assert.equal(issuerMatchesItem('BULLISH', watchItem('dat', 'BLSH')), true);
+    assert.equal(issuerMatchesItem('THE BULLISH FUND', watchItem('dat', 'BLSH')), false);
+    assert.equal(issuerMatchesItem('TRUMP MEDIA & TECHNOLOGY GRO', watchItem('trump-portfolio', 'DJT')), true);
+    assert.equal(issuerMatchesItem('TWENTY ONE CAP INC', watchItem('dat', 'XXI')), true);
+    assert.equal(issuerMatchesItem('GALAXY DIGITAL INC.', watchItem('dat', 'GLXY')), true);
+    assert.equal(issuerMatchesItem('AMERICAN BITCOIN CORP.', watchItem('trump-portfolio', 'ABTC')), true);
+    // Trump Media sits in both buckets.
+    const djtBuckets = DEFAULT_RADAR_WATCHLISTS.filter((w) => w.items.some((i) => issuerMatchesItem('TRUMP MEDIA & TECHNOLOGY GROUP CORP', i))).map((w) => w.key);
+    assert.deepEqual(djtBuckets, ['dat', 'trump-portfolio']);
+
     console.log('13F Radar unit tests passed.');
 }
 

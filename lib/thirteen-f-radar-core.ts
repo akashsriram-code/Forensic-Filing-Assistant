@@ -286,6 +286,12 @@ export interface PrivateCreditInstitutionSummary {
 interface AliasProfile {
     normalized: string;
     compact: string;
+    /**
+     * Alias written with a leading "^": it must start the issuer name and end on a word boundary. Used for short or
+     * generic names that would otherwise match inside other issuers ("^STRATEGY INC" must not match "LITE STRATEGY
+     * INC" or "... STRATEGY INCOME FUND").
+     */
+    anchored: boolean;
 }
 
 const aliasProfileCache = new WeakMap<RadarWatchlistItem, AliasProfile[]>();
@@ -705,6 +711,35 @@ export const DEFAULT_RADAR_WATCHLISTS: RadarWatchlist[] = [
                     'SPACE EXPLORATION TECH',
                 ],
             },
+        ],
+    },
+    // Aliases below were checked against issuer names as filed in the 13F store (2026-Q2/Q3). "^" = must start the name.
+    {
+        key: 'dat',
+        label: 'Digital asset treasuries',
+        description: 'Companies that hold bitcoin or other crypto on their balance sheet, plus the miners and exchanges around them.',
+        items: [
+            { ticker: 'MSTR', label: 'Strategy', aliases: ['^STRATEGY INC', 'MICROSTRATEGY'] },
+            { ticker: 'XXI', label: 'Twenty One Capital', aliases: ['TWENTY ONE CAP', 'TWENTY-ONE CAP'] },
+            { ticker: 'ASST', label: 'Strive', aliases: ['^STRIVE INC'] },
+            { ticker: 'DJT', label: 'Trump Media & Technology Group', aliases: ['TRUMP MEDIA'] },
+            { ticker: 'BMNR', label: 'BitMine Immersion', aliases: ['BITMINE IMMERSION'] },
+            { ticker: 'MARA', label: 'MARA Holdings', aliases: ['MARA HOLDINGS', 'MARATHON DIGITAL'] },
+            { ticker: 'CLSK', label: 'CleanSpark', aliases: ['CLEANSPARK'] },
+            { ticker: 'COIN', label: 'Coinbase', aliases: ['COINBASE GLOBAL'] },
+            { ticker: 'GLXY', label: 'Galaxy Digital', aliases: ['GALAXY DIGITAL'] },
+            { ticker: 'BLSH', label: 'Bullish', aliases: ['^BULLISH'] },
+        ],
+    },
+    {
+        key: 'trump-portfolio',
+        label: 'Trump portfolio',
+        description: 'Public companies in which President Trump or members of his family hold stakes or roles.',
+        items: [
+            { ticker: 'DJT', label: 'Trump Media & Technology Group', aliases: ['TRUMP MEDIA'] },
+            { ticker: 'ABTC', label: 'American Bitcoin', aliases: ['AMERICAN BITCOIN CORP'] },
+            { ticker: 'DOMH', label: 'Dominari Holdings', aliases: ['DOMINARI HOLDINGS'] },
+            { ticker: 'TZUP', label: 'Thumzup', aliases: ['THUMZUP'] },
         ],
     },
 ];
@@ -1691,6 +1726,7 @@ function getItemAliasProfiles(item: RadarWatchlistItem): AliasProfile[] {
         .map((alias) => ({
             normalized: normalizeIssuerName(alias),
             compact: compactIssuerName(alias),
+            anchored: alias.startsWith('^'),
         }))
         .filter((alias) => alias.compact.length >= 4);
 
@@ -1721,7 +1757,9 @@ function matchAlphabetShareClass(issuerNorm: string, item: RadarWatchlistItem): 
 
 function issuerMatchesAliasProfiles(issuerNorm: string, issuerCompact: string, item: RadarWatchlistItem): boolean {
     return getItemAliasProfiles(item).some((alias) =>
-        issuerNorm.includes(alias.normalized) || issuerCompact.includes(alias.compact)
+        alias.anchored
+            ? issuerNorm === alias.normalized || issuerNorm.startsWith(`${alias.normalized} `)
+            : issuerNorm.includes(alias.normalized) || issuerCompact.includes(alias.compact)
     );
 }
 

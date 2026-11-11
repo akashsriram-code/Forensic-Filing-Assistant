@@ -172,12 +172,33 @@ export async function buildFilingProgress(request: ResolvedRadarRequest): Promis
     };
 }
 
-/** Serve a default request from its precomputed file, if one exists for the pair. */
+/**
+ * Serve a default request from its precomputed file, if one exists for the pair.
+ *
+ * A file saved before the built-in watchlists last changed (its watchlistHash differs) is missing the new categories.
+ * For the pair held in the store, return null so the route computes it live with the current watchlists (the daily
+ * ingestion job then re-saves it). For archived pairs that can't be recomputed, serve the saved file and say which
+ * categories it doesn't cover.
+ */
 export async function loadPrecomputedRadarResponse(request: ResolvedRadarRequest): Promise<RadarApiResponse | null> {
     if (!request.isDefault) return null;
     const file = await readPrecomputedRadar(request.currentQuarter, request.previousQuarter);
     if (!file) return null;
-    return { ...file.response, availableQuarters: request.availableQuarters };
+    const response = { ...file.response, availableQuarters: request.availableQuarters };
+    if (file.watchlistHash === getRadarWatchlistHash(DEFAULT_RADAR_WATCHLISTS)) return response;
+    if (request.inStore) return null;
+
+    const savedKeys = new Set((file.response.categorySummaries || []).map((summary) => summary.key));
+    const missing = DEFAULT_RADAR_WATCHLISTS.filter((watchlist) => !savedKeys.has(watchlist.key)).map((watchlist) => watchlist.label);
+    if (missing.length === 0) return response;
+    const list = missing.length === 1 ? missing[0] : `${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}`;
+    return {
+        ...response,
+        notes: [
+            ...(response.notes || []),
+            `This comparison was saved before the ${list} watchlist${missing.length === 1 ? ' was' : 's were'} added, so ${missing.length === 1 ? 'it isn’t' : 'they aren’t'} included for these quarters.`,
+        ],
+    };
 }
 
 /** Build the comparison from the Postgres store: only positions in watchlist-matched securities are fetched. */

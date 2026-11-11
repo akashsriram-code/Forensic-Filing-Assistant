@@ -33,8 +33,8 @@ export function Guide() {
             <Dialog
                 open={open}
                 onClose={() => setOpen(false)}
-                title="How to use the SEC Filings Assistant"
-                description="What each tab is for, and what the terms mean."
+                title="How to use SCOUT"
+                description="SCOUT is the SEC Company & Ownership Update Tracker. Here is what each part is for, and what the terms mean."
                 size="lg"
             >
                 <div className="space-y-8">

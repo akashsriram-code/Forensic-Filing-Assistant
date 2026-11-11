@@ -2,10 +2,10 @@
  * Shared settings for every request this app makes to the SEC.
  *
  * SEC fair-access rules ask automated clients to identify themselves with a real contact in the User-Agent, e.g.
- * "SEC Filings Assistant newsroom@example.org". Set SEC_USER_AGENT in the environment (Vercel project settings and the
+ * "SCOUT newsroom@example.org". Set SEC_USER_AGENT in the environment (Vercel project settings and the
  * GitHub Actions secret of the same name); the fallback below is only for local development.
  */
-const FALLBACK_USER_AGENT = 'SEC Filings Assistant contact@example.com';
+const FALLBACK_USER_AGENT = 'SCOUT contact@example.com';
 
 /** Read at call time, for scripts that set SEC_USER_AGENT from a command-line flag after modules load. */
 export function secUserAgent(): string {

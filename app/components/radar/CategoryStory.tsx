@@ -163,7 +163,7 @@ function StoryBody({
         for (const breakdown of stats.filerTypeBreakdown.slice(0, 8)) {
             lines.push(`${breakdown.type} (${formatNumber(breakdown.count)} funds): ${breakdown.pct.toFixed(1)}% of shares`);
         }
-        lines.push('', 'Source: SEC 13F filings, Forensic Filing Assistant. Dollar values are the market values the funds reported for the quarter end.');
+        lines.push('', 'Source: SEC 13F filings, compiled with SCOUT. Dollar values are the market values the funds reported for the quarter end.');
         return lines.join('\n');
     };
 
