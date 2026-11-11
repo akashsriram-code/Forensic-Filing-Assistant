@@ -737,12 +737,30 @@ export function formatQuarterLabel(quarter: string): string {
     return parsed ? `Q${parsed.quarter} ${parsed.year}` : quarter;
 }
 
-/** 13F-HR due date, 45 days after quarter end (YYYY-MM-DD), or null for a malformed quarter. */
+/**
+ * 13F-HR due date (YYYY-MM-DD): 45 days after quarter end, moved to the next business day when that lands on a
+ * weekend or federal holiday (SEC Rule 0-3). Null for a malformed quarter.
+ */
 export function quarterFilingDeadline(quarter: string): string | null {
     const parsed = parseQuarter(quarter);
     if (!parsed) return null;
     const quarterEnd = Date.UTC(parsed.year, parsed.quarter * 3, 0);
-    return new Date(quarterEnd + FILING_DEADLINE_DAYS * DAY_MS).toISOString().slice(0, 10);
+    let due = new Date(quarterEnd + FILING_DEADLINE_DAYS * DAY_MS);
+    while (due.getUTCDay() === 0 || due.getUTCDay() === 6 || isDeadlineWindowHoliday(due)) {
+        due = new Date(due.getTime() + DAY_MS);
+    }
+    return due.toISOString().slice(0, 10);
+}
+
+/**
+ * Federal holidays that can fall in a 13F deadline's rollover window (Feb 14, May 15, Aug 14 and Nov 14, plus up to
+ * two weekend days). Only Washington's Birthday (3rd Monday of February, the 15th-21st) can: Veterans Day, Memorial
+ * Day and Labor Day never land in those windows.
+ */
+function isDeadlineWindowHoliday(date: Date): boolean {
+    const isThirdMondayOfFebruary = date.getUTCMonth() === 1 && date.getUTCDay() === 1
+        && date.getUTCDate() >= 15 && date.getUTCDate() <= 21;
+    return isThirdMondayOfFebruary;
 }
 
 /**

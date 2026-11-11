@@ -228,8 +228,15 @@ async function run() {
     // Filing-season helpers: quarter labels, deadlines, and the "just filed" list.
     assert.equal(formatQuarterLabel('2026-Q3'), 'Q3 2026');
     assert.equal(formatQuarterLabel('current'), 'current');
-    assert.equal(quarterFilingDeadline('2026-Q3'), '2026-11-14');
-    assert.equal(quarterFilingDeadline('2026-Q4'), '2027-02-14');
+    // Nov 14, 2026 is a Saturday -> Monday Nov 16.
+    assert.equal(quarterFilingDeadline('2026-Q3'), '2026-11-16');
+    // Feb 14, 2027 is a Sunday and Mon Feb 15 is Washington's Birthday -> Tue Feb 16.
+    assert.equal(quarterFilingDeadline('2026-Q4'), '2027-02-16');
+    // Weekday deadlines are unchanged (Fri May 15 and Fri Aug 14, 2026).
+    assert.equal(quarterFilingDeadline('2026-Q1'), '2026-05-15');
+    assert.equal(quarterFilingDeadline('2026-Q2'), '2026-08-14');
+    // Saturday Feb 14, 2026 -> Sun 15 -> Mon Feb 16 is Washington's Birthday -> Tue Feb 17.
+    assert.equal(quarterFilingDeadline('2025-Q4'), '2026-02-17');
     assert.equal(quarterFilingDeadline('bad'), null);
     const recentComparison = buildRadarComparison({
         currentQuarter: '2026-Q3',
@@ -572,7 +579,7 @@ async function run() {
         assert.deepEqual(early.availableQuarters, ['2026-Q3', '2026-Q2', '2026-Q1']);
         // ...with progress measured against the fully filed Q2 vs Q1 pair...
         assert.deepEqual(await buildFilingProgress(early), {
-            deadline: '2026-11-14',
+            deadline: '2026-11-16',
             baselineQuarter: '2026-Q2',
             baselineComparableFilers: 8600,
         });
