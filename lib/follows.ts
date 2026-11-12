@@ -2,7 +2,6 @@
  * Followed tickers and the background alert checker's status, kept in localStorage so they survive reloads.
  * Browser-only. Components read these through useSyncExternalStore with the subscribe/snapshot pairs below.
  */
-import { normalizeScheduleForm } from './sec-forms';
 
 export interface Follow {
     ticker: string;
@@ -157,14 +156,5 @@ export function writeSeen(seen: Set<string>): void {
     }
 }
 
-export function formMatches(form: string, types: string[]): boolean {
-    // "SCHEDULE 13D/A" (EDGAR's name since Dec 2024) and "SC 13D/A" both normalise to "SC 13D/A", so a follow on
-    // "SC 13D" catches either; the same goes for 13G.
-    const normalized = normalizeScheduleForm(form);
-    return types.some((type) => {
-        const t = normalizeScheduleForm(type);
-        // "4" must match Form 4 exactly (and 4/A), not every form containing the digit 4.
-        if (t === '4') return normalized === '4' || normalized === '4/A';
-        return normalized.includes(t);
-    });
-}
+// Lives in the pure sec-forms module so the browser extension can share it; re-exported here for existing imports.
+export { formMatches } from './sec-forms';

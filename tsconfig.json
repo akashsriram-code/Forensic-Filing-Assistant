@@ -38,6 +38,7 @@
   ],
   "exclude": [
     "node_modules",
-    "verify_nvda_filings.ts"
+    "verify_nvda_filings.ts",
+    "extension"
   ]
 }

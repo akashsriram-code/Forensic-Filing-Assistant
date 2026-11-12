@@ -31,13 +31,15 @@ jobs:
         run: npm ci
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: |
+          npx tsc --noEmit
+          npx tsc -p extension --noEmit
 
       # Files below still have older lint errors. Remove a line once its file is fixed; every other file in app/,
       # lib/ and scripts/ (including all new files) must lint clean.
       - name: Lint
         run: >
-          npx eslint app lib scripts
+          npx eslint app lib scripts extension/src
           --ignore-pattern scripts/ingest-13f-raw.ts
           --ignore-pattern scripts/ingest-turso-direct.ts
           --ignore-pattern scripts/migrate-turso.ts
@@ -51,8 +53,19 @@ jobs:
           npm run test:diff
           npm run test:entity
           npm run test:form4
+          npm run test:extension
 
       - name: Production build
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: 1
+
+      - name: Build SCOUT Live extension
+        run: npm run build:extension -- --zip
+
+      - name: Upload SCOUT Live extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: scout-live-extension
+          path: exports/scout-live.zip
+          if-no-files-found: error

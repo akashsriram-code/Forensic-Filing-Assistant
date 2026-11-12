@@ -10,6 +10,7 @@ import {
     saveFollow,
     subscribeFollows,
 } from '@/lib/follows';
+import { extensionHandlesAlerts, useExtensionPresence } from '@/lib/extension-presence';
 import { Button } from './ui';
 
 interface FollowButtonProps {
@@ -27,6 +28,7 @@ export function FollowButton({ ticker, className }: FollowButtonProps) {
     const shown = /^\d+$/.test(symbol) ? '' : ` ${symbol}`;
     const follows = useSyncExternalStore(subscribeFollows, getFollowsSnapshot, getFollowsServerSnapshot);
     const follow = follows.find((item) => item.ticker === symbol);
+    const live = extensionHandlesAlerts(useExtensionPresence());
     const [open, setOpen] = useState(false);
     const [draft, setDraft] = useState<string[]>([]);
     const ref = useRef<HTMLDivElement>(null);
@@ -108,7 +110,11 @@ export function FollowButton({ ticker, className }: FollowButtonProps) {
                             </label>
                         ))}
                     </div>
-                    <p className="mt-3 text-sm text-ink-muted">Alerts arrive only while this app is open in a browser tab.</p>
+                    <p className="mt-3 text-sm text-ink-muted">
+                        {live
+                            ? 'Live alerts on: the SCOUT Live extension sends a desktop alert the moment EDGAR publishes a filing, even when SCOUT isn’t open.'
+                            : 'Alerts arrive only while this app is open in a browser tab.'}
+                    </p>
                     <div className="mt-4 flex flex-wrap justify-between gap-2">
                         <Button
                             size="sm"

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SCOUT Live options</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <main class="options">
+        <h1>SCOUT Live</h1>
+        <p class="muted">A desktop alert the moment EDGAR publishes a filing from a company you follow in SCOUT. That's typically under 30 seconds after the SEC accepts it, the fastest any free source allows. Follow and unfollow in SCOUT as usual; this extension picks up the changes on its own.</p>
+
+        <form id="form">
+            <label for="email">Your email
+                <p class="hint muted">The SEC requires a contact address on automated requests. It is sent only to sec.gov, in each request's User-Agent header.</p>
+            </label>
+            <input id="email" type="email" required placeholder="name@newsroom.com" autocomplete="email">
+
+            <label for="scoutUrl">SCOUT address
+                <p class="hint muted">Where you open SCOUT. Alerts link here, and follows are read from this address.</p>
+            </label>
+            <input id="scoutUrl" type="url" required placeholder="http://localhost:3000">
+
+            <label for="poll">How often to check
+                <p class="hint muted">During EDGAR hours (6am–10pm ET, weekdays). Choose a slower speed if several colleagues use SCOUT Live on the same office network, because the SEC limits requests per network.</p>
+            </label>
+            <select id="poll">
+                <option value="1000">Every second (fastest)</option>
+                <option value="2000">Every 2 seconds</option>
+                <option value="5000">Every 5 seconds</option>
+            </select>
+
+            <div class="actions">
+                <button class="primary" type="submit">Save</button>
+                <button id="test" type="button">Send a test alert</button>
+            </div>
+            <p id="saved" class="muted" role="status"></p>
+        </form>
+    </main>
+    <script src="options.js"></script>
+</body>
+</html>

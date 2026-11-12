@@ -13,3 +13,6 @@ requirements.txt
 
 # Exclude scripts (build-time only)
 scripts/
+
+# The SCOUT Live browser extension is built and installed separately
+extension/

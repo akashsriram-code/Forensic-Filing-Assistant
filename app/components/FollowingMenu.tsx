@@ -11,6 +11,7 @@ import {
     subscribeFollows,
 } from '@/lib/follows';
 import { formatRelativeTime } from '@/lib/format';
+import { extensionHandlesAlerts, extensionStatusLine, useExtensionPresence } from '@/lib/extension-presence';
 import { Button, IconButton } from './ui';
 
 type Permission = NotificationPermission | 'unsupported';
@@ -23,6 +24,8 @@ function readPermission(): Permission {
 export function FollowingMenu() {
     const follows = useSyncExternalStore(subscribeFollows, getFollowsSnapshot, getFollowsServerSnapshot);
     const status = useSyncExternalStore(subscribeFollows, getStatusSnapshot, getStatusServerSnapshot);
+    const extension = useExtensionPresence();
+    const live = extensionHandlesAlerts(extension);
     const [open, setOpen] = useState(false);
     const [permission, setPermission] = useState<Permission>('default');
     const ref = useRef<HTMLDivElement>(null);
@@ -89,14 +92,24 @@ export function FollowingMenu() {
                         </ul>
                     )}
 
-                    {follows.length > 0 && (
-                        <p className="mt-3 text-sm text-ink-muted">
-                            {status.lastChecked ? `Last checked ${formatRelativeTime(status.lastChecked)}.` : 'First check runs a few seconds after the page opens.'} Checks repeat every 5 minutes.
-                        </p>
+                    {extension && live ? (
+                        <div className="mt-3 rounded-md border border-gain/40 bg-gain/10 p-3 text-sm">
+                            <p className="font-medium text-gain">{extensionStatusLine(extension)}</p>
+                            <p className="mt-1 text-ink-muted">A desktop alert pops up the moment EDGAR publishes a filing (typically under 30 seconds after the SEC accepts it), even when SCOUT isn&apos;t open. Click one to read the filing here.</p>
+                        </div>
+                    ) : (
+                        <>
+                            {follows.length > 0 && (
+                                <p className="mt-3 text-sm text-ink-muted">
+                                    {status.lastChecked ? `Last checked ${formatRelativeTime(status.lastChecked)}.` : 'First check runs a few seconds after the page opens.'} Checks repeat every 5 minutes.
+                                </p>
+                            )}
+                            {status.error && <p className="mt-2 text-sm text-caution">{status.error}</p>}
+                            {extension && <p className="mt-2 text-sm text-caution">{extensionStatusLine(extension)}</p>}
+                        </>
                     )}
-                    {status.error && <p className="mt-2 text-sm text-caution">{status.error}</p>}
 
-                    <div className="mt-3 rounded-md bg-surface-2 p-3 text-sm text-ink-muted">
+                    {!live && <div className="mt-3 rounded-md bg-surface-2 p-3 text-sm text-ink-muted">
                         {permission === 'granted' && <p>Browser notifications are on. Alerts arrive only while this app is open in a tab.</p>}
                         {permission === 'default' && (
                             <div className="space-y-2">
@@ -106,7 +119,7 @@ export function FollowingMenu() {
                         )}
                         {permission === 'denied' && <p>Notifications are blocked for this site. Allow them in your browser&apos;s site settings to get alerts.</p>}
                         {permission === 'unsupported' && <p>This browser doesn&apos;t support notifications.</p>}
-                    </div>
+                    </div>}
                 </div>
             )}
         </div>

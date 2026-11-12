@@ -10,6 +10,7 @@ import {
     todayIso,
     writeSeen,
 } from '@/lib/follows';
+import { extensionHandlesAlerts } from '@/lib/extension-presence';
 
 /** Check soon after the page opens, then every 5 minutes, while any page of the app is open. */
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
@@ -26,7 +27,8 @@ interface FilingHit {
 
 /**
  * Looks for new filings from followed tickers and shows a browser notification for each one.
- * Renders nothing; the header's Following menu shows its status.
+ * Renders nothing; the header's Following menu shows its status. Steps aside when the SCOUT Live extension is
+ * running, since it checks EDGAR every second and would otherwise send the same alerts again.
  */
 export function NotificationManager() {
     useEffect(() => {
@@ -34,7 +36,7 @@ export function NotificationManager() {
         let running = false;
 
         const check = async () => {
-            if (running || cancelled) return;
+            if (running || cancelled || extensionHandlesAlerts()) return;
             const follows = getFollowsSnapshot();
             const status = getStatusSnapshot();
             if (follows.length === 0) return;

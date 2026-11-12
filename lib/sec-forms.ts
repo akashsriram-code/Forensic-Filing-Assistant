@@ -34,3 +34,20 @@ export function isPassiveStakeForm(form: string | null | undefined): boolean {
 export function isAmendmentForm(form: string | null | undefined): boolean {
     return /\/A$/.test(cleanForm(form));
 }
+
+/**
+ * Whether a filing's form is one of the alert types a reader follows. A filing matches when its form contains one of
+ * the types, so "10-K" matches "10-K/A" and "13F" matches "13F-HR". Used by the in-app alerts and the SCOUT Live
+ * browser extension.
+ */
+export function formMatches(form: string, types: readonly string[]): boolean {
+    // "SCHEDULE 13D/A" (EDGAR's name since Dec 2024) and "SC 13D/A" both normalise to "SC 13D/A", so a follow on
+    // "SC 13D" catches either; the same goes for 13G.
+    const normalized = normalizeScheduleForm(form);
+    return types.some((type) => {
+        const t = normalizeScheduleForm(type);
+        // "4" must match Form 4 exactly (and 4/A), not every form containing the digit 4.
+        if (t === '4') return normalized === '4' || normalized === '4/A';
+        return normalized.includes(t);
+    });
+}

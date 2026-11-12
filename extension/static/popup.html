@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>SCOUT Live</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="popup">
+    <header>
+        <h1>SCOUT Live</h1>
+        <span id="state" class="state">…</span>
+    </header>
+    <div class="summary">
+        <p id="checked" class="muted tabular"></p>
+        <p id="message" class="muted"></p>
+        <p id="unresolved" class="caution" hidden></p>
+    </div>
+    <ul id="alerts" class="alerts" aria-label="Recent alerts"></ul>
+    <p id="empty" class="empty muted" hidden>No alerts yet. New filings from companies you follow show up here within seconds.</p>
+    <footer>
+        <button id="options" type="button">Options</button>
+        <button id="read" type="button">Mark all read</button>
+    </footer>
+    <script src="popup.js"></script>
+</body>
+</html>

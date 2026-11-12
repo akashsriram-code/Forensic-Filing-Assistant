@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "SCOUT Live",
+  "version": "0.1.0",
+  "description": "Desktop alerts the moment EDGAR publishes a filing from a company you follow in SCOUT.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAl2dPSCr+VmBd4C6DZav9r9SkuVplNBE47I6LlZWTTB0MVa/QkwiTL5rRrRY3r07PLix+3Psb5KfgWt0f5bd6jJNQvzZ2c0R8Uh4SIV3gFNvYzYpKeJbSZ8ISUd3Lh7jiYvtlZ8Sibd3G+BqTbasozJ8ZYF1DDAMcOc4ZFhHc7f8YqbdWp/T8w8zN3DI3wjPdNf+3oMdXfxUBEPfsDWxOmHPxqXoanQpBRgG1o0Y4eLDDDfFPul1OOj9n1DfS3QhnYr8O/0FOjlVMyx6R7bHFjNJEOod09yYjza7yBleFNPLj8UbQKWr/h3WkBxgFbcDQAmd3S+JCU+qUKP4WCTjygQIDAQAB",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "SCOUT Live",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["alarms", "notifications", "storage", "declarativeNetRequest", "scripting"],
+  "host_permissions": ["https://www.sec.gov/*", "https://data.sec.gov/*"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:3000/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

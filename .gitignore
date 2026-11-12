@@ -20,6 +20,7 @@
 # production
 /build
 /exports/
+/extension/dist/
 
 # misc
 .DS_Store
