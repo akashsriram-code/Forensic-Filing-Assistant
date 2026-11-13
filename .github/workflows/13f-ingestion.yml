@@ -6,6 +6,10 @@ name: 13F Ingestion
 on:
   schedule:
     - cron: '17 11 * * *'  # Daily
+    # TEMPORARY: hourly during the 2026-Q3 filing-deadline crunch (deadline Mon 2026-11-16).
+    # The `gate` job turns these runs into no-ops after Tue 2026-11-17 (UTC); delete this line afterwards.
+    # Hour 11 is skipped because the daily cron above already covers it.
+    - cron: '17 0-10,12-23 * * *'
   workflow_dispatch:
     inputs:
       quarter:
@@ -28,7 +32,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Check temporary hourly window
+        id: check
+        env:
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          HOURLY_UNTIL="2026-11-17"  # last UTC day of the temporary hourly schedule
+          if [ "$EVENT_SCHEDULE" = "17 0-10,12-23 * * *" ] && [ "$(date -u +%F)" \> "$HOURLY_UNTIL" ]; then
+            echo "Hourly window ended $HOURLY_UNTIL; skipping. Remove the hourly cron from this workflow."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   ingest-13f:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
